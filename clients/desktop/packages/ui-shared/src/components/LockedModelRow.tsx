@@ -1,9 +1,9 @@
 import { forwardRef, type JSX, type MouseEvent, type ReactNode } from 'react';
 import type { ModelLibraryAccess } from '@canopy/protocol/models';
 import {
-  PickerMenuOption,
-  type PickerMenuOptionProps,
-} from '../primitives/PickerMenu';
+  PickerOption,
+  type PickerOptionProps,
+} from '../primitives/PickerParts';
 import {
   MODEL_LIBRARY_UNLOCK_HINTS,
   MODEL_LIBRARY_UNLOCK_LABELS,
@@ -57,7 +57,7 @@ export function modelLibraryRowLock(
 }
 
 export interface LockedModelRowProps extends Omit<
-  PickerMenuOptionProps,
+  PickerOptionProps,
   'role' | 'aria-checked' | 'onClick'
 > {
   readonly lock: ModelRowLock;
@@ -94,7 +94,7 @@ export const LockedModelRow = forwardRef<
 ): JSX.Element {
   const label = lock.label.trim() || undefined;
   return (
-    <PickerMenuOption
+    <PickerOption
       {...rowProps}
       ref={ref}
       role="menuitem"
@@ -124,7 +124,7 @@ export const LockedModelRow = forwardRef<
       <span id={hintId} className="sr-only">
         {lock.hint}
       </span>
-    </PickerMenuOption>
+    </PickerOption>
   );
 });
 

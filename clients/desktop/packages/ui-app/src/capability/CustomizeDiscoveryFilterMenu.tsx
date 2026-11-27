@@ -4,13 +4,13 @@ import { useRef, useState, type JSX } from 'react';
 import {
   Button,
   Count,
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuRowStyleProvider,
-  FloatingMenu,
+  MenuDivider,
+  MenuItem,
+  MenuItemIcon,
+  MenuRowStyleProvider,
+  Menu,
   HelpHint,
-  PickerMenuSectionLabel,
+  PickerSectionLabel,
   PickerTrigger,
   PickerTriggerChevron,
   Popover,
@@ -114,7 +114,7 @@ function FilterSectionLabel({
 }): JSX.Element {
   return (
     <span className="flex items-center gap-1">
-      <PickerMenuSectionLabel>{label}</PickerMenuSectionLabel>
+      <PickerSectionLabel>{label}</PickerSectionLabel>
       <HelpHint
         label={label}
         help={help}
@@ -162,7 +162,7 @@ function HarnessSelect({
         <span className="min-w-0 flex-1 truncate text-left">{label}</span>
         <PickerTriggerChevron open={open} />
       </PickerTrigger>
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={setOpen}
         anchorRef={triggerRef}
@@ -172,22 +172,22 @@ function HarnessSelect({
         aria-label="Works with"
         data-testid={`${TEST_ID}-harness-menu`}
       >
-        <DropdownMenuRowStyleProvider value={QUIET_MENU_ROW_STYLE}>
-          <DropdownMenuItem
+        <MenuRowStyleProvider value={QUIET_MENU_ROW_STYLE}>
+          <MenuItem
             role="menuitemradio"
             aria-checked={value.length === 0}
             data-testid={`${TEST_ID}-harness-any`}
             onClick={(): void => onChange([])}
           >
-            <DropdownMenuItemIcon>
+            <MenuItemIcon>
               {value.length === 0 ? <CheckIcon size="sm" aria-hidden /> : null}
-            </DropdownMenuItemIcon>
+            </MenuItemIcon>
             <span className="truncate">Any harness</span>
-          </DropdownMenuItem>
+          </MenuItem>
           {CUSTOMIZE_DISCOVERY_HARNESS_OPTIONS.map((option) => {
             const checked = value.includes(option.value);
             return (
-              <DropdownMenuItem
+              <MenuItem
                 key={option.value}
                 role="menuitemcheckbox"
                 aria-checked={checked}
@@ -205,32 +205,32 @@ function HarnessSelect({
                   )
                 }
               >
-                <DropdownMenuItemIcon>
+                <MenuItemIcon>
                   {checked ? <CheckIcon size="sm" aria-hidden /> : null}
-                </DropdownMenuItemIcon>
+                </MenuItemIcon>
                 <span className="truncate">{option.label}</span>
-              </DropdownMenuItem>
+              </MenuItem>
             );
           })}
           {onAddHarness ? (
             <>
-              <DropdownMenuDivider />
-              <DropdownMenuItem
+              <MenuDivider />
+              <MenuItem
                 data-testid={`${TEST_ID}-add-harness`}
                 onClick={(): void => {
                   setOpen(false);
                   onAddHarness();
                 }}
               >
-                <DropdownMenuItemIcon>
+                <MenuItemIcon>
                   <PlusIcon size="sm" aria-hidden />
-                </DropdownMenuItemIcon>
+                </MenuItemIcon>
                 <span className="truncate">Connect a harness…</span>
-              </DropdownMenuItem>
+              </MenuItem>
             </>
           ) : null}
-        </DropdownMenuRowStyleProvider>
-      </FloatingMenu>
+        </MenuRowStyleProvider>
+      </Menu>
     </>
   );
 }

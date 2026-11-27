@@ -3,11 +3,11 @@ import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import {
   ActionMenuRowStyle,
   Button,
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuLabel,
-  FloatingMenu,
+  MenuDivider,
+  MenuItem,
+  MenuItemIcon,
+  MenuLabel,
+  Menu,
 } from '@canopy/ui-shared';
 import {
   EyeOffIcon,
@@ -177,50 +177,50 @@ export function ShareSessionControl({
     if (!isShared) {
       return (
         <>
-          <DropdownMenuItem
+          <MenuItem
             disabled={shareDisabled}
             onClick={(event): void => {
               openShareModal(event.currentTarget.ownerDocument);
             }}
             data-testid={resolvedTestId}
           >
-            <DropdownMenuItemIcon>
+            <MenuItemIcon>
               <ShareIcon />
-            </DropdownMenuItemIcon>
+            </MenuItemIcon>
             <span>{SHARE_LABEL}</span>
-          </DropdownMenuItem>
+          </MenuItem>
           {modal}
         </>
       );
     }
     return (
       <>
-        <DropdownMenuItem
+        <MenuItem
           onClick={(event): void => {
             openShareModal(event.currentTarget.ownerDocument);
           }}
           data-testid={resolvedTestId}
         >
-          <DropdownMenuItemIcon>
+          <MenuItemIcon>
             <ShareIcon />
-          </DropdownMenuItemIcon>
+          </MenuItemIcon>
           <span>{RESHARE_LABEL}</span>
-        </DropdownMenuItem>
-        <DropdownMenuItem
+        </MenuItem>
+        <MenuItem
           onClick={(): void => {
             openComments();
             onAfterSelect?.();
           }}
           data-testid={`${resolvedTestId}-comments`}
         >
-          <DropdownMenuItemIcon>
+          <MenuItemIcon>
             <MessageIcon />
-          </DropdownMenuItemIcon>
+          </MenuItemIcon>
           <span>{commentsLabel(unreadComments)}</span>
-        </DropdownMenuItem>
+        </MenuItem>
         {/* Ending the share is its own last group. */}
-        <DropdownMenuDivider />
-        <DropdownMenuItem
+        <MenuDivider />
+        <MenuItem
           disabled={unsharing}
           onClick={(): void => {
             handleUnshare();
@@ -229,11 +229,11 @@ export function ShareSessionControl({
           data-testid={`${resolvedTestId}-unshare`}
           tone="destructive"
         >
-          <DropdownMenuItemIcon>
+          <MenuItemIcon>
             <EyeOffIcon />
-          </DropdownMenuItemIcon>
+          </MenuItemIcon>
           <span>{unsharing ? UNSHARING_LABEL : UNSHARE_LABEL}</span>
-        </DropdownMenuItem>
+        </MenuItem>
         {modal}
       </>
     );
@@ -284,7 +284,7 @@ export function ShareSessionControl({
           signals. The count still reaches this control's manage menu through
           the "Comments (N)" item below. */}
       {isShared && (
-        <FloatingMenu
+        <Menu
           open={manageOpen}
           onOpenChange={setManageOpen}
           anchorRef={buttonRef}
@@ -297,41 +297,41 @@ export function ShareSessionControl({
           className="w-56"
         >
           <ActionMenuRowStyle>
-            <DropdownMenuLabel>{manageHeader}</DropdownMenuLabel>
-            <DropdownMenuDivider />
-            <DropdownMenuItem
+            <MenuLabel>{manageHeader}</MenuLabel>
+            <MenuDivider />
+            <MenuItem
               onClick={(event): void =>
                 openShareModal(event.currentTarget.ownerDocument)
               }
             >
-              <DropdownMenuItemIcon>
+              <MenuItemIcon>
                 <ShareIcon />
-              </DropdownMenuItemIcon>
+              </MenuItemIcon>
               {RESHARE_LABEL}
-            </DropdownMenuItem>
-            <DropdownMenuItem
+            </MenuItem>
+            <MenuItem
               onClick={openComments}
               data-testid={`${resolvedTestId}-comments`}
             >
-              <DropdownMenuItemIcon>
+              <MenuItemIcon>
                 <MessageIcon />
-              </DropdownMenuItemIcon>
+              </MenuItemIcon>
               {commentsLabel(unreadComments)}
-            </DropdownMenuItem>
-            <DropdownMenuDivider />
-            <DropdownMenuItem
+            </MenuItem>
+            <MenuDivider />
+            <MenuItem
               disabled={unsharing}
               onClick={handleUnshare}
               data-testid={`${resolvedTestId}-unshare`}
               tone="destructive"
             >
-              <DropdownMenuItemIcon>
+              <MenuItemIcon>
                 <EyeOffIcon />
-              </DropdownMenuItemIcon>
+              </MenuItemIcon>
               {unsharing ? UNSHARING_LABEL : UNSHARE_LABEL}
-            </DropdownMenuItem>
+            </MenuItem>
           </ActionMenuRowStyle>
-        </FloatingMenu>
+        </Menu>
       )}
 
       {modal}

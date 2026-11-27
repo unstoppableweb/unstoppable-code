@@ -290,6 +290,10 @@ describe('PostHog main gating by usage-data policy', () => {
   });
 
   afterEach(() => {
+    // Each test loads its own module graph. A reported error arms the
+    // handler's 60-second repeat window, whose timer keeps that whole graph
+    // alive past the test; disposing cancels it so the worker's heap stays flat.
+    main.disposeMainAppErrorHandler();
     Object.assign(globalThis, {
       __CANOPY_POSTHOG_ENABLED__: false,
       __CANOPY_POSTHOG_PROJECT_KEY__: '',
@@ -1405,6 +1409,7 @@ describe('PostHog main gating by usage-data policy', () => {
       ).resolves.toEqual(delivered);
 
       // A fresh process with a confirmed allow can retry the retained dump.
+      main.disposeMainAppErrorHandler();
       mockCaptureException.mockClear();
       jest.resetModules();
       main = await import('@canopy/desktop-instrumentation/electron/main');

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { offerLifecycleJournalQuarantine } from '@canopy/app-state';
+import { extractIpcErrorMessage } from '@canopy/protocol/app-errors/ipc-rejection';
 import type { SidebarBatchUnitLabel } from '@canopy/ui-shared/components';
 
 /**
@@ -130,7 +131,10 @@ export function sidebarBatchFailureReason(
   unit: SidebarBatchUnitLabel,
 ): string {
   if (error instanceof Error && error.message.trim() !== '') {
-    return error.message;
+    return extractIpcErrorMessage(error);
+  }
+  if (typeof error === 'string' && error.trim() !== '') {
+    return extractIpcErrorMessage(error);
   }
   return mode === 'archive'
     ? `Couldn't archive this ${unit.singular}`

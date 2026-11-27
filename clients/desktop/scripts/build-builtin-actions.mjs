@@ -16,7 +16,10 @@ import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 import { loadBrand } from './brand/load-brand.mjs';
 import { prepareBrand } from './brand/prepare-brand.mjs';
-import { readLocalOnlyBuildEnv } from './lib/local-only-build-env.mjs';
+import {
+  readLocalOnlyBuildEnv,
+  readSelfHostBuildEnv,
+} from './lib/local-only-build-env.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, '..');
@@ -315,6 +318,7 @@ function getBuildOptions(entryPoints) {
       // The local-only build profile, parsed by the same helper as
       // electron.vite.config.ts so action bundles match the desktop.
       __CANOPY_LOCAL_ONLY__: JSON.stringify(readLocalOnlyBuildEnv(process.env)),
+      __CANOPY_SELF_HOST__: JSON.stringify(readSelfHostBuildEnv(process.env)),
       __CANOPY_MOCK_LLM_BASE_URL__:
         process.env.CANOPY_E2E_BUILD === '1'
           ? (JSON.stringify(process.env.CANOPY_MOCK_LLM_BASE_URL) ??

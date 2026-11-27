@@ -4,6 +4,7 @@ import {
   useMcpDeleteCleanupNotice,
 } from '@canopy/ui-app/capability';
 import { useCursorHarnessState } from '@/hooks/useCursorHarnessState';
+import { brand } from '@/lib/brand';
 import type { CustomizeRowMenuItem } from '@canopy/ui-shared/components/CustomizeRowMenu';
 import { isLocalCollectionConfig } from '@canopy/protocol/collections';
 import {
@@ -23,6 +24,7 @@ import {
   EMPTY_INSTALLED_STATUS_SNAPSHOT,
   MarketplaceUnshareAction,
   buildCustomizeTabModel,
+  customizeFoldsSingleKeyPlugins,
   customizeTabOffersUpdateFilter,
   effectiveInstalledStatusFilter,
   mcpSharedPluginEntryIds,
@@ -1067,6 +1069,11 @@ export function PluginsPage({
   const offeredHarnesses = useOfferedPluginHarnesses();
   const splitSearchMcp =
     discoveryEnabled && kindFilter === null && deferredQuery.trim() !== '';
+  const foldSingleKeyPlugins = customizeFoldsSingleKeyPlugins({
+    discovery: discoveryEnabled,
+    tab: kindFilter ?? 'all',
+    query: deferredQuery,
+  });
   const entries = useMemo(
     () =>
       buildUnifiedPluginEntries({
@@ -1086,9 +1093,9 @@ export function PluginsPage({
         mcpServers: pickerServers,
         mcpStatuses,
         curatedMcpServers,
-        // Outside New Customize All search, Desktop's integration detail
-        // can still install the folded plugin (REG-3033).
-        foldSingleKeyPlugins: !splitSearchMcp,
+        // Desktop's integration detail can still install the folded plugin
+        // (REG-3033) wherever New Customize keeps no separate plugin row.
+        foldSingleKeyPlugins,
         customizeAllSearch: splitSearchMcp,
         providerConnectors: providerConnectors ?? [],
         pipelines: capabilityInventory.pipelines,
@@ -1125,6 +1132,7 @@ export function PluginsPage({
       installedStatuses.state,
       discoveryEnabled,
       splitSearchMcp,
+      foldSingleKeyPlugins,
       offeredHarnesses,
       publisherSkills.skills,
       installedSkills,
@@ -4283,6 +4291,7 @@ export function PluginsPage({
                         />
                       </div>
                       <CustomizeTabSections
+                        brandName={brand.displayName}
                         tab={activeCatalogTab}
                         entries={entries}
                         defaultHarness={defaultHarness}

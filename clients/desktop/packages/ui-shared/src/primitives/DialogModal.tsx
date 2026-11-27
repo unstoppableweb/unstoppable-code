@@ -21,7 +21,7 @@ import {
   DIALOG_INITIAL_FOCUS_TARGET_SELECTOR,
 } from '../lib/dialog-initial-focus';
 import { Button } from './Button';
-import { floatingSurfaceAnchor } from './FloatingMenu';
+import { floatingSurfaceAnchor } from './Menu';
 import { useOverlayEscape } from './useOverlayEscape';
 import { CloseIcon as AppCatalogCloseIcon } from '../icons/AppIcons';
 

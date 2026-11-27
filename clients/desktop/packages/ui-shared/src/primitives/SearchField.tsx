@@ -17,7 +17,10 @@ import {
   DIALOG_INITIAL_FOCUS_TARGET_SELECTOR,
 } from '../lib/dialog-initial-focus';
 import { Button, ControlButton } from './Button';
-import { FIELD_EDGE_CLASS, FIELD_FOCUS_WITHIN_CLASS } from './Field';
+import {
+  FIELD_EDGE_CLASS,
+  FIELD_FOCUS_WITHIN_CLASS,
+} from './control-button-shared';
 import {
   FieldButtonNestProvider,
   useFieldButtonNest,

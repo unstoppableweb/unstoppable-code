@@ -24,12 +24,8 @@ import { ActionMenuRowStyle } from '../primitives/ActionMenuItems';
 import { Count } from '../primitives/Badge';
 import { Button } from '../primitives/Button';
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
-import {
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-} from '../primitives/DropdownMenu';
-import { FLOATING_MENU_GAP, FloatingMenu } from '../primitives/FloatingMenu';
+import { MenuDivider, MenuItem, MenuItemIcon } from '../primitives/MenuItem';
+import { MENU_GAP, Menu } from '../primitives/Menu';
 import { Heading } from '../primitives/Heading';
 import { PageColumn } from './PageColumn';
 import { PageHeader } from '../primitives/PageHeader';
@@ -463,12 +459,12 @@ function MoreWorktreeActions({
           <MoreHorizontalIcon size="md" exactSize aria-hidden="true" />
         </Button>
       </span>
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={setOpen}
         anchorRef={triggerRef}
         placement="bottom-right"
-        gap={FLOATING_MENU_GAP}
+        gap={MENU_GAP}
         interaction="menu"
         aria-labelledby={triggerId}
         className="w-48"
@@ -478,9 +474,9 @@ function MoreWorktreeActions({
             const ActionIcon = MENU_ICON[action.icon];
             return [
               action.separated === true ? (
-                <DropdownMenuDivider key={`${action.id}-divider`} />
+                <MenuDivider key={`${action.id}-divider`} />
               ) : null,
-              <DropdownMenuItem
+              <MenuItem
                 key={action.id}
                 {...(action.tone === undefined ? {} : { tone: action.tone })}
                 disabled={action.disabled}
@@ -490,15 +486,15 @@ function MoreWorktreeActions({
                   action.onSelect();
                 }}
               >
-                <DropdownMenuItemIcon>
+                <MenuItemIcon>
                   <ActionIcon />
-                </DropdownMenuItemIcon>
+                </MenuItemIcon>
                 {action.label}
-              </DropdownMenuItem>,
+              </MenuItem>,
             ];
           })}
         </ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

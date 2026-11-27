@@ -24,6 +24,7 @@ import { OllamaLogo } from './OllamaLogo';
 import { RequestyLogo } from './RequestyLogo';
 import { ICON_SIZE_PX, isIconSize, type IconSize } from './icon-size';
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
+import { isOrgGatewayVendor } from '@canopy/protocol/model-gateway/vendor';
 
 export interface ModelProviderIconProps extends SVGProps<SVGSVGElement> {
   provider: string;
@@ -77,7 +78,7 @@ export function ModelProviderIcon({
   };
   // An organization's own models group under `org-gateway:<id>`; a neutral
   // building stands for the organization rather than a guessed initial.
-  if (provider.startsWith('org-gateway:')) {
+  if (isOrgGatewayVendor(provider)) {
     return <BuildingIcon size="xl" {...centralProps} />;
   }
   switch (provider) {

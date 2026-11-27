@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { WorkspaceLayoutMode } from '@canopy/desktop-shared/types';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { webCorePanelLayouts } from '@/lib/panels/panel-layout-storage';
 import {
@@ -76,9 +77,10 @@ export async function loadOwnWorktreeLayoutMode(
   worktreeKey: string,
 ): Promise<WorkspaceLayoutMode> {
   const scope = splitKey(worktreeKey);
-  const response = isWebCoreScope(scope.projectId)
-    ? webCorePanelLayouts.loadMode(scope)
-    : await window.api.panelLayout.loadWorktreeMode(scope);
+  const response =
+    isWebCoreScope(scope.projectId) || isPairedComputerId(scope.projectId)
+      ? webCorePanelLayouts.loadMode(scope)
+      : await window.api.panelLayout.loadWorktreeMode(scope);
   return response.mode === 'minimal' ? 'minimal' : 'advanced';
 }
 
@@ -93,7 +95,8 @@ async function saveOwnWorktreeLayoutMode(
   // way.
   dropWorktreeLayoutReadAhead(worktreeKey);
   try {
-    if (isWebCoreScope(projectId)) webCorePanelLayouts.saveMode(request);
+    if (isWebCoreScope(projectId) || isPairedComputerId(projectId))
+      webCorePanelLayouts.saveMode(request);
     else await window.api.panelLayout.saveWorktreeMode(request);
   } finally {
     dropWorktreeLayoutReadAhead(worktreeKey);

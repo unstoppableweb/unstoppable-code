@@ -331,7 +331,9 @@ export function PanelGridSurface({
     scopeCapabilities.fileSystemAccess !== 'none' &&
     workspaceFileSourceFor(worktreeId).onThisComputer;
   // A cloud task's first chat is the task: closing it would archive the
-  // whole task, so a scope that can't close it keeps its tab.
+  // whole task, so a scope that can't close it keeps its tab. Paired-computer
+  // scopes cannot create, rename, or close chat tabs yet (CAN-7907).
+  const canCreateChatTab = scopeCapabilities.chatTabCreation !== false;
   const rootChatTabKept = scopeCapabilities.chatRootTabLifecycle !== true;
   const rootChatId = webCoreLocalId(worktreeId);
   const withRootChatTabKept = useCallback(
@@ -454,12 +456,14 @@ export function PanelGridSurface({
       ? sharedContainerExcludedPanelKinds(readOnlyRunAllowed)
       : addMenuExcludeKinds;
     const unavailable: PanelKind[] = [...unavailableForScope];
+    if (!canCreateChatTab) unavailable.push('chat');
     if (!isInAppBrowserAvailable()) unavailable.push('browser');
     if (activityIsCard) unavailable.push('activity-section');
     return unavailable.length > 0 ? [...(kinds ?? []), ...unavailable] : kinds;
   }, [
     activityIsCard,
     addMenuExcludeKinds,
+    canCreateChatTab,
     readOnly,
     readOnlyRunAllowed,
     unavailableForScope,
@@ -689,8 +693,11 @@ export function PanelGridSurface({
   );
 
   const chatReadState = useMemo(
-    () => chatReadStateServices(projectId, worktreeId),
-    [projectId, worktreeId],
+    () =>
+      scopeCapabilities.chatReadState === false
+        ? undefined
+        : chatReadStateServices(projectId, worktreeId),
+    [projectId, scopeCapabilities.chatReadState, worktreeId],
   );
 
   // Archived chats live in each surface's top bar, never the tab strip.
@@ -825,15 +832,16 @@ export function PanelGridSurface({
       // recipient opened share the chat panel kind and stay closable; main
       // accepts their discard on the viewer scope.
       canCloseTab: withRootChatTabKept(
-        readOnly
+        readOnly || !canCreateChatTab
           ? (tab: PanelTabModel): boolean =>
               (tab.kind !== 'chat' ||
-                useChatStore
-                  .getState()
-                  .worktreeChats[
-                    `${projectId}/${worktreeId}`
-                  ]?.tabs.find((chatTab) => chatTab.id === tab.instance?.chatTabId)
-                  ?.kind === 'file') &&
+                (readOnly &&
+                  useChatStore
+                    .getState()
+                    .worktreeChats[
+                      `${projectId}/${worktreeId}`
+                    ]?.tabs.find((chatTab) => chatTab.id === tab.instance?.chatTabId)
+                    ?.kind === 'file')) &&
               (!minimal || canCloseMinimalTab(tab))
           : minimal
             ? (tab: PanelTabModel): boolean =>
@@ -899,15 +907,20 @@ export function PanelGridSurface({
       openInFileManagerLabel: pt(uiText.fileManager.openItem),
       fileActionsFirst,
       onShareSession:
-        !readOnly && canTransferChatSession(projectId)
+        !readOnly &&
+        scopeCapabilities.chatSessionTransfer === true &&
+        canTransferChatSession(projectId)
           ? handleShareSession
           : undefined,
       canShareSession,
       onExportSession:
-        !readOnly && canTransferChatSession(projectId)
+        !readOnly &&
+        scopeCapabilities.chatSessionTransfer === true &&
+        canTransferChatSession(projectId)
           ? handleExportSession
           : undefined,
-      onRenameChat: readOnly ? undefined : handleRenameChat,
+      onRenameChat:
+        readOnly || !canCreateChatTab ? undefined : handleRenameChat,
       onRenameTerminal:
         readOnly || scopeCapabilities.terminalRename !== true
           ? undefined
@@ -919,7 +932,8 @@ export function PanelGridSurface({
       renderAddTabMenu,
       // Read-only scopes cannot start a chat, so `+` opens the add-panel menu
       // (filtered to the read-safe kinds) instead of creating one.
-      onAddTabClick: readOnly ? undefined : handleAddChatTab,
+      onAddTabClick:
+        readOnly || !canCreateChatTab ? undefined : handleAddChatTab,
       // With fill tabs, `+` opens the add menu (New Chat first, then Browser,
       // Terminal, and the rest); Cmd/Ctrl+T still creates a chat directly.
       addTabOpensMenu: true,
@@ -968,6 +982,7 @@ export function PanelGridSurface({
     [
       activityIsCard,
       canCloseMinimalTab,
+      canCreateChatTab,
       effectiveAddMenuExcludeKinds,
       busyChatIds,
       readOnly,
@@ -977,6 +992,7 @@ export function PanelGridSurface({
       handleExportSession,
       handleRenameChat,
       openTerminalRename,
+      scopeCapabilities.chatSessionTransfer,
       scopeCapabilities.terminalRename,
       tabTitles,
       chatReadState,

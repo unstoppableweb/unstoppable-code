@@ -161,6 +161,11 @@ async function onSession<T>(
   }
 }
 
+/** Main's script session, for a write that must know whether it was sent (CAN-7663). */
+export function daemonScriptSession(): Promise<ElectronDaemonClient> {
+  return client();
+}
+
 /** As `onSession`, for the script reads and writes main routes (CAN-7663). */
 export function onDaemonScriptSession<T>(
   call: (session: ElectronDaemonClient) => Promise<T>,

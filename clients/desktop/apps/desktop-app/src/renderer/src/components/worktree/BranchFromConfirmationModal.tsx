@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/shallow';
 import {
   ActionMenuItems,
   ActionMenuRowStyle,
-  FloatingMenu,
+  Menu,
   type ActionMenuItem,
 } from '@canopy/ui-shared/components';
 import { ChevronDownIcon } from '@canopy/ui-shared/icons';
@@ -95,7 +95,7 @@ export function BranchFromConfirmationModalHost(): JSX.Element | null {
                 }
               />
             </Button>
-            <FloatingMenu
+            <Menu
               id={menuId}
               open={menuOpen}
               onOpenChange={setMenuOpen}
@@ -111,7 +111,7 @@ export function BranchFromConfirmationModalHost(): JSX.Element | null {
                   onSelect={(item): void => choose(item.key)}
                 />
               </ActionMenuRowStyle>
-            </FloatingMenu>
+            </Menu>
           </div>
         </div>
       </div>

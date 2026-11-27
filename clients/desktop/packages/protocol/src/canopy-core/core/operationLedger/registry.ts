@@ -98,7 +98,16 @@ export type OperationLedgerRefusalReason =
 export const OPERATION_LEDGER_ERROR_CODES = {
   refused: 'core.operationLedger.refused',
   snapshotRequired: 'core.operationLedger.snapshotRequired',
+  unavailable: 'core.operationLedger.unavailable',
 } as const;
+
+export const OPERATION_LEDGER_FAILURES = [
+  'STORAGE_UNAVAILABLE',
+  'WRITER_UNAVAILABLE',
+  'UNSUPPORTED_SCHEMA',
+  'BACKUP_UNVERIFIED',
+] as const;
+export type OperationLedgerFailure = (typeof OPERATION_LEDGER_FAILURES)[number];
 
 /**
  * A refusal changed nothing; `details.refusal` names it, so the owner
@@ -113,14 +122,24 @@ export type OperationLedgerErrorDetails = z.output<
   typeof OperationLedgerErrorDetailsSchema
 >;
 
+export const OperationLedgerUnavailableDetailsSchema = z.strictObject({
+  failure: z.enum(OPERATION_LEDGER_FAILURES),
+});
+
 export const OperationLedgerErrorSchema = CanopyErrorPayloadSchema.extend({
   code: z
     .enum([
       OPERATION_LEDGER_ERROR_CODES.refused,
       OPERATION_LEDGER_ERROR_CODES.snapshotRequired,
+      OPERATION_LEDGER_ERROR_CODES.unavailable,
     ])
     .optional(),
-  details: OperationLedgerErrorDetailsSchema.optional(),
+  details: z
+    .union([
+      OperationLedgerErrorDetailsSchema,
+      OperationLedgerUnavailableDetailsSchema,
+    ])
+    .optional(),
   retry: CanopyQueryRetryDirectiveSchema,
 });
 

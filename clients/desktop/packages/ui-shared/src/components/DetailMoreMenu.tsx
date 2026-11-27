@@ -17,12 +17,12 @@ import { MoreHorizontalIcon } from '../icons/AppIcons';
 import { Button } from '../primitives/Button';
 import { ActionMenuRowStyle } from '../primitives/ActionMenuItems';
 import {
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuLabel,
-} from '../primitives/DropdownMenu';
-import { FLOATING_MENU_GAP, FloatingMenu } from '../primitives/FloatingMenu';
+  MenuDivider,
+  MenuItem,
+  MenuItemIcon,
+  MenuLabel,
+} from '../primitives/MenuItem';
+import { MENU_GAP, Menu } from '../primitives/Menu';
 import { Tooltip } from '../primitives/Tooltip';
 
 export interface DetailMoreMenuItem {
@@ -118,13 +118,13 @@ export function DetailMoreMenu({
           </Button>
         </Tooltip>
       </span>
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={open}
         onOpenChange={setOpen}
         anchorRef={anchorRef}
         placement={placement}
-        gap={FLOATING_MENU_GAP}
+        gap={MENU_GAP}
         interaction="menu"
         aria-label={`Actions for ${name}`}
         data-testid={menuTestId}
@@ -137,7 +137,7 @@ export function DetailMoreMenu({
             focusMenuTrigger(anchorRef.current);
           }}
         />
-      </FloatingMenu>
+      </Menu>
     </>
   );
 }
@@ -169,8 +169,8 @@ export function DetailMoreMenuRows({
         const explained = item.disabled === true && item.reason !== undefined;
         return (
           <Fragment key={item.id}>
-            {item.destructive && index > 0 ? <DropdownMenuDivider /> : null}
-            <DropdownMenuItem
+            {item.destructive && index > 0 ? <MenuDivider /> : null}
+            <MenuItem
               tone={item.destructive ? 'destructive' : 'default'}
               disabled={item.disabled}
               aria-describedby={explained ? reasonId : undefined}
@@ -180,19 +180,19 @@ export function DetailMoreMenuRows({
                 item.onSelect();
               }}
             >
-              <DropdownMenuItemIcon>{item.icon}</DropdownMenuItemIcon>
+              <MenuItemIcon>{item.icon}</MenuItemIcon>
               {item.label}
-            </DropdownMenuItem>
+            </MenuItem>
             {explained ? (
               // Only menu items may be children of a menu, so the reason is
               // hidden from the tree and read through `aria-describedby`.
-              <DropdownMenuLabel
+              <MenuLabel
                 id={reasonId}
                 aria-hidden="true"
                 className="whitespace-normal"
               >
                 {item.reason}
-              </DropdownMenuLabel>
+              </MenuLabel>
             ) : null}
           </Fragment>
         );

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -249,6 +249,18 @@ function pragmaText(db: DatabaseSync, pragma: string, column: string): string {
   return typeof value === 'string' ? value.toLowerCase() : '';
 }
 
+/**
+ * Names one log file in capture evidence (CAN-7247), so a reader sees a new
+ * log at any commit id. The first open that finds none creates it; a copy
+ * of the file keeps it.
+ */
+function ensureLogId(db: DatabaseSync): void {
+  db.prepare(
+    `INSERT INTO w5_meta (key, value) SELECT 'log_id', ?
+     WHERE NOT EXISTS (SELECT 1 FROM w5_meta WHERE key = 'log_id')`,
+  ).run(randomUUID());
+}
+
 /** `null` is the state in which opening the log creates a fresh schema. */
 export function readSchemaVersion(db: DatabaseSync): number | null {
   const table = db
@@ -422,6 +434,7 @@ export function openW5CommitLogDatabase(
     db.exec('COMMIT');
     db.exec('PRAGMA busy_timeout = 0');
     migrate(db, migratedAt);
+    ensureLogId(db);
     return db;
   } catch (error) {
     closeQuietly(db);

@@ -16,11 +16,11 @@ import { useShallow } from 'zustand/shallow';
 import {
   Button,
   DialogModal,
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemTrailing,
-  FLOATING_MENU_GAP,
-  FloatingMenu,
+  MenuDivider,
+  MenuItem,
+  MenuItemTrailing,
+  MENU_GAP,
+  Menu,
   getModelCatalogProviderLabel,
   InterruptedSessionRow,
   usageLimitedSessionOpenLabel,
@@ -279,20 +279,20 @@ function ResumeRowContinueMenu({
         {label}
         <ChevronDownIcon size="sm" aria-hidden="true" />
       </Button>
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={visible}
         onOpenChange={onOpenChange}
         anchorRef={triggerRef}
         placement="bottom-right"
-        gap={FLOATING_MENU_GAP}
+        gap={MENU_GAP}
         interaction="menu"
         aria-label="Continue"
         data-testid={`usage-limit-resume-continue-menu-${suffix}`}
         className="w-max min-w-48"
       >
         {children}
-      </FloatingMenu>
+      </Menu>
     </>
   );
 }
@@ -1786,48 +1786,46 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
     const items: JSX.Element[] = [];
     if (offersCredits && session.kind === 'chat') {
       items.push(
-        <DropdownMenuItem
+        <MenuItem
           key="credits"
           data-testid={`usage-limit-resume-credits-${suffix}`}
           onClick={(): void => continueOnAiCredits(session)}
         >
           On AI Credits now
-        </DropdownMenuItem>,
+        </MenuItem>,
       );
     }
     if (!scheduledAt) {
       items.push(
-        <DropdownMenuItem
+        <MenuItem
           key="schedule"
           data-testid={`usage-limit-resume-schedule-${suffix}`}
           onClick={fromTrigger(scheduleFromRow)}
         >
           At reset
-          {resetHint ? (
-            <DropdownMenuItemTrailing>{resetHint}</DropdownMenuItemTrailing>
-          ) : null}
-        </DropdownMenuItem>,
+          {resetHint ? <MenuItemTrailing>{resetHint}</MenuItemTrailing> : null}
+        </MenuItem>,
       );
     } else if (ownedActivity) {
       items.push(
-        <DropdownMenuItem
+        <MenuItem
           key="undo"
           data-testid={`usage-limit-resume-undo-schedule-${suffix}`}
           onClick={fromTrigger(undoSchedule)}
         >
           Undo scheduled resume
-        </DropdownMenuItem>,
+        </MenuItem>,
       );
     }
-    if (items.length > 0) items.push(<DropdownMenuDivider key="divider" />);
+    if (items.length > 0) items.push(<MenuDivider key="divider" />);
     items.push(
-      <DropdownMenuItem
+      <MenuItem
         key="open"
         data-testid={`usage-limit-resume-open-${suffix}`}
         onClick={(): void => openWithoutResuming(session)}
       >
         {usageLimitedSessionOpenLabel(session.kind)}
-      </DropdownMenuItem>,
+      </MenuItem>,
     );
     const registerTrigger = (element: HTMLButtonElement | null): void => {
       controlRef(key, 'schedule')(element);

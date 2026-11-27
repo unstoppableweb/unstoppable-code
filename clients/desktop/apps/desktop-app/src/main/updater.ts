@@ -62,7 +62,7 @@ import {
 } from './updater/brand-github-provider';
 import { sendToWindow, type SendableBrowserWindow } from './lib/window-send';
 import { getCanopyReleaseFlavor } from './lib/app-identity';
-import { isLocalOnlyBuild } from './local-only/profile';
+import { isLocalOnlyBuild, isSelfHostBuild } from './local-only/profile';
 import {
   getInternalReleaseIndicatorForDisplay,
   toInternalReleaseIndicator,
@@ -96,6 +96,15 @@ const LOCAL_ONLY_BUILD_UPDATE_ERROR = `App updates are off in a local-only ${BRA
 // variable must never turn a source installation into an official updater client.
 const IS_SOURCE_BUILD =
   typeof __CANOPY_SOURCE_BUILD__ === 'boolean' && __CANOPY_SOURCE_BUILD__;
+
+/**
+ * A source installation, or a self-host build (always built from source and
+ * pointed at the operator's own server). Both report the `source_build`
+ * reason; self-host adds no reason code, so Remote Control is unchanged.
+ */
+function isSourceDistribution(): boolean {
+  return IS_SOURCE_BUILD || isSelfHostBuild();
+}
 const RELEASE_FLAVOR = getCanopyReleaseFlavor();
 const UPDATE_BASE_URL = __CANOPY_UPDATE_BASE_URL__.replace(/\/+$/, '');
 const CODE_SIGNATURE_VALIDATION_ERROR_PATTERN =
@@ -638,7 +647,7 @@ function handleUpdaterError(
 function ensureDistributionAllowsUpdates(): void {
   if (isLocalOnlyBuild())
     throw handleUpdaterError(new Error(LOCAL_ONLY_BUILD_UPDATE_ERROR));
-  if (IS_SOURCE_BUILD)
+  if (isSourceDistribution())
     throw handleUpdaterError(new Error(SOURCE_BUILD_UPDATE_ERROR));
 }
 
@@ -1408,8 +1417,8 @@ export function startUpdater(
   // Do not even construct electron-updater for source builds: doing so can
   // register its apply-on-quit hook independently of our manual install path.
   // Keep only the window reference so manual actions can explain the policy.
-  // Local-only builds never schedule an update check either.
-  if (IS_SOURCE_BUILD || isLocalOnlyBuild()) return;
+  // Local-only and self-host builds never schedule an update check either.
+  if (isSourceDistribution() || isLocalOnlyBuild()) return;
   beforeInstallUpdate = beforeInstall ?? null;
   isWorkflowDirty = options?.isWorkflowDirty ?? ((): boolean => false);
   isPackageTransactionRunning =
@@ -1671,7 +1680,7 @@ export function getUpdateInstallSupport():
       reason: 'local_only_build',
       message: LOCAL_ONLY_BUILD_UPDATE_ERROR,
     };
-  if (IS_SOURCE_BUILD)
+  if (isSourceDistribution())
     return {
       supported: false,
       reason: 'source_build',

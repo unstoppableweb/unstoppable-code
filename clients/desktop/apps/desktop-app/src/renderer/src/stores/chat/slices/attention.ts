@@ -1,3 +1,4 @@
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { useNavigationStore } from '../../navigationStore';
 import { isMainContentCoveredByAppAdvisorDock } from '../../appAdvisorDockCover';
 import { getCurrentChatPanelVisible } from '@/lib/worktree-layout-prefs';
@@ -64,6 +65,7 @@ export const createAttentionSlice: StateCreator<
     const selected = get().selectedWorktree;
     if (
       !selected ||
+      isPairedComputerId(selected.projectId) ||
       useNavigationStore.getState().activePage !== 'main' ||
       !getCurrentChatPanelVisible() ||
       isMainContentCoveredByAppAdvisorDock()
@@ -132,6 +134,7 @@ export const createAttentionSlice: StateCreator<
     }
     if (
       acknowledgedChatId &&
+      !isPairedComputerId(selected.projectId) &&
       isScopeRevisionedLive(get(), selected.projectId, selected.worktreeId)
     ) {
       void Promise.all([
@@ -175,7 +178,10 @@ export const createAttentionSlice: StateCreator<
         unreadWorktreeKeys: nextUnread,
       };
     });
-    if (isScopeRevisionedLive(get(), projectId, worktreeId)) {
+    if (
+      !isPairedComputerId(projectId) &&
+      isScopeRevisionedLive(get(), projectId, worktreeId)
+    ) {
       void Promise.all([
         get().dispatchChatCommand(
           { projectId, worktreeId },
@@ -260,6 +266,7 @@ export const createAttentionSlice: StateCreator<
     });
     if (
       acknowledgedChatIds.length > 0 &&
+      !isPairedComputerId(projectId) &&
       isScopeRevisionedLive(get(), projectId, worktreeId)
     ) {
       const scope = { projectId, worktreeId };

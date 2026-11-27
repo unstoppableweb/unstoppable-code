@@ -10,15 +10,15 @@ import {
   type InstalledStatusFilterValue,
 } from '../lib/installed-item-status';
 import {
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuRowStyleProvider,
+  MenuItem,
+  MenuItemIcon,
+  MenuRowStyleProvider,
   QUIET_MENU_ROW_STYLE,
-} from '../primitives/DropdownMenu';
-import { FloatingMenu } from '../primitives/FloatingMenu';
+} from '../primitives/MenuItem';
+import { Menu } from '../primitives/Menu';
 import { InstalledItemStatusIcon } from './InstalledItemStatusPicker';
 import { ItemStateMark, useItemStateMarks } from './ItemStateMark';
-import { PickerTrigger, PickerTriggerChevron } from '../primitives/PickerMenu';
+import { PickerTrigger, PickerTriggerChevron } from '../primitives/PickerParts';
 
 /**
  * Any status / Active / Available / Disabled filter after the Customize
@@ -111,7 +111,7 @@ export function InstalledStatusFilterDropdown({
         <span className="whitespace-nowrap">{label}</span>
         <PickerTriggerChevron open={open} />
       </PickerTrigger>
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={setOpen}
         anchorRef={triggerRef}
@@ -120,11 +120,11 @@ export function InstalledStatusFilterDropdown({
         aria-label="Filter installed items by status"
         className="w-64"
       >
-        <DropdownMenuRowStyleProvider value={QUIET_MENU_ROW_STYLE}>
+        <MenuRowStyleProvider value={QUIET_MENU_ROW_STYLE}>
           {options.map((option) => {
             const selected = option === value;
             return (
-              <DropdownMenuItem
+              <MenuItem
                 key={option ?? 'any'}
                 role="menuitemradio"
                 aria-checked={selected}
@@ -135,9 +135,9 @@ export function InstalledStatusFilterDropdown({
                   onChange(option);
                 }}
               >
-                <DropdownMenuItemIcon>
+                <MenuItemIcon>
                   {option !== null && <FilterOptionGlyph option={option} />}
-                </DropdownMenuItemIcon>
+                </MenuItemIcon>
                 <span className="min-w-0 flex-1">
                   <span className="block font-medium fg-primary">
                     {installedStatusFilterLabel(option)}
@@ -148,14 +148,14 @@ export function InstalledStatusFilterDropdown({
                     </span>
                   )}
                 </span>
-                <DropdownMenuItemIcon>
+                <MenuItemIcon>
                   {selected && <CheckIcon size="sm" aria-hidden />}
-                </DropdownMenuItemIcon>
-              </DropdownMenuItem>
+                </MenuItemIcon>
+              </MenuItem>
             );
           })}
-        </DropdownMenuRowStyleProvider>
-      </FloatingMenu>
+        </MenuRowStyleProvider>
+      </Menu>
     </>
   );
 }

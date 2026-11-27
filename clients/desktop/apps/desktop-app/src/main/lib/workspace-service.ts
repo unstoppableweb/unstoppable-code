@@ -23,10 +23,6 @@ import {
   indexTemporaryCompositionWorkspace,
   cleanupCompositionDestination,
 } from './workspace-composition-records';
-import {
-  normalizeRepositoryCloneUrl,
-  repositoryNameFromCloneUrl,
-} from '@canopy/protocol/remote-control/shell';
 import { normalizeWorkspaceOwner } from '@canopy/execution-engine/lib/workspace-owner';
 import type {
   BoundCopyRepository,
@@ -61,15 +57,28 @@ import {
   getWorkspaceDir,
 } from './paths';
 import { validateId } from './validation';
-import type { GitCloneProgressUpdate } from './git-clone-progress';
-import { inferCloneRepoName } from './git-clone-progress';
+import {
+  redactRemoteUrlCredentials,
+  type GitCloneProgressUpdate,
+} from './git-clone-progress';
 import { readAllSidebarItems, readWorkspaceIndexEntry } from './sidebar-items';
 import {
   applyWorkspaceAdditionDecision,
   applyWorkspaceCreationDecision,
 } from './workspace-creation-decision-port';
-import { workspaceCreationIds } from './worktree-record-decision-apply';
-import type { WorkspaceCreationDecision } from './worktree-record-decisions';
+import type { DesktopWorkspaceCreateTypes } from '@canopy/desktop-shared/node/worktree-record-decisions';
+import {
+  acquireKeyedLock,
+  cloneRemoteWorkspace,
+  commitNewWorkspace,
+  importManifestWorkspace,
+  refuseTrackedRepository,
+  refuseWorkspaceCreation,
+  stageWorkspaceAddition,
+  type TrackedRepositoryRemote,
+  type WorkspaceImportPorts,
+  type WorkspaceRootRemote,
+} from '@canopy/core-runtime/node/workspace/create-orchestration';
 import { getSidebarItemsPreserveWorkspaceIds } from './sidebar-items-preservation';
 import { slugify } from './string-utils';
 import {
@@ -99,28 +108,8 @@ import {
   ownsWorkspaceMutation,
   serializeWorkspaceMutation,
 } from './chat-project-operation-queue';
-import { refuseWorkspaceCreation } from './workspace-creation-refusal';
 import { sanitizeWorkspaceSourceRepoName } from '@canopy/desktop-shared/node/lib/workspace-source-repo';
 import { settleAll } from '@canopy/desktop-shared/node/lib/detached-work';
-
-interface ExistingWorkspaceBinding {
-  workspaceName: string;
-  repoPath: string;
-  remoteUrl: string | null;
-}
-
-interface ExistingRepoBinding {
-  repoId: string;
-  repoName: string;
-  repoPath: string;
-  remoteUrl: string | null;
-}
-
-interface ImportedWorkspaceArtifacts {
-  workspace: MultiRepoSidebarItem;
-  childWorkspaces: SingleRepoSidebarItem[];
-  clonedRepoIds: string[];
-}
 
 const splitDestinationWorkspaceLocks = new Map<string, Promise<void>>();
 let splitDestinationWorkspaceCreationLock: Promise<void> | undefined;
@@ -151,69 +140,6 @@ async function withSplitDestinationWorkspaceLock<T>(
   }
 }
 
-async function acquireKeyedLock(
-  locks: Map<string, Promise<void>>,
-  key: string,
-): Promise<() => void> {
-  const previous = locks.get(key);
-  let releaseLock: (() => void) | undefined;
-  const current = new Promise<void>((resolveLock) => {
-    releaseLock = resolveLock;
-  });
-  locks.set(key, current);
-  await previous;
-  let released = false;
-  return () => {
-    if (released) {
-      return;
-    }
-    released = true;
-    releaseLock?.();
-    if (locks.get(key) === current) {
-      locks.delete(key);
-    }
-  };
-}
-
-const manifestMemberLocks = new Map<string, Promise<void>>();
-
-/** A manifest member's remote; a URL that doesn't normalize keeps its text. */
-function manifestMemberKey(url: string): string {
-  return normalizeRemoteUrl(url) ?? url.trim();
-}
-
-/**
- * Holds one in-process lock per manifest member URL while `operation` runs,
- * taken in sorted order, so an import that shares a member with another
- * waits for it to publish and then reuses its checkout.
- *
- * Taken outside `serializeWorkspaceMutation`: a waiter inside the queue would
- * hold the queue its holder needs to publish.
- *
- * Residual risk: installs and org/cloud materialization also clone into
- * `<data>/repos` without these locks, so either can still race an import.
- */
-async function withManifestMemberLocks<T>(
-  urls: readonly string[],
-  operation: () => Promise<T>,
-): Promise<T> {
-  if (ownsWorkspaceMutation()) {
-    throw new Error(
-      'Manifest member locks must be taken outside workspace serialization',
-    );
-  }
-  const keys = [...new Set(urls.map(manifestMemberKey))].sort();
-  const releases: (() => void)[] = [];
-  try {
-    for (const key of keys) {
-      releases.push(await acquireKeyedLock(manifestMemberLocks, key));
-    }
-    return await operation();
-  } finally {
-    for (const release of releases.reverse()) release();
-  }
-}
-
 export async function withSplitDestinationWorkspaceCreationLock<T>(
   operation: () => Promise<T>,
 ): Promise<T> {
@@ -238,49 +164,117 @@ function getNextSidebarColor(itemCount: number): string {
   return PROJECT_COLORS[itemCount % PROJECT_COLORS.length];
 }
 
-function inferRepoNameFromRemote(remoteUrl: string): string {
-  return repositoryNameFromCloneUrl(remoteUrl);
-}
-
-function buildSingleRepoSidebarItem(
-  id: string,
-  name: string,
-  repoPath: string,
-  order: number,
-): SingleRepoSidebarItem {
-  return {
-    type: 'single-repo',
-    id,
-    name,
-    repoPath,
-    color: getNextSidebarColor(order),
-    worktrees: [],
-    collapsed: false,
-    order,
-  };
-}
-
-function buildMultiRepoSidebarItem(
-  id: string,
-  name: string,
-  repos: WorkspaceConfigFile['repos'],
-  order: number,
-  sourceRepoPath: string,
-  scripts?: MultiRepoSidebarItem['scripts'],
-): MultiRepoSidebarItem {
-  return {
-    type: 'multi-repo',
-    id,
-    name,
-    color: getNextSidebarColor(order),
-    repos,
-    worktrees: [],
-    collapsed: false,
-    order,
-    sourceRepoPath,
-    scripts,
-  };
-}
+/** The desktop's ports for core create orchestration (CAN-4096 C1, C2). */
+const createPorts: WorkspaceImportPorts<
+  DesktopWorkspaceCreateTypes,
+  AddWorkspaceFromRemoteProgress
+> = {
+  serialize: (operation, cancellation) =>
+    serializeWorkspaceMutation(operation, cancellation),
+  ownsSerialization: () => ownsWorkspaceMutation(),
+  plan: {
+    readItems: async () => (await readAllSidebarItems()).items,
+    singleRepoItem: ({ id, name, repoPath, order }) => ({
+      type: 'single-repo',
+      id,
+      name,
+      repoPath,
+      color: getNextSidebarColor(order),
+      worktrees: [],
+      collapsed: false,
+      order,
+    }),
+    multiRepoItem: ({ id, name, repos, sourceRepoPath, order }) => ({
+      type: 'multi-repo',
+      id,
+      name,
+      color: getNextSidebarColor(order),
+      repos,
+      worktrees: [],
+      collapsed: false,
+      order,
+      sourceRepoPath,
+      scripts: undefined,
+    }),
+    manifestRepositories: (members) =>
+      members.map(({ id, name, repoPath, manifestUrl }) => ({
+        id,
+        name,
+        repoPath,
+        source: 'manifest',
+        manifestUrl,
+      })),
+    availableWorkspaceId: (name, taken) =>
+      buildAvailableWorkspaceId(name, taken),
+    trackingWorkspaceName: (items, repoPath) =>
+      findTrackedWorkspaceForRepoPath(items, repoPath)?.name,
+    manifestSourceWorkspaceName: (items, repoPath) =>
+      items.find(
+        (item) =>
+          item.type === 'multi-repo' && item.sourceRepoPath === repoPath,
+      )?.name,
+    repositoryRemotes: (items) => resolveExistingRepoBindings(items),
+    workspaceRootRemotes: (items) => resolveExistingWorkspaceBindings(items),
+  },
+  reservation: {
+    commit: (publish, workspaceIds) =>
+      commitWorkspaceCreation(publish, workspaceIds),
+    markEffectsStarted: () => markWorkspaceCreationEffectsStarted(),
+    reserveLocal: (workspaceId, ownedPaths, work, expectedWorkspaceRecords) =>
+      withLocalWorkspaceCreation(
+        workspaceId,
+        [getWorkspaceDir(workspaceId), ...ownedPaths],
+        work,
+        { expectedWorkspaceRecords },
+      ),
+    reserve: (workspaceId, ownedPaths, options) =>
+      reserveWorkspaceCreation(
+        workspaceId,
+        [getWorkspaceDir(workspaceId), ...ownedPaths],
+        options,
+      ),
+    recordRepository: (repository) =>
+      recordWorkspaceCreationRepository(repository),
+  },
+  decisions: { applyWorkspaceAdditionDecision, applyWorkspaceCreationDecision },
+  git: {
+    clone: async (url, destination, progress) => {
+      await (progress
+        ? cloneRepositoryThroughWorker({
+            kind: 'live-progress',
+            url,
+            destination,
+            signal: progress.signal,
+            onProgress: progress.onProgress,
+          })
+        : cloneRepositoryThroughWorker({
+            kind: 'clone',
+            url,
+            destination,
+            signal: untrackedClonesStop.signal,
+          }));
+    },
+    cancelled: () => new CloneCancelledError(),
+    normalizeRemote: (url) => normalizeRemoteUrl(url),
+    sameRemote: (left, right) => remoteUrlsMatch(left, right),
+    redactCredentials: (url) => redactRemoteUrlCredentials(url),
+  },
+  files: {
+    readManifestMembers: async (repoPath) => {
+      const manifest = await readCanopyJson(repoPath);
+      return hasManifestRepos(manifest) ? (manifest.repos ?? []) : undefined;
+    },
+    managedReposDirectory: () => getDefaultReposDir(),
+    uniqueDestination: (directory, preferredName) =>
+      ensureUniqueDestination(directory, preferredName),
+    createDestination: async (parentDirectory, destination) => {
+      await mkdir(parentDirectory, { recursive: true });
+      await mkdir(destination);
+    },
+    ensureSingleRepoManifest: (repoPath) =>
+      ensureSingleRepoCanopyJson(repoPath),
+  },
+};
 
 function isVisibleWorkspaceItem(item: SidebarItem): boolean {
   return !isRetiredTemporaryWorkspace(item);
@@ -519,19 +513,18 @@ async function createAdmittedTemporaryWorkspace(
   });
 }
 
-/** Applies the addition through the record decision port (W6a1). */
+/** Applies the addition core builds through the record decision port (W6a1). */
 async function stageAddedWorkspace(
   persisted: SidebarItem,
   previousItems: SidebarItem[],
   preserveWorkspaceIds: string[],
   scoped: boolean,
 ): Promise<SidebarItem> {
-  const written = await applyWorkspaceAdditionDecision({
-    kind: 'workspace.add',
+  const written = await stageWorkspaceAddition(createPorts.decisions, {
     item: persisted,
-    scope: scoped
-      ? { kind: 'workspace' }
-      : { kind: 'sidebar', previousItems, preserveWorkspaceIds },
+    previousItems,
+    preserveWorkspaceIds,
+    scoped,
   });
   const added = written.items.find((item) => item.id === persisted.id);
   if (!added) throw new WorkspaceConfigUnreadableError();
@@ -565,95 +558,29 @@ async function persistAddedWorkspace(
   });
 }
 
-/**
- * Prepare against the live index under workspace serialization (CAN-3806),
- * then enter the W5 write scope only to publish the new records. Provisioning
- * never holds the writer gate; publication keeps unrelated observer edits.
- */
-async function commitNewWorkspace<T extends SidebarItem>(
-  prepare: (items: SidebarItem[]) => Promise<T>,
-  local?: {
-    effects?: (item: T) => Promise<void>;
-    ownedPaths?: (item: T) => string[];
-    expectedWorkspaceRecords?: WorkspaceCreationReservationOptions['expectedWorkspaceRecords'];
-  },
-): Promise<T> {
-  return serializeWorkspaceMutation(async () => {
-    const sidebarItems = await readAllSidebarItems();
-    const { items } = sidebarItems;
-    const item = await prepare(items);
-    const persisted: T = { ...item, order: items.length };
-    const publish = async (): Promise<T> => {
-      await local?.effects?.(persisted);
-      return stageNewWorkspaceCreation(persisted);
-    };
-    return local
-      ? withLocalWorkspaceCreation(
-          item.id,
-          [getWorkspaceDir(item.id), ...(local.ownedPaths?.(item) ?? [])],
-          publish,
-          { expectedWorkspaceRecords: local.expectedWorkspaceRecords },
-        )
-      : publish();
-  });
-}
-
-/**
- * Publishes the addition in its creation boundary step, through the record
- * decision port (W6a1); observer edits during provisioning survive.
- */
-async function stageNewWorkspaceCreation<T extends SidebarItem>(
-  persisted: T,
-): Promise<T> {
-  const decision: WorkspaceCreationDecision = {
-    kind: 'workspace.create.publish',
-    item: persisted,
-  };
-  return commitWorkspaceCreation(async () => {
-    await applyWorkspaceCreationDecision(
-      decision,
-      markWorkspaceCreationEffectsStarted,
-    );
-    return persisted;
-  }, workspaceCreationIds(decision));
-}
-
 async function resolveExistingWorkspaceBindings(
   items: SidebarItem[],
-): Promise<ExistingWorkspaceBinding[]> {
-  const candidates = items.flatMap((item) => {
-    if (item.type === 'single-repo') {
-      return [{ workspaceName: item.name, repoPath: item.repoPath }];
-    }
-
-    if (item.type === 'cowork' || !item.sourceRepoPath) {
-      return [];
-    }
-
-    return [{ workspaceName: item.name, repoPath: item.sourceRepoPath }];
+): Promise<WorkspaceRootRemote[]> {
+  const repoPaths = items.flatMap((item) => {
+    if (item.type === 'single-repo') return [item.repoPath];
+    if (item.type === 'cowork' || !item.sourceRepoPath) return [];
+    return [item.sourceRepoPath];
   });
 
   return settleAll(
-    candidates.map(async (candidate) => ({
-      workspaceName: candidate.workspaceName,
-      repoPath: candidate.repoPath,
-      remoteUrl: await getRemoteUrl(candidate.repoPath),
+    repoPaths.map(async (repoPath) => ({
+      repoPath,
+      remoteUrl: await getRemoteUrl(repoPath),
     })),
   );
 }
 
 async function resolveExistingRepoBindings(
   items: SidebarItem[],
-): Promise<ExistingRepoBinding[]> {
+): Promise<TrackedRepositoryRemote[]> {
   const candidates = items.flatMap((item) => {
     if (item.type === 'single-repo') {
-      return [
-        {
-          repoId: item.id,
-          repoName: item.name,
-          repoPath: item.repoPath,
-        },
-      ];
+      return [{ repoName: item.name, repoPath: item.repoPath }];
     }
 
     if (item.type === 'cowork') {
@@ -661,7 +588,6 @@ async function resolveExistingRepoBindings(
     }
 
     return item.repos.map((repo) => ({
-      repoId: repo.id,
       repoName: repo.name,
       repoPath: repo.repoPath,
     }));
@@ -669,102 +595,11 @@ async function resolveExistingRepoBindings(
 
   return settleAll(
     candidates.map(async (candidate) => ({
-      repoId: candidate.repoId,
       repoName: candidate.repoName,
       repoPath: candidate.repoPath,
       remoteUrl: await getRemoteUrl(candidate.repoPath),
     })),
   );
-}
-
-function workspaceAlreadyExistsForRepo(
-  workspaceBindings: ExistingWorkspaceBinding[],
-  repoPath: string,
-  remoteUrl: string | null,
-): boolean {
-  return workspaceBindings.some(
-    (binding) =>
-      binding.repoPath === repoPath ||
-      (remoteUrl !== null &&
-        binding.remoteUrl !== null &&
-        remoteUrlsMatch(binding.remoteUrl, remoteUrl)),
-  );
-}
-
-async function persistImportedWorkspaceArtifacts(
-  artifacts: ImportedWorkspaceArtifacts,
-): Promise<MultiRepoSidebarItem> {
-  return serializeWorkspaceMutation(async () => {
-    const sidebarItems = await readAllSidebarItems();
-    const { items } = sidebarItems;
-    const duplicateWorkspace = items.find(
-      (item): item is MultiRepoSidebarItem =>
-        item.type === 'multi-repo' &&
-        item.sourceRepoPath === artifacts.workspace.sourceRepoPath,
-    );
-    if (duplicateWorkspace) {
-      refuseWorkspaceCreation(
-        'already-tracked',
-        `This source repo is already attached to project "${duplicateWorkspace.name}"`,
-      );
-    }
-
-    const workspace: MultiRepoSidebarItem = {
-      ...artifacts.workspace,
-      id: artifacts.workspace.id,
-      color: getNextSidebarColor(items.length),
-      order: items.length,
-    };
-    const childWorkspaces: SingleRepoSidebarItem[] = [];
-    const workspaceBindings = await resolveExistingWorkspaceBindings(items);
-
-    for (const preparedChild of artifacts.childWorkspaces) {
-      const manifestUrl =
-        artifacts.workspace.repos.find(
-          (repo) => repo.repoPath === preparedChild.repoPath,
-        )?.manifestUrl ?? null;
-      if (
-        workspaceAlreadyExistsForRepo(
-          workspaceBindings,
-          preparedChild.repoPath,
-          manifestUrl,
-        )
-      ) {
-        continue;
-      }
-
-      const additions = [workspace, ...childWorkspaces];
-      const child: SingleRepoSidebarItem = {
-        ...preparedChild,
-        id: await buildAvailableWorkspaceId(
-          preparedChild.name,
-          items.concat(additions),
-        ),
-        color: getNextSidebarColor(items.length + additions.length),
-        order: items.length + additions.length,
-      };
-      childWorkspaces.push(child);
-      workspaceBindings.push({
-        workspaceName: child.name,
-        repoPath: child.repoPath,
-        remoteUrl: manifestUrl,
-      });
-    }
-
-    // Published through the record decision port (W6a1).
-    const decision: WorkspaceCreationDecision = {
-      kind: 'workspace.import.publish',
-      workspace,
-      childWorkspaces,
-    };
-    return commitWorkspaceCreation(async () => {
-      await applyWorkspaceCreationDecision(
-        decision,
-        markWorkspaceCreationEffectsStarted,
-      );
-      return workspace;
-    }, workspaceCreationIds(decision));
-  });
 }
 
 export async function ensureSingleRepoCanopyJson(
@@ -782,182 +617,6 @@ export async function ensureSingleRepoCanopyJson(
       'Single-repo projects must not contain a "repos" field in canopy.json',
     );
   }
-}
-
-async function importMultiRepoWorkspaceFromRepo<T>(
-  repoPath: string,
-  publish: (artifacts: ImportedWorkspaceArtifacts) => Promise<T>,
-  reservedWorkspaceId?: string,
-): Promise<T> {
-  const admission = await serializeWorkspaceMutation(async () => {
-    const manifest = await readCanopyJson(repoPath);
-    if (!hasManifestRepos(manifest)) {
-      refuseWorkspaceCreation(
-        'not-a-manifest',
-        'Selected repo does not contain a multi-repo canopy.json',
-      );
-    }
-    const { items } = await readAllSidebarItems();
-    const duplicate = items.find(
-      (item) => item.type === 'multi-repo' && item.sourceRepoPath === repoPath,
-    );
-    if (duplicate) {
-      refuseWorkspaceCreation(
-        'already-tracked',
-        `This source repo is already attached to project "${duplicate.name}"`,
-      );
-    }
-    const workspaceName = basename(repoPath);
-    const workspaceId =
-      reservedWorkspaceId ??
-      (await buildAvailableWorkspaceId(workspaceName, items));
-    const reservation = reservedWorkspaceId
-      ? undefined
-      : await reserveWorkspaceCreation(workspaceId, [
-          getWorkspaceDir(workspaceId),
-        ]);
-    if (reservation)
-      await reservation.prepare(() =>
-        recordWorkspaceCreationRepository({
-          id: 'source',
-          role: 'source',
-          owned: false,
-          action: 'import',
-          status: 'completed',
-        }),
-      );
-    return { manifest, workspaceId, workspaceName, reservation };
-  });
-  const manifestRepos = admission.manifest.repos ?? [];
-  const provision = async (): Promise<T> => {
-    const localRepos: WorkspaceConfigFile['repos'] = [];
-    const clonedRepoIds: string[] = [];
-    // A URL listed twice still clones twice (`<name>`, `<name>-2`): members
-    // sharing a checkout can't create a multi-repo worktree. Revisit with
-    // shared-repoPath worktree support (CAN-7974).
-    for (const manifestRepo of manifestRepos) {
-      const step = await serializeWorkspaceMutation(async () => {
-        // A prior member clone may have overlapped an install or an org/cloud
-        // materialization, which take no member lock.
-        const { items } = await readAllSidebarItems();
-        const bindings = await resolveExistingRepoBindings(items);
-        const existing = bindings.find(
-          (binding) =>
-            binding.remoteUrl !== null &&
-            remoteUrlsMatch(binding.remoteUrl, manifestRepo.url),
-        );
-        if (existing) {
-          await recordWorkspaceCreationRepository({
-            id: manifestRepo.id,
-            role: 'member',
-            owned: false,
-            action: 'import',
-            status: 'completed',
-          });
-          const repository: WorkspaceConfigFile['repos'][number] = {
-            id: manifestRepo.id,
-            name: existing.repoName,
-            repoPath: existing.repoPath,
-            source: 'manifest',
-            manifestUrl: manifestRepo.url,
-          };
-          return { repository, cloned: false };
-        }
-        const destinationPath = await ensureUniqueDestination(
-          getDefaultReposDir(),
-          manifestRepo.name,
-        );
-        await recordWorkspaceCreationRepository({
-          id: manifestRepo.id,
-          role: 'member',
-          owned: true,
-          path: destinationPath,
-          action: 'clone',
-          status: 'started',
-        });
-        markWorkspaceCreationEffectsStarted();
-        await mkdir(dirname(destinationPath), { recursive: true });
-        await mkdir(destinationPath);
-        const repository: WorkspaceConfigFile['repos'][number] = {
-          id: manifestRepo.id,
-          name: manifestRepo.name,
-          repoPath: destinationPath,
-          source: 'manifest',
-          manifestUrl: manifestRepo.url,
-        };
-        return { repository, cloned: true };
-      });
-      if (step.cloned) {
-        await cloneRepositoryThroughWorker({
-          kind: 'clone',
-          url: manifestRepo.url,
-          destination: step.repository.repoPath,
-          signal: untrackedClonesStop.signal,
-        });
-        await serializeWorkspaceMutation(() =>
-          recordWorkspaceCreationRepository({
-            id: manifestRepo.id,
-            role: 'member',
-            owned: true,
-            path: step.repository.repoPath,
-            action: 'clone',
-            status: 'completed',
-          }),
-        );
-        clonedRepoIds.push(manifestRepo.id);
-      }
-      localRepos.push(step.repository);
-    }
-    return serializeWorkspaceMutation(async () => {
-      const { items } = await readAllSidebarItems();
-      const workspace = buildMultiRepoSidebarItem(
-        admission.workspaceId,
-        admission.workspaceName,
-        localRepos,
-        items.length,
-        repoPath,
-        undefined,
-      );
-      const workspaceBindings = await resolveExistingWorkspaceBindings(items);
-      const childWorkspaces: SingleRepoSidebarItem[] = [];
-      for (const repo of localRepos) {
-        if (
-          !repo.manifestUrl ||
-          workspaceAlreadyExistsForRepo(
-            workspaceBindings,
-            repo.repoPath,
-            repo.manifestUrl,
-          )
-        )
-          continue;
-        const child = buildSingleRepoSidebarItem(
-          buildWorkspaceId(repo.name, [
-            ...items,
-            workspace,
-            ...childWorkspaces,
-          ]),
-          repo.name,
-          repo.repoPath,
-          items.length + 1 + childWorkspaces.length,
-        );
-        childWorkspaces.push(child);
-        workspaceBindings.push({
-          workspaceName: child.name,
-          repoPath: child.repoPath,
-          remoteUrl: repo.manifestUrl,
-        });
-      }
-      return publish({ workspace, childWorkspaces, clonedRepoIds });
-    });
-  };
-  const provisionLocked = (): Promise<T> =>
-    withManifestMemberLocks(
-      manifestRepos.map((repo) => repo.url),
-      provision,
-    );
-  return admission.reservation
-    ? admission.reservation.run(provisionLocked)
-    : provisionLocked();
 }
 
 export async function listWorkspaceItems(options?: {
@@ -1165,24 +824,22 @@ async function importAdmittedWorkspaceFromRepoPath(
 
   const manifest = await readCanopyJson(repoPath);
   if (hasManifestRepos(manifest)) {
-    return importMultiRepoWorkspaceFromRepo(
-      repoPath,
-      persistImportedWorkspaceArtifacts,
-    );
+    return (await importManifestWorkspace(createPorts, repoPath)).workspace;
   }
 
   return commitNewWorkspace(
+    createPorts,
     async (items) => {
       assertRepositoryNotTracked(items, repoPath);
       // Only once the import is admitted (F7): a rejected import leaves the
       // user's repository untouched.
       const name = basename(repoPath);
-      return buildSingleRepoSidebarItem(
-        await buildAvailableWorkspaceId(name, items),
+      return createPorts.plan.singleRepoItem({
+        id: await buildAvailableWorkspaceId(name, items),
         name,
         repoPath,
-        items.length,
-      );
+        order: items.length,
+      });
     },
     { effects: () => ensureSingleRepoCanopyJson(repoPath) },
   );
@@ -1192,13 +849,7 @@ function assertRepositoryNotTracked(
   items: readonly SidebarItem[],
   repoPath: string,
 ): void {
-  const duplicate = findTrackedWorkspaceForRepoPath(items, repoPath);
-  if (duplicate) {
-    refuseWorkspaceCreation(
-      'already-tracked',
-      `This repository is already tracked as project "${duplicate.name}"`,
-    );
-  }
+  refuseTrackedRepository(createPorts.plan, items, repoPath);
 }
 
 /**
@@ -1229,124 +880,12 @@ export function addWorkspaceFromRemote(
   );
 }
 
-async function addAdmittedWorkspaceFromRemote(
+function addAdmittedWorkspaceFromRemote(
   remoteUrl: string,
   destinationDir: string,
   progress?: AddWorkspaceFromRemoteProgress,
 ): Promise<SidebarItem> {
-  const normalizedRemoteUrl = normalizeRepositoryCloneUrl(remoteUrl);
-  if (!normalizedRemoteUrl) {
-    refuseWorkspaceCreation('invalid-remote', 'Remote URL is required');
-  }
-
-  const normalizedDestinationDir = destinationDir.trim();
-  if (!normalizedDestinationDir || !isAbsolute(normalizedDestinationDir)) {
-    refuseWorkspaceCreation(
-      'invalid-path',
-      'Destination directory must be an absolute path',
-    );
-  }
-
-  const preferredName = progress
-    ? inferCloneRepoName(normalizedRemoteUrl)
-    : inferRepoNameFromRemote(normalizedRemoteUrl);
-  if (!preferredName) {
-    refuseWorkspaceCreation(
-      'invalid-remote',
-      'Unable to determine repository name from URL',
-    );
-  }
-
-  // Check before joining the queue, and cancel a waiting admission immediately.
-  if (progress?.signal.aborted) throw new CloneCancelledError();
-  const admission = await serializeWorkspaceMutation(
-    async () => {
-      const { items } = await readAllSidebarItems();
-      const workspaceId = await buildAvailableWorkspaceId(preferredName, items);
-      const destinationPath = await ensureUniqueDestination(
-        normalizedDestinationDir,
-        preferredName,
-      );
-      const reservation = await reserveWorkspaceCreation(
-        workspaceId,
-        [getWorkspaceDir(workspaceId), destinationPath],
-        { releaseBeforeEffects: true },
-      );
-      await reservation.prepare(async () => {
-        if (progress?.signal.aborted) throw new CloneCancelledError();
-        await recordWorkspaceCreationRepository({
-          id: 'source',
-          role: 'source',
-          owned: true,
-          path: destinationPath,
-          action: 'clone',
-          status: 'started',
-        });
-        await mkdir(normalizedDestinationDir, { recursive: true });
-        await mkdir(destinationPath);
-        markWorkspaceCreationEffectsStarted();
-        progress?.onDestination(destinationPath, reservation.releaseRemoved);
-      });
-      return { workspaceId, destinationPath, reservation };
-    },
-    progress
-      ? {
-          signal: progress.signal,
-          error: (): Error => new CloneCancelledError(),
-        }
-      : undefined,
-  );
-  return admission.reservation.run(async () => {
-    const { destinationPath, workspaceId } = admission;
-    if (progress) {
-      await cloneRepositoryThroughWorker({
-        kind: 'live-progress',
-        url: normalizedRemoteUrl,
-        destination: destinationPath,
-        signal: progress.signal,
-        onProgress: progress.onProgress,
-      });
-      if (progress.signal.aborted) throw new CloneCancelledError();
-      progress.onCloned();
-    } else {
-      await cloneRepositoryThroughWorker({
-        kind: 'clone',
-        url: normalizedRemoteUrl,
-        destination: destinationPath,
-        signal: untrackedClonesStop.signal,
-      });
-    }
-    await serializeWorkspaceMutation(() =>
-      recordWorkspaceCreationRepository({
-        id: 'source',
-        role: 'source',
-        owned: true,
-        path: destinationPath,
-        action: 'clone',
-        status: 'completed',
-      }),
-    );
-    const manifest = await readCanopyJson(destinationPath);
-    if (hasManifestRepos(manifest))
-      return importMultiRepoWorkspaceFromRepo(
-        destinationPath,
-        persistImportedWorkspaceArtifacts,
-        workspaceId,
-      );
-    await ensureSingleRepoCanopyJson(destinationPath);
-    return serializeWorkspaceMutation(async () => {
-      const { items } = await readAllSidebarItems();
-      assertRepositoryNotTracked(items, destinationPath);
-      return stageNewWorkspaceCreation(
-        buildSingleRepoSidebarItem(
-          workspaceId,
-          basename(destinationPath),
-          destinationPath,
-          items.length,
-        ),
-      );
-    });
-  });
+  return cloneRemoteWorkspace(createPorts, remoteUrl, destinationDir, progress);
 }
 
 /**
@@ -1391,17 +930,21 @@ async function registerAdmittedSingleRepoWorkspace(
         'This folder is no longer a git repository',
       );
     }
-    return commitNewWorkspace(async (items) => {
-      assertRepositoryNotTracked(items, repoPath);
-      await assertFolderIsImportable(await resolveRealPath(repoPath), items);
-      const name = preferredName?.trim() || basename(repoPath);
-      return buildSingleRepoSidebarItem(
-        await buildAvailableWorkspaceId(name, items),
-        name,
-        repoPath,
-        items.length,
-      );
-    }, {});
+    return commitNewWorkspace(
+      createPorts,
+      async (items) => {
+        assertRepositoryNotTracked(items, repoPath);
+        await assertFolderIsImportable(await resolveRealPath(repoPath), items);
+        const name = preferredName?.trim() || basename(repoPath);
+        return createPorts.plan.singleRepoItem({
+          id: await buildAvailableWorkspaceId(name, items),
+          name,
+          repoPath,
+          order: items.length,
+        });
+      },
+      {},
+    );
   });
 }
 
@@ -1549,12 +1092,12 @@ export async function findOrCreateSingleRepoWorkspaceForRepo(
           existingOwner.bindingGeneration <= owner.bindingGeneration;
         if (!orphanOfThisSetup) throw new WorkspaceIdentityInUseError();
       }
-      const workspace = buildSingleRepoSidebarItem(
-        workspaceId,
+      const workspace = createPorts.plan.singleRepoItem({
+        id: workspaceId,
         name,
         repoPath,
-        items.length,
-      );
+        order: items.length,
+      });
       if (owner) workspace.owner = owner;
       const persisted = await persistAddedWorkspace(workspace, options?.commit);
       if (persisted.type !== 'single-repo') {
@@ -1635,16 +1178,17 @@ async function createAdmittedSingleRepoWorkspace(
   if (!normalizedName)
     refuseWorkspaceCreation('name-required', 'Project name is required');
   return commitNewWorkspace(
+    createPorts,
     async (items) =>
-      buildSingleRepoSidebarItem(
-        await buildAvailableWorkspaceId(normalizedName, items),
-        normalizedName,
-        await ensureUniqueDestination(
+      createPorts.plan.singleRepoItem({
+        id: await buildAvailableWorkspaceId(normalizedName, items),
+        name: normalizedName,
+        repoPath: await ensureUniqueDestination(
           getDefaultReposDir(),
           safeWorkspaceIdBase(normalizedName),
         ),
-        items.length,
-      ),
+        order: items.length,
+      }),
     {
       ownedPaths: (item) =>
         item.type === 'single-repo' ? [item.repoPath] : [],
@@ -1748,19 +1292,20 @@ async function createAndPersistAdmittedMultiRepoWorkspace(
     refuseWorkspaceCreation('name-required', 'Project name is required');
   }
   return commitNewWorkspace(
+    createPorts,
     async (items) => {
       const id = await buildAvailableWorkspaceId(normalizedName, items);
       const sourceRepoPath = await ensureUniqueDestination(
         getDefaultReposDir(),
         sanitizeWorkspaceSourceRepoName(normalizedName),
       );
-      return buildMultiRepoSidebarItem(
+      return createPorts.plan.multiRepoItem({
         id,
-        normalizedName,
-        [],
-        items.length,
+        name: normalizedName,
+        repos: [],
         sourceRepoPath,
-      );
+        order: items.length,
+      });
     },
     {
       ownedPaths: (item) => (item.sourceRepoPath ? [item.sourceRepoPath] : []),
@@ -1819,10 +1364,7 @@ async function importAdmittedWorkspaceManifest(
     );
   }
 
-  return importMultiRepoWorkspaceFromRepo(repoPath, async (artifacts) => ({
-    workspace: await persistImportedWorkspaceArtifacts(artifacts),
-    clonedRepoIds: artifacts.clonedRepoIds,
-  }));
+  return importManifestWorkspace(createPorts, repoPath);
 }
 
 export function toWorkspaceCliRecord(item: SidebarItem): WorkspaceCliRecord {
@@ -2024,15 +1566,16 @@ export async function registerBoundMultiRepoWorkspace(
           throw new WorkspaceIdentityInUseError();
       }
       return commitNewWorkspace(
+        createPorts,
         (live): Promise<MultiRepoSidebarItem> =>
           Promise.resolve({
-            ...buildMultiRepoSidebarItem(
-              input.localWorkspaceId,
-              input.name,
+            ...createPorts.plan.multiRepoItem({
+              id: input.localWorkspaceId,
+              name: input.name,
               repos,
-              live.length,
-              input.path,
-            ),
+              sourceRepoPath: input.path,
+              order: live.length,
+            }),
             owner,
           }),
         {
@@ -2115,15 +1658,16 @@ export async function registerCloudProjectMultiRepoWorkspace(input: {
           throw new WorkspaceIdentityInUseError();
       }
       return commitNewWorkspace(
+        createPorts,
         (live): Promise<MultiRepoSidebarItem> =>
           Promise.resolve({
-            ...buildMultiRepoSidebarItem(
-              input.localWorkspaceId,
-              input.name,
-              input.repositories,
-              live.length,
-              input.path,
-            ),
+            ...createPorts.plan.multiRepoItem({
+              id: input.localWorkspaceId,
+              name: input.name,
+              repos: input.repositories,
+              sourceRepoPath: input.path,
+              order: live.length,
+            }),
             ...(input.suppressedRepoIds.length > 0
               ? { suppressedRepoIds: input.suppressedRepoIds }
               : {}),

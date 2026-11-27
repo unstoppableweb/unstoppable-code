@@ -3,7 +3,13 @@ import type {
   ScriptExecutionWorker,
   WorkerScriptHandlers,
 } from '@canopy/core-runtime/node/script/execution';
-import { createWorkerScriptHandlers } from '@canopy/core-runtime/node/script/execution';
+import { randomUUID } from 'node:crypto';
+import { KeyedOutcomes } from '@canopy/core-runtime/node/operations';
+import {
+  createWorkerScriptHandlers,
+  idempotencyKeyReusedError,
+} from '@canopy/core-runtime/node/script/execution';
+import type { WorkerScriptExecutionClearResult } from '@canopy/protocol/canopy-core';
 import { recordDaemonRoute } from './daemon-route-telemetry';
 import {
   currentDaemonScriptRoute,
@@ -35,6 +41,13 @@ export function createWorkerScriptAdapter(
   const loadWorker = (): Promise<ScriptExecutionWorker> => (worker ??= load());
   const handlers = (): Promise<WorkerScriptHandlers> =>
     (loading ??= loadWorker().then(createWorkerScriptHandlers));
+  // One replay for a clear on either route: the daemon and this process keep
+  // separate outcomes, so a retry after the route changes would miss its own.
+  // A rejection is not kept, so a retry sends the same key again.
+  const clears = new KeyedOutcomes<WorkerScriptExecutionClearResult>({
+    reusedError: idempotencyKeyReusedError,
+    forget: (): boolean => true,
+  });
   return {
     queries: {
       // The daemon reads the same run logs, never signalling a run's process
@@ -121,13 +134,24 @@ export function createWorkerScriptAdapter(
           params,
           context,
         ),
-      // Electron main and the daemon keep the same run logs (CAN-5087), so a
-      // clear needs no route (CAN-6482).
-      'worker.script.execution.clear': async (params, context) =>
-        (await handlers()).instructions['worker.script.execution.clear'](
-          params,
-          context,
-        ),
+      // Electron main and the daemon change the same run logs under one lock
+      // (CAN-5087, CAN-5839), so the daemon clears on a selected host (CAN-7663).
+      'worker.script.execution.clear': (params, context) =>
+        clears.run(context, params, async () => {
+          const writes = await import('../lib/daemon-script-write-route');
+          return writes.clearScriptRunInDaemon(
+            params,
+            writes.forwardedClearKey(
+              context.caller.principalId,
+              context.metadata.idempotencyKey ?? randomUUID(),
+            ),
+            async () =>
+              (await handlers()).instructions['worker.script.execution.clear'](
+                params,
+                context,
+              ),
+          );
+        }),
       'worker.script.execution.stop': async (params, context) =>
         (await handlers()).instructions['worker.script.execution.stop'](
           params,

@@ -225,6 +225,23 @@ shares with the W5 commit log. `backupOperationLedger` issues verified,
 restore-tested `namespace_backup` records and `restoreOperationLedgerBackup`
 is their rollback. Electron main's core operation adapter is its only owner.
 
+Where the daemon owns the ledger, its first open copies it before writing
+(`createDaemonOperationService`): a verified copy under
+`<data>/backups/operation-ledger/`, then an owner record naming the daemon
+that cites it. One exclusive connection holds the ledger from the copy through
+the owner record and the schema upgrade, so the copy keeps the schema it had
+on disk; the backup record names the row's schema, and a restore upgrades an
+older copy before it replaces the ledger. Any other owner record refuses the
+open without touching the file. It keeps the three newest copies, and the
+cited one. To roll
+back, stop the daemon and run `returnOperationLedger` with the copy's record
+and `owner: 'legacy'`: it restores the copy and records the app as the owner
+again. It refuses over a ledger written since the copy unless a person
+confirms the loss (`acceptNewerLoss: 'person-confirmed'`). The daemon then
+refuses to open the ledger. To give the ledger back to the daemon, stop the
+app and the daemon and run `reclaimDaemonOperationLedger`; it takes a fresh
+copy, and the next daemon open admits calls.
+
 `LocalWorkerExecution` (CAN-4132) records work on the builtin local worker
 (`in_process_worker`): each worker instruction it dispatches becomes a child
 operation of its parent, committed with a dispatch record (resolved target,

@@ -1,10 +1,7 @@
 'use client';
 
 import type { JSX } from 'react';
-import {
-  DropdownMenuControl,
-  DropdownMenuItem,
-} from '../primitives/DropdownMenu';
+import { MenuControl, MenuItem } from '../primitives/MenuItem';
 function IllustrationDivider({
   className,
   width,
@@ -161,7 +158,7 @@ export function WorkspaceLayoutPicker({
         <p className="label text-xs">Chat width</p>
         <div className="layouts" role="group" aria-label="Chat width">
           {(['default', 'full'] as const).map((value) => (
-            <DropdownMenuControl
+            <MenuControl
               key={value}
               type="button"
               choice={{ type: 'radio', checked: chatWidth === value }}
@@ -174,7 +171,7 @@ export function WorkspaceLayoutPicker({
               <span className="caption">
                 {value === 'default' ? 'Default' : 'Full width'}
               </span>
-            </DropdownMenuControl>
+            </MenuControl>
           ))}
         </div>
       </div>
@@ -187,7 +184,7 @@ export function WorkspaceLayoutPicker({
           data-testid="workspace-layout-mode-toggle"
         >
           {(['minimal', 'advanced'] as const).map((value) => (
-            <DropdownMenuControl
+            <MenuControl
               key={value}
               type="button"
               choice={{ type: 'radio', checked: mode === value }}
@@ -200,19 +197,19 @@ export function WorkspaceLayoutPicker({
               <span className="caption">
                 {value === 'minimal' ? 'Minimal' : 'Advanced'}
               </span>
-            </DropdownMenuControl>
+            </MenuControl>
           ))}
         </div>
       </div>
       {mode === 'advanced' && (
         <>
           <hr className="divider" />
-          <DropdownMenuItem
+          <MenuItem
             data-testid="save-layout-default-item"
             onClick={onSaveDefault}
           >
             Save current layout as default
-          </DropdownMenuItem>
+          </MenuItem>
         </>
       )}
     </div>

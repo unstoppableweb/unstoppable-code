@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import type {
   RemoteControlAskUserQuestion,
   RemoteControlAskUserQuestionAnswer,
@@ -33,9 +34,24 @@ export interface ComposerQuestionPrompt {
   readonly busy: 'answer' | 'dismiss' | null;
   readonly errorKind: 'submit' | 'dismiss' | null;
   readonly disconnected: boolean;
+  readonly plainTextQuestion: boolean;
   readonly skip: () => void;
   /** Re-sends the last answers or skip after a delivery failure. */
   readonly retry: () => void;
+}
+
+/**
+ * Paired-computer pending questions render as literal text so peer-supplied
+ * Markdown cannot trigger local image loads or UNC/file:// links.
+ */
+export function isPlainTextQuestionPrompt(
+  projectId: string | undefined,
+  requestId: string | undefined,
+): boolean {
+  return (
+    (projectId !== undefined && isPairedComputerId(projectId)) ||
+    (requestId !== undefined && isPairedComputerId(requestId))
+  );
 }
 
 const NO_QUESTIONS: readonly RemoteControlAskUserQuestion[] = [];
@@ -85,6 +101,7 @@ export function useComposerQuestionPrompt(
   onDeliveryChange: (requestId: string, retained: boolean) => void,
   delivery: ComposerQuestionDelivery | undefined,
   liveRequestIds: ReadonlySet<string>,
+  projectId?: string,
 ): ComposerQuestionPrompt {
   const answerChatQuestion = useChatStore((s) => s.answerMcpQuestionAndWait);
   const dismissChatQuestion = useChatStore((s) => s.dismissMcpQuestionAndWait);
@@ -174,5 +191,17 @@ export function useComposerQuestionPrompt(
     deliver(activeFailure);
   }, [activeFailure, deliver, discard]);
 
-  return { prompt, busy, errorKind, disconnected, skip, retry };
+  const plainTextQuestion = isPlainTextQuestionPrompt(
+    projectId,
+    pending?.requestId,
+  );
+  return {
+    prompt,
+    busy,
+    errorKind,
+    disconnected,
+    plainTextQuestion,
+    skip,
+    retry,
+  };
 }

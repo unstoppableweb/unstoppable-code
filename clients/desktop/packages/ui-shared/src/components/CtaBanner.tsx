@@ -3,10 +3,7 @@
 import { type JSX, type ReactNode, useCallback, useRef, useState } from 'react';
 import { CloseMediumIcon } from '../icons/AppIcons';
 import { Button } from '../primitives/Button';
-import {
-  FloatingMenu,
-  type FloatingMenuPlacement,
-} from '../primitives/FloatingMenu';
+import { Menu, type MenuPlacement } from '../primitives/Menu';
 
 /** Which edge of the surrounding stack the hugged pill sits against. */
 export type CtaBannerAlign = 'start' | 'end';
@@ -31,7 +28,7 @@ export interface CtaBannerProps {
   /** Popover body. Rendered only while the popover is open. */
   children: ReactNode;
   popoverAriaLabel: string;
-  popoverPlacement?: FloatingMenuPlacement;
+  popoverPlacement?: MenuPlacement;
   onPopoverOpenChange?: (open: boolean) => void;
   'data-testid'?: string;
 }
@@ -53,9 +50,9 @@ export interface CtaBannerProps {
  *
  * Popover open state lives here (`useState`); callers only observe it through
  * `onPopoverOpenChange`. Interaction state inside ui-shared is established
- * precedent (`FloatingMenu`, `Sheet`).
+ * precedent (`Menu`, `Sheet`).
  *
- * `FloatingMenu` owns dismissal (Escape, outside click), the z-layer
+ * `Menu` owns dismissal (Escape, outside click), the z-layer
  * (`--layer-floating-menu`), and focus restore back to the action button. Do
  * not add a second Escape path. Collision flipping means the default
  * `top-center` placement resolves itself for top-corner notification
@@ -63,7 +60,7 @@ export interface CtaBannerProps {
  *
  * Dismissing drops focus to `<body>`, which is accepted: the pill is an
  * unsolicited interruption in a notification stack, not a navigation step, so
- * there is no "place" in the tab order to return the user to. `FloatingMenu`
+ * there is no "place" in the tab order to return the user to. `Menu`
  * still restores focus to the action button when only the popover closes.
  *
  * **The pill sizes to its copy** (`w-max`) instead of to its container. It
@@ -86,7 +83,7 @@ export interface CtaBannerProps {
  *
  * `interaction="manual"` alone would leave the popover pointer-only — it keeps
  * focus on the trigger and closes on any Tab — so this opts into `trapFocus`
- * (focus lands inside on open, Tab cycles within) and hands `FloatingMenu` the
+ * (focus lands inside on open, Tab cycles within) and hands `Menu` the
  * banner root as the outside-press boundary so the sibling dismiss X still
  * fires on the first click while the popover is open.
  */
@@ -156,7 +153,7 @@ export function CtaBanner({
       >
         <CloseMediumIcon size={16} aria-hidden="true" />
       </Button>
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={handleOpenChange}
         anchorRef={actionRef}
@@ -169,7 +166,7 @@ export function CtaBanner({
         data-testid={dataTestId ? `${dataTestId}-popover` : undefined}
       >
         {children}
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

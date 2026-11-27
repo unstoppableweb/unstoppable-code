@@ -15,6 +15,7 @@ import type {
 import type { ArchiveIoOperationRequest } from '../archive/archive-io-protocol';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { relocateExecutionStateArtifactPaths } from './execution-state-relocation';
+import { notifyDurablePausedPipelinesChanged } from './paused-pipeline-cache-signal';
 
 async function pathExists(target: string): Promise<boolean> {
   try {
@@ -198,6 +199,7 @@ export async function cleanupWorktreePipelines(
 
   let relocatedCount = 0;
   const failedRelocationIds: string[] = [];
+  const deletedStateIds: string[] = [];
   const artifactResults = await Promise.allSettled(
     cleanable.map(async (summary) => {
       if (options?.relocateArtifactsTo) {
@@ -262,7 +264,12 @@ export async function cleanupWorktreePipelines(
           throw new Error(`relocate:${summary.id}`);
         }
       }
-      await deleteExecutionArtifacts(summary.id, runtime.executionsDir);
+      await deleteExecutionState(summary.id, runtime.executionsDir);
+      deletedStateIds.push(summary.id);
+      await fs.rm(path.join(runtime.executionsDir, summary.id), {
+        recursive: true,
+        force: true,
+      });
     }),
   );
 
@@ -286,5 +293,8 @@ export async function cleanupWorktreePipelines(
     );
   });
 
+  if (deletedStateIds.length > 0) {
+    notifyDurablePausedPipelinesChanged(deletedStateIds);
+  }
   return { warnings, relocatedCount, failedRelocationIds };
 }

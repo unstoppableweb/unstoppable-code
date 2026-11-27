@@ -299,6 +299,7 @@ export function PanelContentRoot({
                       layout="fill"
                       message="Couldn't show this panel."
                       recoveryLabel="Reload panel"
+                      recoveringLabel="Reloading panel…"
                       testId="panel-error-fallback"
                       host={errorHost}
                       resetKey={

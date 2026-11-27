@@ -53,6 +53,7 @@ import {
   DEFAULT_CLAUDE_MODEL,
   DEFAULT_CODEX_MODEL,
   DEFAULT_CREDITS_CODEX_MODEL,
+  getGatewayModelEntries,
   resolveModelAlias,
   IPC_CHANNELS,
 } from '@canopy/desktop-shared/types';
@@ -97,6 +98,7 @@ import {
 } from '../lib/model-gateway-state';
 import { readModelGatewayDeviceOptOuts } from '../lib/model-gateway-device-use';
 import {
+  isModelBlockedByCurrentPolicy,
   readModelPolicyDecision,
   readOrgModelPolicyActivityForStoredAccount,
   isStoredModelPolicyReadDegraded,
@@ -449,6 +451,53 @@ export function buildClaudeProxyEnvForBaseUrl(
 }
 
 /**
+ * Claude Code's side requests (the haiku/sonnet/opus aliases, the small-fast
+ * model, subagents, WebFetch, compaction) name built-in model ids, which an
+ * organization or Personal gateway doesn't serve: they fail mid-turn. This
+ * applies to every gateway route, enforced organization gateways included,
+ * since they hit the same failure. Map each alias to the same gateway's
+ * model of that tier, falling back to the session's own model. Subagents are
+ * not pinned (unlike the guest route): an alias resolves through this
+ * mapping and an unnamed subagent inherits the session model, so a Haiku
+ * subagent stays on Haiku instead of running on the session's Opus. An agent
+ * whose frontmatter names a full built-in id is the one case left unmapped.
+ */
+function orgGatewayClaudeSideModelEnv(
+  entry: GatewayModelEntry,
+): Record<string, string> {
+  // Model policy applies to side requests too: a blocked sibling never
+  // stands in for a tier.
+  const siblings = getGatewayModelEntries().filter(
+    (candidate) =>
+      candidate.origin === 'org-gateway' &&
+      candidate.organizationId === entry.organizationId &&
+      candidate.recommendedHarness === 'claude' &&
+      !isModelBlockedByCurrentPolicy(candidate.modelId),
+  );
+  // The tier as a whole id segment (`anthropic/claude-haiku-5.5`), never a
+  // substring of another word, and its newest version: `claude-opus-5.5`
+  // before `claude-opus-4.7`.
+  const isTier = (gatewayId: string, name: string): boolean =>
+    new RegExp(`(^|[/._-])${name}([/._-]|$)`).test(gatewayId.toLowerCase());
+  const tier = (name: 'haiku' | 'sonnet' | 'opus'): string =>
+    isTier(entry.gatewayId, name)
+      ? entry.gatewayId
+      : (siblings
+          .map((candidate) => candidate.gatewayId)
+          .filter((gatewayId) => isTier(gatewayId, name))
+          .sort((left, right) =>
+            right.localeCompare(left, undefined, { numeric: true }),
+          )[0] ?? entry.gatewayId);
+  const haiku = tier('haiku');
+  return {
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: haiku,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: tier('sonnet'),
+    ANTHROPIC_DEFAULT_OPUS_MODEL: tier('opus'),
+    ANTHROPIC_SMALL_FAST_MODEL: haiku,
+  };
+}
+
+/**
  * Register a parent-owned Claude route for an organization gateway. The child
  * receives only the loopback broker token, while each HTTP request reloads the
  * current credential and binds any rejection to that credential generation.
@@ -492,12 +541,15 @@ export async function buildBrokeredOrgGatewayClaudeEnv(
         credentialVersion,
       ),
   });
-  return buildClaudeProxyEnvForBaseUrl(
-    entry,
-    LOOPBACK_BROKER_AUTH_TOKEN,
-    route.baseUrl,
-    attribution,
-  );
+  return {
+    ...buildClaudeProxyEnvForBaseUrl(
+      entry,
+      LOOPBACK_BROKER_AUTH_TOKEN,
+      route.baseUrl,
+      attribution,
+    ),
+    ...orgGatewayClaudeSideModelEnv(entry),
+  };
 }
 
 /**
@@ -1367,13 +1419,22 @@ export async function resolveOrgGatewayCredential(
   };
 }
 
-/** Record a gateway-issued auth rejection and refresh every mounted key banner. */
+/**
+ * Record a gateway-issued auth rejection and refresh every mounted key banner.
+ *
+ * Only a 401 means the key is bad. A gateway answers 403 for a plan, model or
+ * policy refusal with a key that still works (Vercel's free tier, a model the
+ * plan excludes), so recording it blocked every later send behind "Add your
+ * AI gateway key". The turn still fails with the gateway's own 403 message,
+ * as the daemon broker and the web proxy already treat it.
+ */
 export async function markOrgGatewayCredentialRejected(
   organizationId: string,
   status: 401 | 403,
   credentialVersion?: string,
   expectedAccountId?: string,
 ): Promise<void> {
+  if (status !== 401) return;
   try {
     const rejection: Parameters<typeof markModelGatewayCredentialRejected> = [
       organizationId,

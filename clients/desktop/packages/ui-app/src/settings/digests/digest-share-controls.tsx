@@ -7,8 +7,8 @@ import {
   Button,
   CloseButton,
   copyTextToClipboard,
-  FloatingMenu,
-  FLOATING_PICKER_GAP,
+  Menu,
+  PICKER_GAP,
   TextInput,
   CopyDetailsButton,
   ToggleSwitch,
@@ -97,7 +97,7 @@ const SHARE_CONFIRMATIONS: Record<
 /**
  * Ties the trigger's `aria-controls` to the popover surface. A literal rather
  * than `useId` because only one share popover exists per digest detail page,
- * and `FloatingMenu` honours a caller-supplied `id` (`idProp ?? generatedId`).
+ * and `Menu` honours a caller-supplied `id` (`idProp ?? generatedId`).
  */
 const SHARE_POPOVER_ID = 'digest-share-popover';
 
@@ -461,7 +461,7 @@ export function DigestShareControls({
         {isShared ? 'Shared' : 'Share'}
       </Button>
 
-      <FloatingMenu
+      <Menu
         id={SHARE_POPOVER_ID}
         open={open}
         // Escape and outside-press arrive here; both are ordinary dismissals.
@@ -471,7 +471,7 @@ export function DigestShareControls({
         }}
         anchorRef={triggerRef}
         placement="bottom-right"
-        gap={FLOATING_PICKER_GAP}
+        gap={PICKER_GAP}
         interaction="manual"
         trapFocus
         initialFocusRef={sharingEnabled ? copyRef : switchRef}
@@ -665,7 +665,7 @@ export function DigestShareControls({
             <CopyDetailsButton details={status.details} />
           ) : null}
         </div>
-      </FloatingMenu>
+      </Menu>
 
       {/*
         The live region lives HERE, on the always-mounted wrapper, not inside

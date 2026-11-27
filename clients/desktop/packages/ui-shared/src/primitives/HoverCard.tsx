@@ -25,7 +25,7 @@ import {
 import { isImeComposing, useTooltipEscape } from './tooltip-escape';
 import { useTooltipHandoff } from './tooltip-handoff';
 import { escapeStartedInBoundary } from './useOverlayEscape';
-import { computeFloatingMenuPosition } from './FloatingMenu';
+import { computeMenuPosition } from './Menu';
 
 const TOOLTIP_GAP = 6;
 /** First-hover delay for item previews, shared by worktrees, chats and files. */
@@ -179,7 +179,7 @@ interface HoverCardTriggeredProps {
   tone?: 'default' | 'inverse';
   /**
    * Surface corners and shadow. `tooltip` (default) is the tooltip's 8px
-   * corners and light shadow; `menu` is {@link DropdownMenuSurface}'s 12px
+   * corners and light shadow; `menu` is {@link MenuSurface}'s 12px
    * corners and menu shadow, for a card that previews an item the way its
    * menu would sit beside it.
    */
@@ -1173,7 +1173,7 @@ function belowStartPosition({
   return { top, left };
 }
 
-const FLOATING_MENU_SURFACE_SELECTOR = '.canopy-floating-menu';
+const MENU_SURFACE_SELECTOR = '.canopy-floating-menu';
 /** Between a menu's edge and a card beside it, as between a menu and its submenu. */
 const BESIDE_MENU_GAP = 8;
 /** Between a badge and the card under it: the menu gap. */
@@ -1214,10 +1214,10 @@ function besideMenuPosition(
   );
   const centeredTop = rowRect.top + rowRect.height / 2 - height / 2;
   const top = Math.min(Math.max(VIEWPORT_PADDING, centeredTop), maxTop);
-  const surface = row.closest(FLOATING_MENU_SURFACE_SELECTOR);
+  const surface = row.closest(MENU_SURFACE_SELECTOR);
   const surfaceRect = surface?.getBoundingClientRect() ?? rowRect;
   const otherMenus = Array.from(
-    row.ownerDocument.querySelectorAll(FLOATING_MENU_SURFACE_SELECTOR),
+    row.ownerDocument.querySelectorAll(MENU_SURFACE_SELECTOR),
   )
     .filter(
       (element) =>
@@ -1494,7 +1494,7 @@ function AnchoredHoverCard(props: HoverCardAnchoredProps): JSX.Element | null {
             ? 'top'
             : 'bottom';
       // The natural height, not the capped one, decides the side.
-      const placed = computeFloatingMenuPosition({
+      const placed = computeMenuPosition({
         anchorRect: rect,
         menuWidth: card.offsetWidth,
         menuHeight: card.scrollHeight,

@@ -71,6 +71,7 @@ const SOURCE_NAMES: Readonly<Record<ProviderSourceId, string>> = {
   cursor: 'Cursor',
   copilot: 'Copilot',
   gateway: 'AI gateway',
+  ollama: 'Ollama',
   credits: brandText.appName,
 };
 

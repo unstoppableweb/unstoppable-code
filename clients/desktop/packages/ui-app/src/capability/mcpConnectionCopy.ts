@@ -25,6 +25,7 @@ function serviceName(name: string): string {
 export function mcpConnectionStatusLabel(
   name: string,
   state: McpConnectionCopyState,
+  added?: boolean,
 ): string {
   const service = serviceName(name);
   switch (state) {
@@ -33,13 +34,21 @@ export function mcpConnectionStatusLabel(
     case 'account-reauth':
       return `${service} needs reconnecting`;
     case 'account-not-connected':
-      return `${service} isn't connected to your account`;
+      return added === undefined
+        ? `${service} isn't connected to your account`
+        : added
+          ? 'Sign in required'
+          : 'Not connected — add first';
     case 'device-connected-only':
       return `${service} is connected on this desktop only`;
     case 'device-connected':
       return `${service} is connected on this desktop`;
     case 'device-not-connected':
-      return `${service} isn't connected on this desktop`;
+      return added === undefined
+        ? `${service} isn't connected on this desktop`
+        : added
+          ? 'Sign in required'
+          : 'Not connected — add first';
   }
 }
 
@@ -100,10 +109,6 @@ export function mcpDesktopInstallNote(
 /** A connected server's card: one connection serves every harness. */
 export const MCP_SHARED_ACROSS_HARNESSES =
   'Shared across your supported harnesses.';
-
-/** Beside Connect or Add only (docs/ux-writing.md). */
-export const MCP_CONNECT_ONCE_FOR_HARNESSES =
-  'Connect once for all supported harnesses.';
 
 /** Add on an integration card also installs the plugin folded into it. */
 export function mcpFoldedPluginSkillsNote(pluginName: string): string {

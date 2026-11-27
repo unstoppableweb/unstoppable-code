@@ -120,6 +120,27 @@ export function hasPluginOAuthLikeMetadata(
     typeof rawValue.client_id === 'string'
   );
 }
+/** Every declaration field {@link resolvePluginHttpHeaders} reads a header from. */
+const PLUGIN_MCP_HEADER_FIELDS = [
+  'headers',
+  'http_headers',
+  'env_http_headers',
+  'bearer_token_env_var',
+] as const;
+
+/**
+ * Whether a declaration sets request headers of its own, from any field
+ * {@link resolvePluginHttpHeaders} reads, whether or not the environment
+ * variables it names are set right now.
+ */
+export function declaresPluginMcpHeaders(
+  rawValue: Record<string, unknown>,
+): boolean {
+  return PLUGIN_MCP_HEADER_FIELDS.some(
+    (field): boolean => rawValue[field] !== undefined,
+  );
+}
+
 export function resolvePluginHttpHeaders(rawValue: Record<string, unknown>): {
   headers: Record<string, string>;
   missingEnvVars: string[];

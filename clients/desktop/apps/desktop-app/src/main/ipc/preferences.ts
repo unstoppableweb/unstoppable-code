@@ -99,6 +99,18 @@ import {
   type PreferenceNativeEffects,
 } from '../lib/preference-native-effects';
 import {
+  applyImmediateHostEffects,
+  applySettledHostEffects,
+  commitChanged,
+  commitTouches,
+  committedPreferencesSequence,
+  registerPreferenceCommitHost,
+  type ForeignPreferenceCommitChange,
+  type PreferenceCommitChange,
+  type PreferenceCommitEffectInput,
+  type PreferenceCommitHost,
+} from '../lib/preference-commit-effects';
+import {
   getUsageDataPolicy,
   usageDataConsentStateOf,
 } from '../lib/usage-data-policy';
@@ -107,7 +119,7 @@ import { getMemoryDiagnosticsService } from '../memory-diagnostics';
 import { getBrowserService } from '../browser/browser-service-registry';
 import { registerIpcHandler } from './register';
 import { getRendererCodeCacheSchemeStatus } from '../renderer-origin/renderer-code-cache-scheme-status';
-import { syncGlobalFocusShortcutFromPreferences } from './global-focus-shortcut';
+import { correctRefusedFocusShortcut } from './global-focus-shortcut';
 import { broadcastPreferencesSynced } from '../lib/preferences-broadcast';
 import { applyUiZoomToAllWindows, uiScaleToZoomFactor } from '../lib/ui-zoom';
 import { updateSuggestionsPreferences } from '../lib/suggestions-preferences';
@@ -162,23 +174,23 @@ interface PendingManagedDelegationPolicyUpdate {
 }
 
 function beginManagedDelegationPolicyUpdate(
-  normalized: PreferencesData,
-  changedPreferences: Partial<PreferencesData>,
+  commit: PreferenceCommitEffectInput,
 ): PendingManagedDelegationPolicyUpdate | undefined {
-  if ('managedDelegationMaxDepth' in changedPreferences) {
+  const normalized = commit.next;
+  if (commitTouches(commit, ['managedDelegationMaxDepth'])) {
     updateManagedDelegationMaxDepth(normalized.managedDelegationMaxDepth);
   }
-  if ('managedDelegationMaxConcurrent' in changedPreferences) {
+  if (commitTouches(commit, ['managedDelegationMaxConcurrent'])) {
     updateManagedDelegationMaxConcurrent(
       normalized.managedDelegationMaxConcurrent,
     );
   }
-  if ('managedDelegationLifetimeLimit' in changedPreferences) {
+  if (commitTouches(commit, ['managedDelegationLifetimeLimit'])) {
     updateManagedDelegationLifetimeLimit(
       normalized.managedDelegationLifetimeLimit,
     );
   }
-  if (!('managedDelegationMode' in changedPreferences)) return undefined;
+  if (!commitTouches(commit, ['managedDelegationMode'])) return undefined;
   const mode = resolveManagedDelegationMode(normalized.managedDelegationMode);
   const generation = ++managedDelegationPolicyGeneration;
   markManagedDelegationSessionsForNextTurnRecreation(mode);
@@ -254,6 +266,207 @@ let registeredNativeEffects: PreferenceNativeEffects | null = null;
 // registerPreferenceHandlers use the Electron composition.
 function nativeEffects(): PreferenceNativeEffects {
   return registeredNativeEffects ?? electronPreferenceNativeEffects;
+}
+
+function commitHost(): PreferenceCommitHost {
+  return {
+    native: nativeEffects(),
+    correctFocusShortcut: correctRefusedFocusShortcut,
+    applyCommitOrdered: (commit) => {
+      applyCommittedPreferenceValues(commit.next);
+      resumeCrashReportsAfterOptIn(
+        commit.changedKeys.has('usageData') &&
+          !commit.previous.usageData.errorReports,
+        commit.next,
+      );
+    },
+    applyCommitEffects: applyForeignCommitEffects,
+  };
+}
+
+/**
+ * Resumes native crash reports once a commit opts in: an own save whose patch
+ * opts in, or a foreign commit that turned them on.
+ */
+function resumeCrashReportsAfterOptIn(
+  optedIn: boolean,
+  committed: Readonly<PreferencesData>,
+): void {
+  if (optedIn && committed.usageData.errorReports)
+    nativeCrashAnnotation.resumeAfterOptIn();
+}
+
+/** A foreign commit's effects after the write queue, in an own save's order. */
+async function applyForeignCommitEffects(
+  commit: ForeignPreferenceCommitChange,
+): Promise<void> {
+  const pendingManagedDelegationPolicyUpdate = beginCommitEffects(commit);
+  // As an own save: a mode change broadcasts once, with its final status.
+  if (pendingManagedDelegationPolicyUpdate) ++preferencesSaveGeneration;
+  else broadcastCommittedPreferences(commit.next);
+  try {
+    await applyCommitConnectionEffects(commit, changedValues(commit));
+  } catch (error) {
+    // The commit is durable: a provider failure must not skip its host
+    // effects below.
+    logMainProcessWarn(
+      '[preferences] Provider effects failed after a foreign preference commit',
+      error,
+    );
+  }
+  if (commitTouches(commit, ['codeGraph'])) {
+    const previousCodeGraph = getCodeGraphPreferencesSnapshot();
+    setCodeGraphPreferences(commit.next.codeGraph);
+    if (
+      commit.next.codeGraph !== undefined &&
+      !hasSameEffectiveCodeGraphPreference(
+        previousCodeGraph,
+        commit.next.codeGraph,
+      )
+    )
+      await reconcileCommittedCodeGraph();
+  }
+  try {
+    await applyCommitSideEffects(commit, pendingManagedDelegationPolicyUpdate);
+  } finally {
+    // The windows hear of a mode change even when a later effect failed;
+    // the effective mode and its revocation status travel together.
+    if (
+      pendingManagedDelegationPolicyUpdate?.generation ===
+      managedDelegationPolicyGeneration
+    )
+      broadcastPreferencesSynced(await latestPreferencesSaveResult());
+  }
+}
+
+/** A foreign commit's changed values: the patch an own save's effects read. */
+function changedValues(
+  commit: ForeignPreferenceCommitChange,
+): Partial<PreferencesData> {
+  const values: Partial<PreferencesData> = { ...commit.next };
+  for (const key of Object.keys(values)) {
+    if (!commit.changedKeys.has(key)) Reflect.deleteProperty(values, key);
+  }
+  return values;
+}
+
+const ACCOUNT_PROXY_PREFERENCE_KEYS = [
+  'accountProxyEnabled',
+  'accountProxyKeepChatOnOneAccount',
+  'accountProxyRouteClaude',
+  'accountProxyRouteCodex',
+  'accountProxyLocalStartWithApp',
+] as const;
+
+function sameJson(previous: unknown, next: unknown): boolean {
+  return JSON.stringify(previous) === JSON.stringify(next);
+}
+
+/**
+ * Right after the commit, before anything yields. Managed delegation changes
+ * the process-authoritative admission state synchronously, so no broadcast
+ * or later effect can leave old sessions launchable.
+ */
+function beginCommitEffects(
+  commit: PreferenceCommitChange,
+): PendingManagedDelegationPolicyUpdate | undefined {
+  const pendingManagedDelegationPolicyUpdate =
+    beginManagedDelegationPolicyUpdate(commit);
+  if (commitTouches(commit, ['managedDelegationLifetimeLimit']))
+    notifyManagedDelegationLifetimePreferencesChanged();
+  if (commitChanged(commit, 'personalWorkspaceCatalogSync')) {
+    trackDetachedWork(() =>
+      (async (): Promise<void> => {
+        try {
+          await personalCatalogPreferenceChanged();
+        } catch (error) {
+          logMainProcessWarn(
+            '[preferences] Personal catalog follow-up failed after preference commit',
+            error,
+          );
+        }
+      })(),
+    );
+  }
+  return pendingManagedDelegationPolicyUpdate;
+}
+
+/**
+ * The provider runtimes and catalogs a commit re-syncs, then its onboarding
+ * profile. `named` holds the keys the commit names, with their values.
+ */
+async function applyCommitConnectionEffects(
+  commit: PreferenceCommitChange,
+  named: Partial<PreferencesData>,
+): Promise<void> {
+  const { previous, next } = commit;
+  if (
+    commitChanged(commit, 'copilotEnabled') ||
+    commitChanged(commit, 'copilotAccount', sameJson)
+  ) {
+    const { revokeCopilotRuntimes } = await import('../copilot/connection');
+    await revokeCopilotRuntimes();
+    broadcastModelRegistryUpdated();
+  }
+  if (ACCOUNT_PROXY_PREFERENCE_KEYS.some((key) => commitChanged(commit, key))) {
+    const { notifyAccountProxyPreferencesChanged } =
+      await import('./account-proxy');
+    notifyAccountProxyPreferencesChanged();
+  }
+  if (commitChanged(commit, 'opencodeEnabled')) {
+    const { revokeOpenCodeRuntimes } = await import('../opencode/connection');
+    await revokeOpenCodeRuntimes();
+    broadcastModelRegistryUpdated();
+  }
+  if (commitChanged(commit, 'cursorEnabled')) {
+    // Preferences can be changed without using the Connect/Disconnect UI
+    // — `harnesses-settings.spec.mjs` exercises exactly this generic
+    // `preferencesSave` path with `{ cursorEnabled: false }`. Both
+    // directions refresh and notify below; only disabling additionally
+    // withdraws the cached selectable models, since enabling here (with
+    // no accompanying sign-in) has no catalog to populate.
+    if (!next.cursorEnabled) {
+      // Drain pending discovery before withdrawing its selectable models.
+      const { invalidateCursorModels } = await import('../cursor/models');
+      await invalidateCursorModels();
+      initCursorModels([]);
+    }
+    // Portal projects `providerAvailability.cursor` from the cached
+    // preflight; refresh it so the broadcast that follows does not
+    // re-project a stale hint in either direction.
+    await refreshCursorRuntimeAvailability();
+    broadcastModelRegistryUpdated();
+  }
+  if (
+    commitTouches(commit, ['globalPluginSelections']) &&
+    commitChanged(commit, 'globalPluginSelections', pluginSelectionsEqual)
+  ) {
+    // Sessions on overlay-participating chat surfaces lazily recreate on
+    // their next send; new sends and terminals resolve against the
+    // updated global defaults when they start.
+    bumpGlobalPluginDefaultsRevision();
+    // The installed-item statuses derive from these selections, so the
+    // synced snapshot the web settings read must follow (CAN-6037).
+    notifyDesktopInventoryChanged(['installed_items']);
+  }
+  recordOnboardingProfileTelemetry({ previous, next });
+  try {
+    await syncOnboardingProfilePreferences(next, named);
+  } catch (error) {
+    // The local preference write has already committed. Cloud profile sync
+    // is best-effort and must never make a successful onboarding step look
+    // failed or roll back the user's local answer.
+    // eslint-disable-next-line no-console
+    console.warn('Failed to sync onboarding profile to the cloud:', error);
+  }
+}
+
+/** Applied in commit order, so an older save cannot overwrite a newer value. */
+function applyCommittedPreferenceValues(
+  committed: Readonly<PreferencesData>,
+): void {
+  getMemoryDiagnosticsService().setEnabled(committed.memoryDiagnosticsEnabled);
+  setAppAdvisorProjectAgentAccess(committed.appAdvisorProjectAgentAccess);
 }
 
 function cancelCodeGraphReconciliationRetry(): void {
@@ -409,20 +622,59 @@ function hasSameEffectiveCodeGraphPreference(
   );
 }
 
-async function applyPreferenceSideEffects(
+/** Reconciles Code Graph availability after a commit changed the choice. */
+async function reconcileCommittedCodeGraph(): Promise<void> {
+  try {
+    await reconcileCodeGraphAvailability();
+    cancelCodeGraphReconciliationRetry();
+  } catch (error) {
+    // The preference is already persisted, cached, and broadcast. Keep
+    // reconciliation best-effort so a transient workspace read failure
+    // cannot make that successful save appear to fail or skip the
+    // remaining preference side effects.
+    // eslint-disable-next-line no-console
+    console.error('Failed to reconcile Code Graph availability:', error);
+    scheduleCodeGraphReconciliationRetry();
+  }
+}
+
+/** An own save's effects: those gated on "key in patch" keep that rule. */
+function applyPreferenceSideEffects(
   normalized: PreferencesData,
   changedPreferences: Partial<PreferencesData>,
   pendingManagedDelegationPolicyUpdate?: PendingManagedDelegationPolicyUpdate,
   defaultBrowserRegistration?: Promise<unknown>,
 ): Promise<void> {
-  nativeEffects().keepAwake.setEnabled(
-    normalized.keepSystemAwakeWhileAgentsActive,
+  return applyCommitSideEffects(
+    {
+      next: normalized,
+      origin: 'own',
+      patchKeys: new Set(Object.keys(changedPreferences)),
+    },
+    pendingManagedDelegationPolicyUpdate,
+    defaultBrowserRegistration,
   );
+}
+
+/**
+ * A commit's runtime and native effects. Own saves gate on "key in patch";
+ * foreign commits on their changed keys (CAN-5722, slice F).
+ */
+async function applyCommitSideEffects(
+  commit: PreferenceCommitEffectInput,
+  pendingManagedDelegationPolicyUpdate?: PendingManagedDelegationPolicyUpdate,
+  defaultBrowserRegistration?: Promise<unknown>,
+): Promise<void> {
+  const normalized = commit.next;
+  const host = commitHost();
+  applyImmediateHostEffects(commit, host.native);
   trackDetachedWork(() =>
     // Lazy: the default-model resolver reaches services that import this module.
     import('../agents/agent-default-model')
       .then(({ refreshCatalogAgentDefaults }) =>
-        refreshCatalogAgentDefaults(changedPreferences),
+        refreshCatalogAgentDefaults(
+          commit.origin === 'own' ? commit.patchKeys : commit.changedKeys,
+        ),
       )
       .catch(() => undefined),
   );
@@ -430,23 +682,6 @@ async function applyPreferenceSideEffects(
     normalized.inAppBrowserLocalServersOnly === true,
   );
   updatePerformanceLimitsFromPreferences(normalized);
-  nativeEffects().backgroundPresence.applyCloseToTray(normalized.closeToTray);
-  // Notification preferences are an event-driven suppression input: the
-  // scheduler no longer polls for `notifications-disabled`/`category-disabled`,
-  // so enabling them has to re-arm it here.
-  //
-  // Gated on the three keys the scheduler actually reads. Unconditional would be
-  // worse than the poll it replaced: ~101 renderer save sites include
-  // drag/resize-frequency ones, and each evaluation costs an uncached
-  // preferences read plus, per due campaign, a checklist derivation that does
-  // its own filesystem reads.
-  if (
-    'osNotifications' in changedPreferences ||
-    'activationQuietHours' in changedPreferences ||
-    'promotionalNotifications' in changedPreferences
-  ) {
-    nativeEffects().activationSchedule.notificationInputsChanged();
-  }
   const { getObservabilityService } = await import('../observability');
   getObservabilityService().setRetentionDays(normalized.auditRetentionDays);
   const { getTelemetrySyncService } =
@@ -464,52 +699,22 @@ async function applyPreferenceSideEffects(
     .updateIdleTimeoutMinutes(normalized.codexAppServerIdleTimeoutMinutes);
   if (pendingManagedDelegationPolicyUpdate)
     await pendingManagedDelegationPolicyUpdate.completion;
-  if ('codexMaxConcurrentSubagents' in changedPreferences) {
+  if (commitTouches(commit, ['codexMaxConcurrentSubagents'])) {
     markCodexSessionsForNextTurnRecreation('all');
   }
-  if ('codexMultiAgentAppAdvisorEnabled' in changedPreferences) {
+  if (commitTouches(commit, ['codexMultiAgentAppAdvisorEnabled'])) {
     markCodexSessionsForNextTurnRecreation('app-advisor');
   }
-  if ('codexMultiAgentWorktreeChatsEnabled' in changedPreferences) {
+  if (commitTouches(commit, ['codexMultiAgentWorktreeChatsEnabled'])) {
     markCodexSessionsForNextTurnRecreation('worktree');
   }
-  if ('codexMultiAgentStandaloneChatsEnabled' in changedPreferences) {
+  if (commitTouches(commit, ['codexMultiAgentStandaloneChatsEnabled'])) {
     markCodexSessionsForNextTurnRecreation('standalone');
   }
-  if (
-    'globalFocusShortcutEnabled' in changedPreferences ||
-    'globalFocusShortcut' in changedPreferences
-  ) {
-    // The dedicated `global-focus-shortcut:update` IPC is the intended writer
-    // (it registers with the OS before saving). A plain preference save has
-    // already persisted and broadcast, so this re-syncs the registration and
-    // writes the previous working chord back if the saved one was refused;
-    // the corrective broadcast follows the optimistic one within the same
-    // save, which renderer mirrors tolerate. A committed save must not look
-    // failed because the corrective write did.
-    try {
-      await syncGlobalFocusShortcutFromPreferences(
-        normalized,
-        nativeEffects().focusShortcut(),
-      );
-    } catch {
-      // The registration state is still broadcast on the next status push.
-    }
-  }
-  if ('useAsSystemDefaultBrowser' in changedPreferences) {
-    // Registration is reconciled after persistence. OS refusal must not make
-    // the committed preference save look failed; verified status is exposed
-    // separately for Settings to render recovery guidance.
-    try {
-      await (defaultBrowserRegistration ??
-        nativeEffects().defaultBrowser.requestRegistration(
-          normalized.useAsSystemDefaultBrowser === true,
-        ));
-    } catch {
-      // Keep the saved preference and surface the service's status instead.
-    }
-  }
-  if ('aiCreditsRoutingMode' in changedPreferences) {
+  // The dedicated `global-focus-shortcut:update` IPC is the intended chord
+  // writer; a plain save re-syncs the registration after it persisted.
+  await applySettledHostEffects(commit, host, defaultBrowserRegistration);
+  if (commitTouches(commit, ['aiCreditsRoutingMode'])) {
     // Keep the routing-mode cache warm with the just-saved value so the next
     // session spawn on any surface reflects the change immediately (the reader
     // is non-blocking and would otherwise serve a stale value until refresh).
@@ -572,13 +777,22 @@ export async function savePreferencesPatch(
   );
   if ('refused' in saveRules)
     throw new Error(PREFERENCE_SAVE_REFUSALS[saveRules.refused]);
-  const previous = await readPreferencesFile();
+  // Read only for the keys that need it: a client-local save (theme, zoom)
+  // must not wait on the domain document (CAN-7991).
+  let stored: Promise<PreferencesData> | undefined;
+  const readStored = (): Promise<PreferencesData> =>
+    (stored ??= readPreferencesFile());
   // Generic side-effect helpers consume a complete preference shape. The
   // serialized write below still merges only the explicitly changed keys.
   const preferences: Partial<PreferencesData> = {
     ...otherPreferences,
     ...(usageDataPatch
-      ? { usageData: mergeUsageDataPatch(previous.usageData, usageDataPatch) }
+      ? {
+          usageData: mergeUsageDataPatch(
+            (await readStored()).usageData,
+            usageDataPatch,
+          ),
+        }
       : {}),
   };
   // The shared rules drop main-owned records and shape-guarded keys a
@@ -590,7 +804,7 @@ export async function savePreferencesPatch(
   const proxy = getMcpHttpProxyService();
   if (
     typeof preferences.mcpProxyPort === 'number' &&
-    preferences.mcpProxyPort !== previous.mcpProxyPort
+    preferences.mcpProxyPort !== (await readStored()).mcpProxyPort
   ) {
     try {
       await proxy.assertPortAvailable(preferences.mcpProxyPort);
@@ -599,91 +813,80 @@ export async function savePreferencesPatch(
     }
   }
   let defaultBrowserRegistration: Promise<unknown> | undefined;
-  const { previous: committedPrevious, next: normalized } =
-    await updatePreferencesFileWithPrevious(
-      // Usage data merges per key: a partial patch must not turn the
-      // flows it omits back on through their defaults.
-      (latest) => {
-        precondition?.(latest);
-        // Stop marking and sending native crashes before this opt-out writes.
-        // Across restart, preference-write failures follow the shared consent
-        // store, just as analytics does. CAN-6589 tracks opt-out durability.
-        if (usageDataPatch?.errorReports === false)
-          nativeCrashAnnotation.suspendForOptOut();
-        return usageDataPatch
-          ? {
-              ...rendererPatch,
-              usageData: mergeUsageDataPatch(latest.usageData, usageDataPatch),
-            }
-          : rendererPatch;
-      },
-      (committed) => {
-        // Apply in commit order: an older overlapping save must not
-        // re-enable diagnostics after a newer save turned them off.
-        getMemoryDiagnosticsService().setEnabled(
-          committed.memoryDiagnosticsEnabled,
-        );
-        // Apply inside the serialized commit so an older save that
-        // finishes its side effects later cannot overwrite a newer value.
-        setAppAdvisorProjectAgentAccess(committed.appAdvisorProjectAgentAccess);
-        // Main's read of the one-window switch follows each commit in order,
-        // before the window hears of the save.
+  let sequenceAtCommit = 0;
+  const {
+    previous: committedPrevious,
+    next: normalized,
+    domainUnread,
+  } = await updatePreferencesFileWithPrevious(
+    // Usage data merges per key: a partial patch must not turn the
+    // flows it omits back on through their defaults.
+    (latest) => {
+      sequenceAtCommit = committedPreferencesSequence();
+      precondition?.(latest);
+      // Stop marking and sending native crashes before this opt-out writes.
+      // Across restart, preference-write failures follow the shared consent
+      // store, just as analytics does. CAN-6589 tracks opt-out durability.
+      if (usageDataPatch?.errorReports === false)
+        nativeCrashAnnotation.suspendForOptOut();
+      return usageDataPatch
+        ? {
+            ...rendererPatch,
+            usageData: mergeUsageDataPatch(latest.usageData, usageDataPatch),
+          }
+        : rendererPatch;
+    },
+    (committed) => {
+      // Memory diagnostics and App Advisor access, in commit order: an
+      // older overlapping save must not overwrite a newer value.
+      applyCommittedPreferenceValues(committed);
+      // The commit consumer applies the one-window switch and the stored
+      // usage data for every domain commit, before this callback. A save
+      // with no domain commit (client-local keys only) applies them here,
+      // still before the window hears of the save.
+      if (committedPreferencesSequence() === sequenceAtCommit) {
         applyOneWindowChoice(
           committed.oneWindowEnabled,
           arePreferencesUnconfirmed(),
         );
-        // The full merged-and-normalized object, never the partial patch,
-        // applied in commit order like the values above. Applied on every
-        // commit: a commit proves the stored file is real again, which
-        // also ends a fail-closed startup read of unreadable preferences.
-        // Consent from the same committed object, in one recompute: the
-        // accepting commit must never start a flow on the stale defaults.
+        // The full merged-and-normalized object, never the partial patch.
+        // Applied on every commit: a commit proves the stored file is real
+        // again, which also ends a fail-closed startup read of unreadable
+        // preferences. Consent from the same committed object, in one
+        // recompute: the accepting commit must never start a flow on the
+        // stale defaults.
         getUsageDataPolicy().setStored(
           committed.usageData,
           usageDataConsentStateOf(committed),
         );
-        if (
-          usageDataPatch?.errorReports === true &&
-          committed.usageData.errorReports
-        )
-          nativeCrashAnnotation.resumeAfterOptIn();
-        if ('useAsSystemDefaultBrowser' in preferences) {
-          defaultBrowserRegistration =
-            nativeEffects().defaultBrowser.requestRegistration(
-              committed.useAsSystemDefaultBrowser === true,
-            );
-        }
-      },
-      // The save rules above already ran on this caller's patch; it is never
-      // classified (CAN-5722).
-      { route: 'caller' },
-    );
-  const saveGeneration = ++preferencesSaveGeneration;
-  // updateManagedDelegationPolicy changes the process-authoritative
-  // admission state synchronously before its cancellation promise can
-  // yield. Start it immediately after commit so no profile sync,
-  // broadcast, or other side effect can leave old sessions launchable.
-  const pendingManagedDelegationPolicyUpdate =
-    beginManagedDelegationPolicyUpdate(normalized, preferences);
-  if ('managedDelegationLifetimeLimit' in preferences)
-    notifyManagedDelegationLifetimePreferencesChanged();
-  if (
-    committedPrevious.personalWorkspaceCatalogSync !==
-    normalized.personalWorkspaceCatalogSync
-  ) {
-    trackDetachedWork(() =>
-      (async (): Promise<void> => {
-        try {
-          await personalCatalogPreferenceChanged();
-        } catch (error) {
-          logMainProcessWarn(
-            '[preferences] Personal catalog follow-up failed after preference commit',
-            error,
+      }
+      resumeCrashReportsAfterOptIn(
+        usageDataPatch?.errorReports === true,
+        committed,
+      );
+      if ('useAsSystemDefaultBrowser' in preferences) {
+        defaultBrowserRegistration =
+          nativeEffects().defaultBrowser.requestRegistration(
+            committed.useAsSystemDefaultBrowser === true,
           );
-        }
-      })(),
-    );
-  }
+      }
+    },
+    // The save rules above already ran on this caller's patch; it is never
+    // classified (CAN-5722).
+    { route: 'caller' },
+  );
+  const saveGeneration = ++preferencesSaveGeneration;
+  const commit: PreferenceCommitChange = {
+    previous: committedPrevious,
+    next: normalized,
+    origin: 'own',
+    patchKeys: new Set(Object.keys(preferences)),
+  };
+  // Started immediately after commit, before any profile sync or broadcast.
+  const pendingManagedDelegationPolicyUpdate = beginCommitEffects(commit);
+  // Client-local commit effects: the zoom here and the native theme below
+  // follow this save's client-local values. No domain or daemon commit
+  // drives them (CAN-5722, slice F).
   if (committedPrevious.uiScale !== normalized.uiScale) {
     // Interface scale is a uniform zoom owned by main (`lib/ui-zoom.ts`).
     // Fan the new factor out to every open window (main, App Advisor,
@@ -692,88 +895,24 @@ export async function savePreferencesPatch(
     // immediate.
     applyUiZoomToAllWindows(uiScaleToZoomFactor(normalized.uiScale));
   }
-  if (
-    committedPrevious.copilotEnabled !== normalized.copilotEnabled ||
-    JSON.stringify(committedPrevious.copilotAccount) !==
-      JSON.stringify(normalized.copilotAccount)
-  ) {
-    const { revokeCopilotRuntimes } = await import('../copilot/connection');
-    await revokeCopilotRuntimes();
-    broadcastModelRegistryUpdated();
-  }
-  if (
-    committedPrevious.accountProxyEnabled !== normalized.accountProxyEnabled ||
-    committedPrevious.accountProxyKeepChatOnOneAccount !==
-      normalized.accountProxyKeepChatOnOneAccount ||
-    committedPrevious.accountProxyRouteClaude !==
-      normalized.accountProxyRouteClaude ||
-    committedPrevious.accountProxyRouteCodex !==
-      normalized.accountProxyRouteCodex ||
-    committedPrevious.accountProxyLocalStartWithApp !==
-      normalized.accountProxyLocalStartWithApp
-  ) {
-    const { notifyAccountProxyPreferencesChanged } =
-      await import('./account-proxy');
-    notifyAccountProxyPreferencesChanged();
-  }
-  if (committedPrevious.opencodeEnabled !== normalized.opencodeEnabled) {
-    const { revokeOpenCodeRuntimes } = await import('../opencode/connection');
-    await revokeOpenCodeRuntimes();
-    broadcastModelRegistryUpdated();
-  }
-  if (committedPrevious.cursorEnabled !== normalized.cursorEnabled) {
-    // Preferences can be changed without using the Connect/Disconnect UI
-    // — `harnesses-settings.spec.mjs` exercises exactly this generic
-    // `preferencesSave` path with `{ cursorEnabled: false }`. Both
-    // directions refresh and notify below; only disabling additionally
-    // withdraws the cached selectable models, since enabling here (with
-    // no accompanying sign-in) has no catalog to populate.
-    if (!normalized.cursorEnabled) {
-      // Drain pending discovery before withdrawing its selectable models.
-      const { invalidateCursorModels } = await import('../cursor/models');
-      await invalidateCursorModels();
-      initCursorModels([]);
-    }
-    // Portal projects `providerAvailability.cursor` from the cached
-    // preflight; refresh it so the broadcast that follows does not
-    // re-project a stale hint in either direction.
-    await refreshCursorRuntimeAvailability();
-    broadcastModelRegistryUpdated();
-  }
-  if (
-    'globalPluginSelections' in rendererPatch &&
-    !pluginSelectionsEqual(
-      committedPrevious.globalPluginSelections,
-      normalized.globalPluginSelections,
-    )
-  ) {
-    // Sessions on overlay-participating chat surfaces lazily recreate on
-    // their next send; new sends and terminals resolve against the
-    // updated global defaults when they start.
-    bumpGlobalPluginDefaultsRevision();
-    // The installed-item statuses derive from these selections, so the
-    // synced snapshot the web settings read must follow (CAN-6037).
-    notifyDesktopInventoryChanged(['installed_items']);
-  }
-  recordOnboardingProfileTelemetry({
-    previous: committedPrevious,
-    next: normalized,
-  });
-  try {
-    await syncOnboardingProfilePreferences(normalized, preferences);
-  } catch (error) {
-    // The local preference write has already committed. Cloud profile sync
-    // is best-effort and must never make a successful onboarding step look
-    // failed or roll back the user's local answer.
-    // eslint-disable-next-line no-console
-    console.warn('Failed to sync onboarding profile to the cloud:', error);
-  }
+  await applyCommitConnectionEffects(commit, preferences);
   // Apply the persisted native appearance before any asynchronous
   // reconciliation or renderer broadcast. This keeps renderer
   // `prefers-color-scheme` updates pinned to an explicit Light/Dark choice
   // throughout the save. Native window backgrounds follow each renderer's
   // published theme color instead (see trackAppWindowBackground).
   nativeTheme.themeSource = getNativeThemeSource(normalized.colorMode);
+  // A client-only save on a domain document the port has not read, whose
+  // domain keys are defaults. Nothing below may apply or broadcast them
+  // (see `updatePreferencesFileWithPrevious`), and the reply says so: no
+  // saved domain state exists to send instead.
+  if (domainUnread === true) {
+    const unconfirmed: Pick<PreferencesSaveResult, '__preferencesUnconfirmed'> =
+      { __preferencesUnconfirmed: true };
+    return options?.view === 'persisted'
+      ? { ...normalized, ...unconfirmed }
+      : { ...preferencesSaveResult(normalized), ...unconfirmed };
+  }
   setCodeGraphPreferences(normalized.codeGraph);
   if (
     !pendingManagedDelegationPolicyUpdate &&
@@ -788,22 +927,10 @@ export async function savePreferencesPatch(
       normalized.codeGraph,
     )
   ) {
-    try {
-      await reconcileCodeGraphAvailability();
-      cancelCodeGraphReconciliationRetry();
-    } catch (error) {
-      // The preference is already persisted, cached, and broadcast. Keep
-      // reconciliation best-effort so a transient workspace read failure
-      // cannot make that successful save appear to fail or skip the
-      // remaining preference side effects.
-      // eslint-disable-next-line no-console
-      console.error('Failed to reconcile Code Graph availability:', error);
-      scheduleCodeGraphReconciliationRetry();
-    }
+    await reconcileCommittedCodeGraph();
   }
-  await applyPreferenceSideEffects(
-    normalized,
-    preferences,
+  await applyCommitSideEffects(
+    commit,
     pendingManagedDelegationPolicyUpdate,
     defaultBrowserRegistration,
   );
@@ -829,6 +956,7 @@ export function registerPreferenceHandlers(
   effects: PreferenceNativeEffects = electronPreferenceNativeEffects,
 ): void {
   registeredNativeEffects = effects;
+  registerPreferenceCommitHost(commitHost());
   managedDelegationRevocationIncomplete = false;
   preferencesSaveGeneration = 0;
   managedDelegationPolicyGeneration = 0;

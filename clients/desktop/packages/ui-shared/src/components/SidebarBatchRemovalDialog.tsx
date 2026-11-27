@@ -8,14 +8,16 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react';
+import { extractIpcErrorMessage } from '@canopy/protocol/app-errors/ipc-rejection';
 import { CheckIcon, CloseIcon, InfoIcon, WarningIcon } from '../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { Dot } from '../primitives/Badge';
 import { Button } from '../primitives/Button';
 import { DialogModal } from '../primitives/DialogModal';
+import { HoverCard } from '../primitives/HoverCard';
 import { LoadingSpinner } from '../primitives/LoadingSpinner';
 import { OverlayScrollArea } from '../primitives/OverlayScrollArea';
-import { HoverCard } from '../primitives/HoverCard';
+import { Surface } from '../primitives/Surface';
 import {
   unitCountLabel,
   type SidebarBatchUnitLabel,
@@ -47,12 +49,16 @@ export interface SidebarBatchRemovalDialogLocalWork {
 
 export interface SidebarBatchRemovalDialogRow {
   readonly key: string;
+  /** The target's selection key; used to collapse retried attempts in summaries. */
+  readonly targetKey?: string;
   readonly projectName: string;
   readonly label: string;
   readonly branchName?: string;
   readonly localWork?: SidebarBatchRemovalDialogLocalWork;
   /** Results phase. */
   readonly status?: SidebarBatchRemovalDialogRowStatus;
+  /** The mode used for this attempt when it differs from the dialog-wide mode. */
+  readonly removalMode?: SidebarBatchRemovalDialogMode;
   /** Why the row failed or was skipped. */
   readonly reason?: string;
 }
@@ -199,19 +205,243 @@ function RowIdentity({
   );
 }
 
+function rowTargetKey(row: SidebarBatchRemovalDialogRow): string {
+  return row.targetKey ?? row.key;
+}
+
+/** Latest attempt per target; older retries stay in the detail list only. */
+function latestAttemptRows(
+  rows: readonly SidebarBatchRemovalDialogRow[],
+): readonly SidebarBatchRemovalDialogRow[] {
+  const latestByTarget = new Map<string, SidebarBatchRemovalDialogRow>();
+  for (const row of rows) {
+    latestByTarget.set(rowTargetKey(row), row);
+  }
+  return [...latestByTarget.values()];
+}
+
+function rowRemovalMode(
+  row: SidebarBatchRemovalDialogRow,
+  dialogMode: SidebarBatchRemovalDialogMode,
+): SidebarBatchRemovalDialogMode {
+  return row.removalMode ?? dialogMode;
+}
+
+function resultsUseNeutralRemovalWording(
+  dialogMode: SidebarBatchRemovalDialogMode,
+  rows: readonly SidebarBatchRemovalDialogRow[],
+): boolean {
+  const latest = latestAttemptRows(rows);
+  let sawArchive = false;
+  let sawDelete = false;
+  for (const row of latest) {
+    const mode = rowRemovalMode(row, dialogMode);
+    if (mode === 'archive') {
+      sawArchive = true;
+    } else {
+      sawDelete = true;
+    }
+    if (sawArchive && sawDelete) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function countRows(
+  rows: readonly SidebarBatchRemovalDialogRow[],
+  status: SidebarBatchRemovalDialogRowStatus,
+): number {
+  return rows.filter((row) => row.status === status).length;
+}
+
+function displayFailureReason(reason: string): string {
+  return extractIpcErrorMessage(reason);
+}
+
+interface BatchResultsCounts {
+  readonly done: number;
+  readonly failed: number;
+  readonly skipped: number;
+  readonly pending: number;
+}
+
+function batchResultsCounts(
+  rows: readonly SidebarBatchRemovalDialogRow[],
+): BatchResultsCounts {
+  const latest = latestAttemptRows(rows);
+  return {
+    done: countRows(latest, 'done'),
+    failed: countRows(latest, 'failed'),
+    skipped: countRows(latest, 'skipped'),
+    pending: countRows(latest, 'pending'),
+  };
+}
+
+/** Screen-reader summary while rows are still finishing. */
 function resultSummary(
   mode: SidebarBatchRemovalDialogMode,
   rows: readonly SidebarBatchRemovalDialogRow[],
 ): string {
-  const count = (status: SidebarBatchRemovalDialogRowStatus): number =>
-    rows.filter((row) => row.status === status).length;
-  const parts = [
-    `${count('done')} ${mode === 'archive' ? 'archived' : 'deleted'}`,
-  ];
-  if (count('failed') > 0) parts.push(`${count('failed')} failed`);
-  if (count('skipped') > 0) parts.push(`${count('skipped')} skipped`);
-  if (count('pending') > 0) parts.push(`${count('pending')} not started`);
+  const counts = batchResultsCounts(rows);
+  const neutral = resultsUseNeutralRemovalWording(mode, rows);
+  const doneVerb = neutral
+    ? 'removed'
+    : mode === 'archive'
+      ? 'archived'
+      : 'deleted';
+  const parts = [`${counts.done} ${doneVerb}`];
+  if (counts.failed > 0) parts.push(`${counts.failed} failed`);
+  if (counts.skipped > 0) parts.push(`${counts.skipped} skipped`);
+  if (counts.pending > 0) parts.push(`${counts.pending} not started`);
   return parts.join(', ');
+}
+
+function resultsDialogTitle(
+  mode: SidebarBatchRemovalDialogMode,
+  unitLabel: SidebarBatchUnitLabel,
+  rows: readonly SidebarBatchRemovalDialogRow[],
+): string {
+  const counts = batchResultsCounts(rows);
+  const total = latestAttemptRows(rows).length;
+  const neutral = resultsUseNeutralRemovalWording(mode, rows);
+  const verb = neutral
+    ? { failed: "Couldn't remove", past: 'Removed' }
+    : mode === 'archive'
+      ? { failed: "Couldn't archive", past: 'Archived' }
+      : { failed: "Couldn't delete", past: 'Deleted' };
+
+  if (counts.failed > 0 && counts.done === 0) {
+    const blocked = counts.failed + counts.skipped + counts.pending;
+    return `${verb.failed} ${unitCountLabel(unitLabel, blocked > 0 ? blocked : total)}`;
+  }
+  if (counts.done === total && total > 0) {
+    return `${verb.past} ${unitCountLabel(unitLabel, counts.done)}`;
+  }
+  if (counts.done > 0) {
+    return `${verb.past} ${unitCountLabel(unitLabel, counts.done)}`;
+  }
+  return neutral
+    ? 'Removal results'
+    : mode === 'archive'
+      ? 'Archive results'
+      : 'Delete results';
+}
+
+function resultsDialogLead(
+  mode: SidebarBatchRemovalDialogMode,
+  unitLabel: SidebarBatchUnitLabel,
+  rows: readonly SidebarBatchRemovalDialogRow[],
+): string | undefined {
+  const counts = batchResultsCounts(rows);
+  const problems = counts.failed + counts.skipped + counts.pending;
+  if (problems === 0) return undefined;
+
+  const neutral = resultsUseNeutralRemovalWording(mode, rows);
+  const pastVerb = neutral
+    ? 'removed'
+    : mode === 'archive'
+      ? 'archived'
+      : 'deleted';
+
+  const parts: string[] = [];
+  if (counts.done === 0 && counts.failed > 0) {
+    parts.push(`None of the selected ${unitLabel.plural} were ${pastVerb}.`);
+  }
+  if (counts.failed > 0) {
+    parts.push(
+      counts.failed === 1
+        ? '1 failed.'
+        : `${counts.failed} ${unitLabel.plural} failed.`,
+    );
+  }
+  if (counts.skipped > 0) {
+    parts.push(
+      counts.skipped === 1
+        ? '1 was skipped.'
+        : `${counts.skipped} were skipped.`,
+    );
+  }
+  if (counts.pending > 0) {
+    parts.push(
+      counts.pending === 1
+        ? '1 never started.'
+        : `${counts.pending} never started.`,
+    );
+  }
+  return parts.join(' ');
+}
+
+function resultStatusLabel(
+  status: SidebarBatchRemovalDialogRowStatus,
+  rowMode: SidebarBatchRemovalDialogMode,
+): { readonly text: string; readonly className: string } | null {
+  switch (status) {
+    case 'done':
+      return {
+        text: rowMode === 'archive' ? 'Archived' : 'Deleted',
+        className: 'fg-success',
+      };
+    case 'failed':
+      return { text: 'Failed', className: 'fg-destructive' };
+    case 'skipped':
+      return { text: 'Skipped', className: 'fg-warning' };
+    case 'pending':
+      return { text: 'Not started', className: 'fg-tertiary' };
+    case 'running':
+      return null;
+    default:
+      return null;
+  }
+}
+
+function BatchResultRow({
+  row,
+  dialogMode,
+  testId,
+}: {
+  row: SidebarBatchRemovalDialogRow;
+  dialogMode: SidebarBatchRemovalDialogMode;
+  testId: string;
+}): JSX.Element {
+  const status = row.status;
+  const statusLabel =
+    status === 'running' || status === undefined
+      ? null
+      : resultStatusLabel(status, rowRemovalMode(row, dialogMode));
+  const reason =
+    (status === 'failed' || status === 'skipped') && row.reason
+      ? displayFailureReason(row.reason)
+      : undefined;
+
+  return (
+    <Surface as="li" variant="group" size="small" data-testid={`${testId}-row`}>
+      <div
+        className="flex flex-col gap-1.5 px-3 py-2.5"
+        data-row-key={row.key}
+        data-status={row.status}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <RowIdentity
+            projectName={row.projectName}
+            label={row.label}
+            branchName={row.branchName}
+          />
+          <div className="flex shrink-0 items-center gap-1.5 pt-0.5">
+            {status === 'running' && <LoadingSpinner sizePx={14} decorative />}
+            {statusLabel !== null && (
+              <span className={`text-xs font-medium ${statusLabel.className}`}>
+                {statusLabel.text}
+              </span>
+            )}
+          </div>
+        </div>
+        {reason !== undefined && (
+          <p className="text-xs leading-snug fg-secondary">{reason}</p>
+        )}
+      </div>
+    </Surface>
+  );
 }
 
 interface ConfirmSummaryProps {
@@ -413,7 +643,9 @@ export function SidebarBatchRemovalDialog({
       ? nothingRemovable
         ? `${verb} ${unitLabel.plural}?`
         : `${verb} ${unitCountLabel(unitLabel, count)}?`
-      : resultSummary(mode, rows);
+      : resultsDialogTitle(mode, unitLabel, rows);
+  const resultsLead =
+    phase === 'results' ? resultsDialogLead(mode, unitLabel, rows) : undefined;
   const close = phase === 'results' ? onDone : onCancel;
   return (
     // The dialog portals to <body>, but React still bubbles its clicks to the
@@ -435,8 +667,16 @@ export function SidebarBatchRemovalDialog({
         <div className="flex flex-col gap-4" data-phase={phase}>
           {/* The results title changes as rows finish; read it out. */}
           <p role="status" className="sr-only">
-            {phase === 'results' ? title : ''}
+            {phase === 'results' ? resultSummary(mode, rows) : ''}
           </p>
+          {phase === 'results' && resultsLead !== undefined && (
+            <p
+              className="text-s fg-secondary"
+              data-testid={`${testId}-results-lead`}
+            >
+              {resultsLead}
+            </p>
+          )}
           {phase === 'confirm' && (
             <ConfirmSummary
               mode={mode}
@@ -448,15 +688,29 @@ export function SidebarBatchRemovalDialog({
               testId={testId}
             />
           )}
-          {count > 0 && (
+          {count > 0 && phase === 'results' && (
+            <OverlayScrollArea viewportClassName="max-h-72">
+              <ul
+                className="flex flex-col gap-1.5 text-s"
+                aria-label="Results"
+                data-testid={`${testId}-rows`}
+              >
+                {orderedRows.map((row) => (
+                  <BatchResultRow
+                    key={row.key}
+                    row={row}
+                    dialogMode={mode}
+                    testId={testId}
+                  />
+                ))}
+              </ul>
+            </OverlayScrollArea>
+          )}
+          {count > 0 && phase === 'confirm' && (
             <OverlayScrollArea viewportClassName="max-h-64">
               <ul
                 className="flex flex-col gap-2 text-s"
-                aria-label={
-                  phase === 'confirm'
-                    ? `${capitalize(unitLabel.plural)} to ${mode}`
-                    : 'Results'
-                }
+                aria-label={`${capitalize(unitLabel.plural)} to ${mode}`}
                 data-testid={`${testId}-rows`}
               >
                 {orderedRows.map((row) => (
@@ -476,13 +730,8 @@ export function SidebarBatchRemovalDialog({
                       projectName={row.projectName}
                       label={row.label}
                       branchName={row.branchName}
-                      reason={
-                        row.status === 'failed' || row.status === 'skipped'
-                          ? row.reason
-                          : undefined
-                      }
                       trailing={
-                        phase === 'confirm' && row.localWork ? (
+                        row.localWork ? (
                           <LocalWorkBadge localWork={row.localWork} />
                         ) : undefined
                       }
@@ -506,7 +755,9 @@ export function SidebarBatchRemovalDialog({
                 : 'Each local branch is deleted from its project.'}
             </KeepLocalBranchToggle>
           )}
-          <div className="flex items-center gap-2 pt-1">
+          <div
+            className={`flex items-center gap-2 ${phase === 'results' ? 'border-t border-line-base pt-3' : 'pt-1'}`}
+          >
             {phase === 'confirm' && (
               <ConfirmActions
                 mode={mode}

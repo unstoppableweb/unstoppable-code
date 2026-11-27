@@ -1,4 +1,12 @@
-import { memo, useState, useEffect, useCallback, type JSX } from 'react';
+import {
+  memo,
+  useState,
+  useEffect,
+  useCallback,
+  useContext,
+  type JSX,
+} from 'react';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import {
   isRecoverableAuthFailureClass,
   isValidAuthDependencyFailure,
@@ -22,6 +30,7 @@ import {
   type McpAuthRecoveryTarget,
 } from '@/hooks/useMcpAuthRecovery';
 import { openIntegrationSettings } from '@/lib/navigation/settings-destinations';
+import { ChatMarkdownFileTargetContext } from './chat-markdown-file-target';
 
 /**
  * Sentence fragments placed around the dependency's display name, so the name
@@ -543,8 +552,15 @@ export const AuthRecoveryCard = memo(function AuthRecoveryCard({
   originChatTabId,
   sourceMessageId,
 }: AuthRecoveryCardProps): JSX.Element | null {
+  const chatTarget = useContext(ChatMarkdownFileTargetContext);
+  const isPairedScope =
+    (chatTarget !== null && isPairedComputerId(chatTarget.projectId)) ||
+    (originChatTabId !== undefined && isPairedComputerId(originChatTabId));
   const rows = dedupeFailures(failures);
-  const recovery = useAuthRecoveryResume(originChatTabId, sourceMessageId);
+  const recovery = useAuthRecoveryResume(
+    isPairedScope ? undefined : originChatTabId,
+    isPairedScope ? undefined : sourceMessageId,
+  );
   const [connectedIds, setConnectedIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -571,6 +587,42 @@ export const AuthRecoveryCard = memo(function AuthRecoveryCard({
   // repeat an external write, so the only automatic resume is the main-process
   // OAuth-settle path, which is gated on `autoResumeSafe`. Here the user
   // presses Resume.
+  if (isPairedScope) {
+    if (rows.length === 0) return null;
+    return (
+      <div className="pt-1">
+        <Notice
+          intent="attention"
+          announcement="assertive"
+          icon={null}
+          data-testid="paired-auth-recovery-notice"
+          data-blocker-count={rows.length}
+          data-chat-notice=""
+          title="Sign in on the paired computer"
+        >
+          <div className="flex flex-col gap-1">
+            {rows.map((row) => (
+              <div
+                key={row.dependencyId}
+                data-testid="paired-auth-recovery-row"
+                className="flex items-center gap-2"
+              >
+                <WarningIcon
+                  size={14}
+                  aria-hidden="true"
+                  className="shrink-0 fg-warning"
+                />
+                <span className="min-w-0 flex-1 break-words">
+                  <strong className="font-medium">{row.displayName}</strong>
+                  {' needs sign-in on the paired computer.'}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Notice>
+      </div>
+    );
+  }
   if (recovery.retired) return null;
   if (rows.length === 0) {
     return null;

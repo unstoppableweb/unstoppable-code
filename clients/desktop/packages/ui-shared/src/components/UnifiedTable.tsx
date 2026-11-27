@@ -52,7 +52,7 @@ import {
 import { SearchEmptyState, SearchField } from '../primitives/SearchField';
 import { DisplayAvatar } from '../primitives/DisplayAvatar';
 import { Divider } from '../primitives/Surface';
-import { FloatingMenu } from '../primitives/FloatingMenu';
+import { Menu } from '../primitives/Menu';
 
 /**
  * Row kinds. MCP servers are one kind however the host built the row: the
@@ -235,7 +235,7 @@ function SourceMultiSelect({
         </span>
         <ChevronDownIcon size="sm" aria-hidden />
       </Button>
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={setOpen}
         anchorRef={buttonRef}
@@ -326,7 +326,7 @@ function SourceMultiSelect({
             </div>
           </>
         )}
-      </FloatingMenu>
+      </Menu>
     </>
   );
 }

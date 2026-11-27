@@ -1269,6 +1269,7 @@ async function startOwnedDaemon(
         operations = createCoreOperationModule(
           createDaemonOperationService({
             dataRoot: canonicalDataRoot,
+            syncDirectory: (folder) => flushDirectory(folder, { os }),
             ...operationLedger,
             onError: failures.record,
           }),

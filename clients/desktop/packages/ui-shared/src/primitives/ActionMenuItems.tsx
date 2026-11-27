@@ -2,14 +2,14 @@
 
 import { Fragment, isValidElement, type JSX, type ReactNode } from 'react';
 import {
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuLabel,
-  DropdownMenuRowStyleProvider,
+  MenuDivider,
+  MenuItem,
+  MenuItemIcon,
+  MenuLabel,
+  MenuRowStyleProvider,
   QUIET_MENU_ROW_STYLE,
-  useDropdownMenuRowStyle,
-} from './DropdownMenu';
+  useMenuRowStyle,
+} from './MenuItem';
 import { NestedMenuFlyout } from './NestedMenuFlyout';
 import { HoverCard } from './HoverCard';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
@@ -58,7 +58,7 @@ export function ActionMenuStatusLine({
       </Notice>
     );
   }
-  // A plain row, not `DropdownMenuLabel`: the label truncates to one line and
+  // A plain row, not `MenuLabel`: the label truncates to one line and
   // owns its ink, and this line must wrap.
   return (
     <div
@@ -192,9 +192,9 @@ export function ActionMenuRowStyle({
   readonly children: ReactNode;
 }): JSX.Element {
   return (
-    <DropdownMenuRowStyleProvider value={QUIET_MENU_ROW_STYLE}>
+    <MenuRowStyleProvider value={QUIET_MENU_ROW_STYLE}>
       {children}
-    </DropdownMenuRowStyleProvider>
+    </MenuRowStyleProvider>
   );
 }
 
@@ -220,7 +220,7 @@ export function ActionMenuShortcut({
 
 /** A non-interactive label row, in the menu's row text style. */
 export function ActionMenuLabelRow({ label }: { label: string }): JSX.Element {
-  const rowStyle = useDropdownMenuRowStyle();
+  const rowStyle = useMenuRowStyle();
   return (
     <div
       className={`px-2 py-1 ${rowStyle.textStyle === 'small' ? 'text-xs' : 'text-s'} fg-tertiary`}
@@ -263,9 +263,9 @@ export function ActionMenuItems<K extends string>({
     <>
       {items.map((item, index) => (
         <Fragment key={item.key}>
-          {item.separatorBefore && <DropdownMenuDivider />}
+          {item.separatorBefore && <MenuDivider />}
           {item.sectionLabel !== undefined && (
-            <DropdownMenuLabel>{item.sectionLabel}</DropdownMenuLabel>
+            <MenuLabel>{item.sectionLabel}</MenuLabel>
           )}
           {item.kind === 'label' ? (
             <ActionMenuLabelRow label={item.label} />
@@ -283,7 +283,7 @@ export function ActionMenuItems<K extends string>({
             // A row folded into a submenu (Split PR in More) keeps the hover
             // card that explains why it is disabled, as top-level rows do.
             <ActionMenuRichTooltip item={item}>
-              <DropdownMenuItem
+              <MenuItem
                 disabled={item.disabled}
                 title={item.tooltip}
                 tone={item.tone}
@@ -300,9 +300,7 @@ export function ActionMenuItems<K extends string>({
                   onSelect(item);
                 }}
               >
-                <DropdownMenuItemIcon>
-                  {actionMenuRowIcon(items, index)}
-                </DropdownMenuItemIcon>
+                <MenuItemIcon>{actionMenuRowIcon(items, index)}</MenuItemIcon>
                 {/* A row is one line: a label too long for the menu ends in
                     an ellipsis instead of wrapping out of its 32px row. */}
                 <span
@@ -311,7 +309,7 @@ export function ActionMenuItems<K extends string>({
                   {item.label}
                 </span>
                 <ActionMenuShortcut shortcut={item.shortcut} />
-              </DropdownMenuItem>
+              </MenuItem>
             </ActionMenuRichTooltip>
           )}
           {item.sectionStatus && (

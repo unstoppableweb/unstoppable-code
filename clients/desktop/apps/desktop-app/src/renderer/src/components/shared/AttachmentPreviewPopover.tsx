@@ -2,7 +2,16 @@ import {
   cloudAttachmentPreview,
   isCloudAttachmentPath,
 } from '@/cloud-chats/cloud-chat-attachments';
-import { memo, useCallback, useEffect, useState, type JSX } from 'react';
+import {
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+  type JSX,
+} from 'react';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
+import { ChatMarkdownFileTargetContext } from '@/components/chat/chat-markdown-file-target';
 import { AttachmentPreviewCard } from '@canopy/ui-shared/components';
 import type { FilePreviewResponse } from '@canopy/desktop-shared/types';
 import { getFilenameFromPath } from '@/lib/file-type';
@@ -41,11 +50,23 @@ export const AttachmentPreviewPopover = memo(function AttachmentPreviewPopover({
   const [error, setError] = useState<string | null>(null);
   const addToast = useGitHubStore((state) => state.addToast);
 
+  const chatTarget = useContext(ChatMarkdownFileTargetContext);
+  const isPairedScope =
+    chatTarget !== null && isPairedComputerId(chatTarget.projectId);
+
   const displayName = filename ?? getFilenameFromPath(absolutePath);
   const displaySizeBytes = sizeBytes ?? preview?.sizeBytes;
 
   // Fetch preview content
   useEffect(() => {
+    // A paired computer's attachment belongs to another machine and must never
+    // be read through this computer's local file-preview IPC.
+    if (isPairedScope) {
+      setPreview(null);
+      setError('Unable to load preview');
+      setLoading(false);
+      return undefined;
+    }
     // A cloud chat's attachment is never read through main.
     const cloud = cloudAttachmentPreview(absolutePath);
     if (cloud !== undefined) {
@@ -77,9 +98,10 @@ export const AttachmentPreviewPopover = memo(function AttachmentPreviewPopover({
     return (): void => {
       cancelled = true;
     };
-  }, [absolutePath]);
+  }, [absolutePath, isPairedScope]);
 
   const handleOpen = useCallback((): void => {
+    if (isPairedScope) return;
     if (onOpen) {
       onOpen();
       return;
@@ -90,7 +112,7 @@ export const AttachmentPreviewPopover = memo(function AttachmentPreviewPopover({
         caught: error,
       });
     });
-  }, [absolutePath, addToast, displayName, onOpen]);
+  }, [absolutePath, addToast, displayName, isPairedScope, onOpen]);
 
   return (
     <AttachmentPreviewCard
@@ -102,7 +124,8 @@ export const AttachmentPreviewPopover = memo(function AttachmentPreviewPopover({
       preview={preview}
       // A cloud chat's attachment has no file here to open.
       onOpen={
-        onOpen !== undefined || !isCloudAttachmentPath(absolutePath)
+        !isPairedScope &&
+        (onOpen !== undefined || !isCloudAttachmentPath(absolutePath))
           ? handleOpen
           : undefined
       }

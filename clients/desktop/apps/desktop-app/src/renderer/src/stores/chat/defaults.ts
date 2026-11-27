@@ -33,6 +33,8 @@ import {
 import {
   isCodexModelAvailableToAccount,
   isGuestAllowedCreditsModel,
+  personalGatewayEquivalentModel,
+  personalGatewayStandsIn,
   repairLaneDefaults,
   resolveDefaultModelLane,
   type BillingLane,
@@ -65,6 +67,7 @@ import {
   getRendererCodexAccountModels,
   getRendererGuestPrincipal,
   getRendererLastResolvedLane,
+  getRendererOllamaReadyModels,
 } from '../billingLaneRuntime';
 import type { ChatState } from './state';
 import { isPipelineEditorChatTarget } from './surface';
@@ -141,23 +144,50 @@ function isModelRunnableForAccountOnLane(
 }
 
 /**
+ * How the Ollama lane takes part in a fallback walk:
+ * - `pinned`: the user's default provider is Ollama.
+ * - `only`: the lane resolver confirmed every base lane unavailable and
+ *   Ollama ready (`reason: 'ollama-only'`); the walk then covers only the
+ *   installed models this app can select.
+ * - `closed`: Ollama is never reached implicitly.
+ */
+type OllamaLaneAccess = 'pinned' | 'only' | 'closed';
+
+function ollamaLaneAccess(
+  ollamaPinned: boolean,
+  lane: DefaultModelLaneResolution | undefined,
+): OllamaLaneAccess {
+  if (ollamaPinned) return 'pinned';
+  return lane?.outcome === 'resolved' && lane.reason === 'ollama-only'
+    ? 'only'
+    : 'closed';
+}
+
+/**
  * Lane precedence order used when walking the catalog for a fallback.
- * Ollama is included ONLY when explicitly pinned — reaching a local model
- * through an implicit fallback contradicts the never-auto-select rule and
- * silently substitutes local inference for a policy-restricted user.
+ * Ollama is included ONLY when explicitly pinned, or when the resolver made it
+ * the only lane — reaching a local model through any other implicit fallback
+ * contradicts the never-auto-select rule and silently substitutes local
+ * inference for a policy-restricted user.
  */
 function laneWalkOrder(
   resolvedLane: BillingLane | undefined,
-  ollamaPinned: boolean,
+  ollama: OllamaLaneAccess,
 ): BillingLane[] {
   const availability = getRendererBillingLaneAvailability();
   const base: BillingLane[] = ['claude-native', 'codex-native', 'ai-credits'];
-  const lanes = ollamaPinned ? ['ollama' as BillingLane, ...base] : base;
+  const ollamaLane: BillingLane = 'ollama';
+  const lanes =
+    ollama === 'only'
+      ? [ollamaLane]
+      : ollama === 'pinned'
+        ? [ollamaLane, ...base]
+        : base;
   const ordered = resolvedLane
     ? [resolvedLane, ...lanes.filter((lane) => lane !== resolvedLane)]
     : lanes;
   return ordered.filter((lane) => {
-    if (lane === 'ollama') return ollamaPinned;
+    if (lane === 'ollama') return ollama !== 'closed';
     if (lane === 'claude-native')
       return availability.claudeNativeAuth !== false;
     if (lane === 'codex-native') return availability.codexNativeAuth !== false;
@@ -192,17 +222,15 @@ function orgGatewayLane(): EnforcedOrgGatewayLane | undefined {
 
 /**
  * The Personal gateway standing in for AI Credits (CAN-6444), or `undefined`
- * when credits are confirmed eligible or no usable Personal gateway is saved.
- * Mirrors the shared resolver's own rule so the fallback walk below agrees
+ * when credits may pay or no usable Personal gateway is saved. Mirrors the shared resolver's own rule so the fallback walk below agrees
  * with it; see `PersonalGatewayLane`.
  */
 function personalGatewayCreditsLane(): PersonalGatewayLane | undefined {
-  // Only once AI Credits are confirmed unavailable, as in the shared resolver.
-  if (getRendererBillingLaneAvailability().creditsEligible !== false) {
-    return undefined;
-  }
-  const models = personalGatewayModels();
-  return models.length > 0 ? { models } : undefined;
+  // The shared resolver's own rule, so the two can't disagree.
+  const lane = { models: personalGatewayModels() };
+  return personalGatewayStandsIn(getRendererBillingLaneAvailability(), lane)
+    ? lane
+    : undefined;
 }
 
 /**
@@ -244,6 +272,38 @@ function firstSendableGatewayModel(
  */
 export function firstPersonalGatewayDefaultModel(): ChatModel | undefined {
   return firstSendableGatewayModel(personalGatewayCreditsLane()?.models);
+}
+
+/**
+ * The Personal gateway's route for `model` while it stands in for AI Credits,
+ * with the gateway's name: a built-in default with no sign-in still runs, on
+ * the user's own gateway, as the same model.
+ */
+export function personalGatewayRouteFor(
+  model: ChatModel,
+  options: { readonly allowVariantFallback?: boolean } = {},
+): { readonly model: ChatModel; readonly gatewayName: string } | undefined {
+  // Only models the next send would accept (policy, runnable), as the
+  // composer's switch offers, so no surface offers a copy the send refuses.
+  const lane = personalGatewayCreditsLane();
+  const routed = lane
+    ? personalGatewayEquivalentModel(
+        model,
+        { models: lane.models.filter(sendableGatewayModelFilter()) },
+        options,
+      )
+    : undefined;
+  if (!routed) return undefined;
+  const index = getRendererModelGatewayIndex();
+  const gateway = index.personalOrganizationId
+    ? index.byOrganization.get(index.personalOrganizationId)
+    : undefined;
+  return { model: routed, gatewayName: gateway?.organizationName ?? '' };
+}
+
+/** Whether a Personal gateway is standing in for AI Credits right now. */
+export function isPersonalGatewayStandingIn(): boolean {
+  return personalGatewayCreditsLane() !== undefined;
 }
 
 /** The provider-choice list's AI gateway row, as this computer sees it. */
@@ -357,11 +417,17 @@ function laneCatalog(lane: BillingLane): readonly ChatModel[] {
  */
 function firstDispatchableModel(
   resolvedLane: BillingLane | undefined,
-  ollamaPinned: boolean,
+  ollama: OllamaLaneAccess,
 ): ChatModel | undefined {
   const policy = getRendererModelPolicy();
-  for (const lane of laneWalkOrder(resolvedLane, ollamaPinned)) {
-    for (const candidate of walkCatalog(lane)) {
+  for (const lane of laneWalkOrder(resolvedLane, ollama)) {
+    // An Ollama-only walk covers the installed, selectable models; the full
+    // Ollama catalog would hand back a model this computer has not pulled.
+    const catalog =
+      lane === 'ollama' && ollama === 'only'
+        ? (getRendererOllamaReadyModels() ?? [])
+        : walkCatalog(lane);
+    for (const candidate of catalog) {
       if (isModelBlocked(candidate, policy)) continue;
       if (isOrgGatewayExcluded(candidate)) continue;
       if (!isModelRunnableForAccountOnLane(lane, candidate)) continue;
@@ -399,7 +465,7 @@ export function resolveFallbackDefaultModel(): ChatModel | undefined {
   if (!claudeLaneExcluded && !policyBlocked && !gatewayExcluded) {
     return DEFAULT_MODEL;
   }
-  return firstDispatchableModel(lastLane, false);
+  return firstDispatchableModel(lastLane, 'closed');
 }
 
 export interface SelectableDefaultResult {
@@ -413,12 +479,12 @@ function selectableDefault(
   model: ChatModel,
   thinkingLevel: ThinkingLevel,
   resolvedLane: BillingLane | undefined,
-  ollamaPinned: boolean,
+  ollama: OllamaLaneAccess,
 ): SelectableDefaultResult {
   const policy = getRendererModelPolicy();
   const blocked = isModelBlocked(model, policy);
   const fallback = blocked
-    ? firstDispatchableModel(resolvedLane, ollamaPinned)
+    ? firstDispatchableModel(resolvedLane, ollama)
     : model;
   // Returning the blocked model it was handed is what this used to do, and it
   // is the one thing that must not happen: the caller cannot tell a real
@@ -545,9 +611,31 @@ export function resolveLaneForTarget(
   }
   const orgGateway = orgGatewayLane();
   const personalGateway = personalGatewayCreditsLane();
+  const ollamaPinned = preferredProvider === 'ollama';
+  // Ollama-only default (billing setup gate): the installed, selectable
+  // models published by `useOllamaReadiness`, mirroring main's
+  // `resolveDefaultModelLaneForPreferences`. `undefined` (no answer yet, or a
+  // window that never reads Ollama) leaves the resolver as it was.
+  const readyOllamaModels = getRendererOllamaReadyModels();
+  const ollamaReady =
+    readyOllamaModels === undefined ? undefined : readyOllamaModels.length > 0;
+  const firstReadyOllama = ollamaPinned ? undefined : readyOllamaModels?.[0];
+  const repairedDefaults = laneDefaultsFor(byProvider);
+  // `defaults.ollama` can be `null` or name a model no longer installed.
+  // Supply the first qualifying model for this resolution only; the saved
+  // default is never rewritten, so a later sign-in restores the old default.
+  const configuredOllama = repairedDefaults.ollama;
+  const ollamaCandidate =
+    firstReadyOllama !== undefined &&
+    !(configuredOllama && readyOllamaModels?.includes(configuredOllama.model))
+      ? {
+          model: firstReadyOllama,
+          thinkingLevel: clampThinkingLevelForModel('high', firstReadyOllama),
+        }
+      : configuredOllama;
   return resolveDefaultModelLane({
     availability: getRendererBillingLaneAvailability(),
-    defaults: laneDefaultsFor(byProvider),
+    defaults: { ...repairedDefaults, ollama: ollamaCandidate },
     preferredProvider,
     lastResolvedLane:
       modelDefaults.lastResolvedLaneByScope?.[
@@ -556,7 +644,8 @@ export function resolveLaneForTarget(
     isModelAllowed: isModelAllowedTriState,
     isModelInRegistry,
     gatewayRoutesHydrated: hasHydratedGatewayCatalog(),
-    ollamaPinned: preferredProvider === 'ollama',
+    ollamaPinned,
+    ...(ollamaReady !== undefined ? { ollamaReady } : {}),
     codexAccountModels: getRendererCodexAccountModels(),
     ...(orgGateway ? { orgGateway } : {}),
     ...(personalGateway ? { personalGateway } : {}),
@@ -602,18 +691,31 @@ export function resolveTabDefaults(
     // Native lanes run on the user's own subscription and keep the seed. An
     // explicitly configured value that differs from the shipped constant is
     // kept as-is; equality with the constant is the "untouched" signal.
+    //
+    // On the user's own AI gateway standing in for credits, a hosted route
+    // bills credits the account doesn't have, so the seed is undispatchable
+    // there too. Any configured model, seed or not, first moves to the
+    // gateway's route for the same model: same model, a route that can pay.
+    const personalGateway = advisorResolved?.personalGateway;
     const seedUndispatchable = (lane: BillingLane): boolean =>
       !isModelRunnableOnLane(lane, configured) ||
       (lane === 'ai-credits' &&
-        getRendererGuestPrincipal() &&
-        !isGuestAllowedCreditsModel(configured));
+        (personalGateway !== undefined ||
+          (getRendererGuestPrincipal() &&
+            !isGuestAllowedCreditsModel(configured))));
+    // Only gateway models the next send would accept (policy, runnable).
     const model =
-      advisorResolved &&
+      (personalGateway
+        ? personalGatewayEquivalentModel(configured, {
+            models: personalGateway.models.filter(sendableGatewayModelFilter()),
+          })
+        : undefined) ??
+      (advisorResolved &&
       advisorResolvedLane &&
       configured === DEFAULT_APP_ADVISOR_MODEL &&
       seedUndispatchable(advisorResolvedLane)
         ? advisorResolved.selection.model
-        : configured;
+        : configured);
     const thinkingLevel = modelDefaults.appAdvisorThinkingLevel ?? 'high';
     const selected = selectableDefault(
       model,
@@ -624,7 +726,7 @@ export function resolveTabDefaults(
       // same `ollamaPinned` from the CHAT provider. Reading the worktree one
       // here made the two halves disagree whenever the user's chat and worktree
       // defaults name different providers.
-      modelDefaults.chatProvider === 'ollama',
+      ollamaLaneAccess(modelDefaults.chatProvider === 'ollama', advisorLane),
     );
     const provider = getProviderForModel(selected.model) ?? 'codex';
     return {
@@ -694,7 +796,7 @@ export function resolveTabDefaults(
     resolved.model,
     resolved.thinkingLevel,
     resolvedLane,
-    preferredProvider === 'ollama',
+    ollamaLaneAccess(preferredProvider === 'ollama', lane),
   );
   const model =
     !getRendererModelGatewayEnforced() &&
@@ -785,7 +887,32 @@ export function resolveBillingSeed(
       return 'ai-credits';
     }
   }
-  return modelDefaults?.billingFramework;
+  return rememberedBillingSeed(modelDefaults);
+}
+
+/**
+ * The remembered "Use AI Credits" choice, unless AI Credits are settled as
+ * unable to pay (and no Personal gateway stands in for them). A remembered
+ * `'ai-credits'` at a confirmed zero balance would
+ * seed every new chat onto a lane that cannot run, and the composer would claim
+ * "paid with AI Credits" while nothing can pay. The stored preference is left
+ * alone, so the choice seeds again once credits are eligible. Unknown
+ * eligibility keeps the remembered choice.
+ */
+export function rememberedBillingSeed(
+  modelDefaults: ChatState['modelDefaults'],
+): ChatBillingFramework | undefined {
+  const remembered = modelDefaults?.billingFramework;
+  if (
+    remembered === 'ai-credits' &&
+    getRendererBillingLaneAvailability().creditsEligible === false &&
+    // A Personal gateway stands in for AI Credits on the same lane, so its
+    // routed choice still pays.
+    personalGatewayCreditsLane() === undefined
+  ) {
+    return undefined;
+  }
+  return remembered;
 }
 
 /** Resolve the deferred-tools permission used only when a fresh tab is made. */

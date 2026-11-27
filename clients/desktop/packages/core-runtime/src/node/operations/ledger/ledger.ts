@@ -40,6 +40,7 @@ import {
 import { KEYED_RECEIPT_RETRY_WINDOW_MS } from '../../../kernel/keyed-receipt';
 import {
   OPERATION_LEDGER_RETENTION_INDEXES,
+  migrateOperationLedgerDatabase,
   openOperationLedgerDatabase,
 } from './database';
 import { OperationLedgerError, OperationLedgerRefusedError } from './errors';
@@ -175,6 +176,7 @@ export type OperationLedgerRetentionResult =
 
 export interface OperationLedgerOptions {
   openBusyTimeoutMs?: number;
+  keepSchema?: boolean;
   /** Milliseconds since the epoch. */
   clock?: () => number;
   retryWindowMs?: number;
@@ -426,7 +428,9 @@ export class OperationLedger {
         'Operation identity retention must be finite and at least the retry window.',
       );
     return new OperationLedger(
-      openOperationLedgerDatabase(databasePath, options.openBusyTimeoutMs),
+      openOperationLedgerDatabase(databasePath, options.openBusyTimeoutMs, {
+        keepSchema: options.keepSchema,
+      }),
       options.clock ?? Date.now,
       retryWindowMs,
       identityRetentionMs,
@@ -436,6 +440,10 @@ export class OperationLedger {
 
   get isOpen(): boolean {
     return this.db.isOpen;
+  }
+
+  migrateSchema(): void {
+    migrateOperationLedgerDatabase(this.db);
   }
 
   close(): void {

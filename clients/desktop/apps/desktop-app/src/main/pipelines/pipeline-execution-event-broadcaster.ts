@@ -15,6 +15,11 @@ interface PendingExecutionUpdate {
 
 type ExecutionEventSender = (event: ExecutionEvent) => void;
 
+export interface PipelineExecutionTarget {
+  projectId: string;
+  worktreeId: string;
+}
+
 function executionHasStatusReasons(state: {
   status_reasons?: readonly unknown[];
 }): boolean {
@@ -100,10 +105,68 @@ const rendererEventBroadcaster = new PipelineExecutionEventBroadcaster(
 );
 
 const pipelineLifecycleListeners = new Set<(event: ExecutionEvent) => void>();
+interface TrackedPausedPipelineTarget extends PipelineExecutionTarget {
+  ancestorIds: readonly string[];
+}
+
 const lastBroadcastStatusByExecutionId = new Map<
   string,
   ExecutionEvent['state']['status']
 >();
+const liveParentExecutionIdByExecutionId = new Map<string, string>();
+const pausedPipelineTargetsByExecutionId = new Map<
+  string,
+  TrackedPausedPipelineTarget
+>();
+
+function resolveLiveAncestorIds(
+  executionId: string,
+  parentExecutionId: string | undefined,
+): string[] | null {
+  const ancestors: string[] = [];
+  const visited = new Set<string>([executionId]);
+  let currentParentId = parentExecutionId;
+  while (currentParentId !== undefined) {
+    if (
+      visited.has(currentParentId) ||
+      !lastBroadcastStatusByExecutionId.has(currentParentId)
+    ) {
+      return null;
+    }
+    visited.add(currentParentId);
+    ancestors.push(currentParentId);
+    currentParentId = liveParentExecutionIdByExecutionId.get(currentParentId);
+  }
+  return ancestors;
+}
+
+function pruneDescendantsForClearedOrTerminalExecution(
+  executionId: string,
+): void {
+  for (const [id, entry] of Array.from(
+    pausedPipelineTargetsByExecutionId.entries(),
+  )) {
+    if (entry.ancestorIds.includes(executionId)) {
+      pausedPipelineTargetsByExecutionId.delete(id);
+    }
+  }
+  const removed = new Set<string>([executionId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [id, parentId] of Array.from(
+      liveParentExecutionIdByExecutionId.entries(),
+    )) {
+      if (removed.has(parentId)) {
+        liveParentExecutionIdByExecutionId.delete(id);
+        lastBroadcastStatusByExecutionId.delete(id);
+        pausedPipelineTargetsByExecutionId.delete(id);
+        removed.add(id);
+        changed = true;
+      }
+    }
+  }
+}
 
 /**
  * Subscribes to discrete pipeline status transitions (start, pause, resume,
@@ -117,6 +180,28 @@ export function subscribePipelineLifecycleTransitions(
   return (): void => {
     pipelineLifecycleListeners.delete(listener);
   };
+}
+
+export function listBroadcastPausedPipelineTargets(): PipelineExecutionTarget[] {
+  return Array.from(
+    pausedPipelineTargetsByExecutionId.values(),
+    ({ projectId, worktreeId }) => ({ projectId, worktreeId }),
+  );
+}
+
+/**
+ * Clears cached broadcast tracking for executions removed from or restored
+ * back into the durable executions directory outside live transitions.
+ */
+export function clearBroadcastPipelineExecutionTracking(
+  executionIds: readonly string[],
+): void {
+  for (const executionId of executionIds) {
+    pausedPipelineTargetsByExecutionId.delete(executionId);
+    lastBroadcastStatusByExecutionId.delete(executionId);
+    liveParentExecutionIdByExecutionId.delete(executionId);
+    pruneDescendantsForClearedOrTerminalExecution(executionId);
+  }
 }
 
 export function broadcastPipelineExecutionEvent(event: ExecutionEvent): void {
@@ -139,10 +224,44 @@ export function broadcastPipelineExecutionEvent(event: ExecutionEvent): void {
     nextStatus === 'success' ||
     nextStatus === 'failure' ||
     nextStatus === 'cancelled';
-  if (isTerminal || nextStatus === 'paused') {
+  if (isTerminal) {
+    pausedPipelineTargetsByExecutionId.delete(event.executionId);
     lastBroadcastStatusByExecutionId.delete(event.executionId);
+    liveParentExecutionIdByExecutionId.delete(event.executionId);
+    pruneDescendantsForClearedOrTerminalExecution(event.executionId);
   } else {
     lastBroadcastStatusByExecutionId.set(event.executionId, nextStatus);
+    if (event.state.parent_execution_id !== undefined) {
+      liveParentExecutionIdByExecutionId.set(
+        event.executionId,
+        event.state.parent_execution_id,
+      );
+    } else {
+      liveParentExecutionIdByExecutionId.delete(event.executionId);
+    }
+    if (
+      nextStatus === 'paused' &&
+      event.state.project_id &&
+      event.state.worktree_id
+    ) {
+      const ancestorIds = resolveLiveAncestorIds(
+        event.executionId,
+        event.state.parent_execution_id,
+      );
+      if (ancestorIds !== null) {
+        pausedPipelineTargetsByExecutionId.set(event.executionId, {
+          projectId: event.state.project_id,
+          worktreeId: event.state.worktree_id,
+          ancestorIds,
+        });
+      } else {
+        pausedPipelineTargetsByExecutionId.delete(event.executionId);
+        lastBroadcastStatusByExecutionId.delete(event.executionId);
+        liveParentExecutionIdByExecutionId.delete(event.executionId);
+      }
+    } else {
+      pausedPipelineTargetsByExecutionId.delete(event.executionId);
+    }
   }
   if (event.type !== 'execution.updated' || previousStatus !== nextStatus) {
     for (const listener of Array.from(pipelineLifecycleListeners)) {
@@ -154,4 +273,6 @@ export function broadcastPipelineExecutionEvent(event: ExecutionEvent): void {
 export function resetPipelineExecutionEventBroadcasterForTests(): void {
   rendererEventBroadcaster.dispose();
   lastBroadcastStatusByExecutionId.clear();
+  liveParentExecutionIdByExecutionId.clear();
+  pausedPipelineTargetsByExecutionId.clear();
 }

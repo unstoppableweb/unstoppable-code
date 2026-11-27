@@ -1,10 +1,7 @@
 'use client';
 
 import { useRef, useState, type JSX } from 'react';
-import {
-  FloatingMenu,
-  FloatingMenuPointAnchor,
-} from '../primitives/FloatingMenu';
+import { Menu, MenuPointAnchor } from '../primitives/Menu';
 import {
   ActionMenuItems,
   ActionMenuRowStyle,
@@ -47,8 +44,8 @@ function isChoosable(item: TabContextMenuItem): boolean {
 }
 
 /**
- * A right-click menu at the pointer: the shared `FloatingMenu` anchored at a
- * `FloatingMenuPointAnchor`, so it places, flips, dismisses (Escape, an
+ * A right-click menu at the pointer: the shared `Menu` anchored at a
+ * `MenuPointAnchor`, so it places, flips, dismisses (Escape, an
  * outside press) and moves focus like every other menu.
  */
 export function TabContextMenu({
@@ -81,13 +78,8 @@ export function TabContextMenu({
 
   return (
     <>
-      <FloatingMenuPointAnchor
-        ref={anchorRef}
-        x={x}
-        y={y}
-        ownerDocument={doc}
-      />
-      <FloatingMenu
+      <MenuPointAnchor ref={anchorRef} x={x} y={y} ownerDocument={doc} />
+      <Menu
         open
         onOpenChange={(open): void => {
           if (!open) onClose();
@@ -113,7 +105,7 @@ export function TabContextMenu({
         <ActionMenuRowStyle>
           <ActionMenuItems items={items} onSelect={selectItem} />
         </ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
     </>
   );
 }

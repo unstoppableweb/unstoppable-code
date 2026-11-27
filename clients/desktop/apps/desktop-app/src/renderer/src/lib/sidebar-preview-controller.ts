@@ -104,7 +104,7 @@ export function requestSidebarPreviewOpen(options?: {
  * True while any sidebar dropdown/context menu is open. Those menus portal
  * OUTSIDE the sidebar, so opening one fires a pointer-leave on the panel —
  * which must not be read as "the user left the preview". The flag is the
- * shared reference-counted one set by FloatingMenu and
+ * shared reference-counted one set by Menu and
  * `useSuspendSidebarHovers`.
  */
 function sidebarMenuOpen(): boolean {

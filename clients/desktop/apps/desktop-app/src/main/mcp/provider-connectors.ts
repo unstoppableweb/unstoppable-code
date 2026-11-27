@@ -8,7 +8,6 @@ import type {
   ProviderAlternateRoute,
   ProviderConnectorEntry,
   ProviderConnectorListResult,
-  ProviderConnectorProvider,
 } from '@canopy/execution-engine/types/mcp-servers';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -72,22 +71,6 @@ export async function listAdvertisedProviderConnectors(): Promise<
 
 /** Claude Code prefixes every claude.ai account connector with this. */
 const CLAUDE_CONNECTOR_PREFIX = 'claude.ai ';
-
-/**
- * Where a user links connectors, per provider. Neither CLI can create one, so
- * linking always ends in the browser.
- *
- * Codex publishes a page per app and normally supplies its own `installUrl`;
- * this is the fallback for an app the directory does not describe. Keyed by
- * provider because a single fallback sent every Codex connect to Claude's page.
- */
-export const PROVIDER_CONNECTOR_MANAGE_URLS: Record<
-  ProviderConnectorProvider,
-  string
-> = {
-  claude: 'https://claude.ai/customize/connectors',
-  codex: 'https://chatgpt.com/apps',
-};
 
 /** `claude mcp list` health-checks every configured server, so allow for it. */
 const LIST_TIMEOUT_MS = 60_000;

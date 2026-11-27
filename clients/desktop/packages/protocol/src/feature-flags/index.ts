@@ -431,6 +431,19 @@ export const CLIENT_FEATURE_FLAGS = {
     description:
       "Controls whether desktop shares chat automations that it would otherwise share in chat form (packaged installs, native chat automations, container automations) as workflows (CAN-6455). Off until recipients run a desktop that binds a workflow's project input.",
   },
+  canopyDesktopBillingSetupGate: {
+    key: 'canopy-desktop-billing-setup-gate',
+    // A kill switch, on in every state: the gate has no Skip, so a wrongly
+    // confirmed "no billing source" would block every new chat until the
+    // next release. Turning it off restores the composer; the zero-credit
+    // composer fixes and the send refusal stay on.
+    launchDarklyDisabledDefaultValue: true,
+    launchDarklyEnabledUnavailableValue: true,
+    localOnlyDefaultValue: true,
+    ownership: 'interface',
+    description:
+      'Shows the billing setup gate (the provider list) in place of a new-chat composer while no source can run a model (billing setup gate, 2026-11-25). A kill switch: off restores the composer.',
+  },
   canopyRemoteWebPreview: {
     key: 'canopy-remote-web-preview',
     launchDarklyDisabledDefaultValue: false,
@@ -892,6 +905,21 @@ export const CLIENT_FEATURE_FLAGS = {
     description:
       'Agent secret requests: the RequestSecrets, RunWithSecrets and WriteSecretsFile tools, the secret request form, and the secret_requests capability cloud clients advertise.',
   },
+  canopySharedArtifacts: {
+    key: 'canopy-shared-artifacts',
+    // On without LaunchDarkly, so development builds and tests can reach the
+    // feature; off when LaunchDarkly is configured but unavailable (CAN-8015).
+    launchDarklyDisabledDefaultValue: true,
+    launchDarklyEnabledUnavailableValue: false,
+    // Hosted (artifacts are stored and served by the web): off in a
+    // local-only build.
+    localOnlyDefaultValue: false,
+    // Nothing reads it yet; CAN-8016 changes this to `both` with the server
+    // gate.
+    ownership: 'interface',
+    description:
+      'Shared artifacts: publishing static HTML, Markdown, image and PDF content from desktop and sharing it with a team, an organization or the public (CAN-8015).',
+  },
 } as const satisfies Record<string, ClientFeatureFlagDefinition>;
 
 /**
@@ -1002,6 +1030,7 @@ export type ClientFeatureFlagValues = {
   [CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm
     .key]: boolean;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopBillingSetupGate.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyRemoteWebPreview.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Sweep.key]: boolean;
@@ -1042,6 +1071,7 @@ export type ClientFeatureFlagValues = {
   [CLIENT_FEATURE_FLAGS.canopyDesktopDaemonFilesReads.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyWebCoreClient.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopySharedAgentSecretRequests.key]: boolean;
+  [CLIENT_FEATURE_FLAGS.canopySharedArtifacts.key]: boolean;
 };
 
 /**
@@ -1188,6 +1218,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
     [CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm
         .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopBillingSetupGate.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopBillingSetupGate
+        .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyRemoteWebPreview.key]:
       CLIENT_FEATURE_FLAGS.canopyRemoteWebPreview
         .launchDarklyDisabledDefaultValue,
@@ -1305,6 +1338,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
       CLIENT_FEATURE_FLAGS.canopyWebCoreClient.launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopySharedAgentSecretRequests.key]:
       CLIENT_FEATURE_FLAGS.canopySharedAgentSecretRequests
+        .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopySharedArtifacts.key]:
+      CLIENT_FEATURE_FLAGS.canopySharedArtifacts
         .launchDarklyDisabledDefaultValue,
   };
 
@@ -1437,6 +1473,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
     [CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm
         .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopBillingSetupGate.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopBillingSetupGate
+        .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyRemoteWebPreview.key]:
       CLIENT_FEATURE_FLAGS.canopyRemoteWebPreview
         .launchDarklyEnabledUnavailableValue,
@@ -1557,6 +1596,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
     [CLIENT_FEATURE_FLAGS.canopySharedAgentSecretRequests.key]:
       CLIENT_FEATURE_FLAGS.canopySharedAgentSecretRequests
         .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopySharedArtifacts.key]:
+      CLIENT_FEATURE_FLAGS.canopySharedArtifacts
+        .launchDarklyEnabledUnavailableValue,
   };
 
 /**
@@ -1666,6 +1708,8 @@ export const CLIENT_FEATURE_FLAG_LOCAL_ONLY_DEFAULTS: ClientFeatureFlagValues =
     [CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm
         .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopBillingSetupGate.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopBillingSetupGate.localOnlyDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyRemoteWebPreview.key]:
       CLIENT_FEATURE_FLAGS.canopyRemoteWebPreview.localOnlyDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion.key]:
@@ -1762,6 +1806,8 @@ export const CLIENT_FEATURE_FLAG_LOCAL_ONLY_DEFAULTS: ClientFeatureFlagValues =
     [CLIENT_FEATURE_FLAGS.canopySharedAgentSecretRequests.key]:
       CLIENT_FEATURE_FLAGS.canopySharedAgentSecretRequests
         .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopySharedArtifacts.key]:
+      CLIENT_FEATURE_FLAGS.canopySharedArtifacts.localOnlyDefaultValue,
   };
 
 /** A fresh copy of {@link CLIENT_FEATURE_FLAG_LOCAL_ONLY_DEFAULTS}. */

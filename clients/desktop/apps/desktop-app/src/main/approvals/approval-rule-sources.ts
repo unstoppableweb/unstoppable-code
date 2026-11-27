@@ -197,6 +197,14 @@ export async function protectedApprovalFileWritePaths(
       { folder: ownerRecords, glob: ['*'] },
       { folder: backups, glob: ['*'] },
       { folder: backups, glob: ['*', '*'] },
+      // An entry matches only paths exactly as deep, so each depth is listed.
+      { folder: dirname(ownerRecords), glob: ['*'] },
+      { folder: dirname(ownerRecords), glob: ['*', '*'] },
+      { folder: dirname(backups), glob: ['*'] },
+      { folder: dirname(backups), glob: ['*', '*'] },
+      { folder: dirname(backups), glob: ['*', '*', '*'] },
+      { folder: dirname(backups), glob: ['*', '*', '*', '*'] },
+      { folder: dirname(backups), glob: ['*', '*', '*', '*', '*'] },
     ].map(({ folder, glob }) =>
       resolveExistingAncestorPath(folder, basePath).then((resolved) =>
         resolved === undefined ? undefined : join(resolved, ...glob),

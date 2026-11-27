@@ -9,13 +9,10 @@ import { useDesktopMediaViewer } from '@/components/shared/useDesktopMediaViewer
 import { useAttachmentHover } from '@/hooks/useAttachmentHover';
 import { getFilenameFromPath } from '@/lib/file-type';
 import type { SentAttachment } from '@/hooks/useSentAttachments';
-import {
-  cloudAttachmentIdOfPath,
-  isCloudAttachmentPath,
-} from '@/cloud-chats/cloud-chat-attachments';
-import { CloudChatFileTargetContext } from '@/cloud-chats/cloud-chat-file-target';
+import { isCloudAttachmentPath } from '@/cloud-chats/cloud-chat-attachments';
 import { useWorkspaceAccess } from '@/lib/workspace-access';
 import { useGitHubStore } from '@/stores/githubStore';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { ChatMarkdownFileTargetContext } from './chat-markdown-file-target';
 
 /**
@@ -24,9 +21,9 @@ import { ChatMarkdownFileTargetContext } from './chat-markdown-file-target';
  * themselves (a video as its first frame with a play mark), other files as
  * tiles with their type and name. Clicking an image or a video opens the
  * message's pictures and videos in the in-app viewer, at that one; clicking
- * a file opens it in the system's default app. A cloud chat's attachment has
- * no file on this computer, so it saves through that chat's own web core
- * read instead (CAN-6771). Resting on a file shows its preview.
+ * a file opens it in the system's default app. Resting on a file shows its
+ * preview. A cloud chat's attachments are the shared message media's instead
+ * (CAN-6775).
  */
 export function MessageImages({
   attachments,
@@ -45,53 +42,27 @@ export function MessageImages({
     popoverMouseEnter,
     popoverMouseLeave,
   } = useAttachmentHover();
-  // One failure notice for both ways a tile opens its file.
-  const failed = useCallback(
-    (action: 'open' | 'save', absolutePath: string): void => {
-      addToast(
-        `Couldn't ${action} ${getFilenameFromPath(absolutePath)}.`,
-        'error',
-        undefined,
-        { forceInApp: true },
-      );
-    },
-    [addToast],
-  );
+  const chatTarget = useContext(ChatMarkdownFileTargetContext);
+  const isPairedScope =
+    chatTarget !== null && isPairedComputerId(chatTarget.projectId);
   const open = useCallback(
     (absolutePath: string): void => {
-      void window.api
-        .openExternalFile({ absolutePath })
-        .catch(() => failed('open', absolutePath));
-    },
-    [failed],
-  );
-  const cloudTarget = useContext(CloudChatFileTargetContext);
-  const save = useCallback(
-    (absolutePath: string): void => {
-      const id = cloudAttachmentIdOfPath(absolutePath);
-      if (cloudTarget === null || id === null) return;
-      void window.api.cloudChats
-        .downloadFile(cloudTarget, {
-          kind: 'attachment',
-          id,
-          filename: getFilenameFromPath(absolutePath),
-        })
-        .then(
-          (result) => {
-            // A cancelled save dialog is no failure.
-            if (!result.ok && result.reason !== 'canceled')
-              failed('save', absolutePath);
-          },
-          () => failed('save', absolutePath),
+      if (isPairedScope) return;
+      void window.api.openExternalFile({ absolutePath }).catch(() => {
+        addToast(
+          `Couldn't open ${getFilenameFromPath(absolutePath)}.`,
+          'error',
+          undefined,
+          { forceInApp: true },
         );
+      });
     },
-    [cloudTarget, failed],
+    [addToast, isPairedScope],
   );
   // The message's images and videos, in attach order: the viewer's set. A
   // cloud chat's attachment has no file on this computer to show. A video is
   // read through the chat's own worktree, which need not be the selected one
   // (a chat in a pulled-out panel).
-  const chatTarget = useContext(ChatMarkdownFileTargetContext);
   // A read-only transcript's videos cannot be read for the viewer: a
   // published chat's byte reader serves the sealed copy's repositories only,
   // and a retained chat's review scope has no file roots. There the viewer
@@ -137,14 +108,10 @@ export function MessageImages({
         {attachments.map((attachment) => {
           const { absolutePath } = attachment;
           const name = getFilenameFromPath(absolutePath);
-          // A cloud chat's attachment has no file on this computer to open:
-          // it saves through its chat, when the transcript names one.
+          // A cloud chat's attachment has no file on this computer to open.
           const cloud = isCloudAttachmentPath(absolutePath);
-          const onOpen = !cloud
-            ? (): void => open(absolutePath)
-            : cloudTarget !== null
-              ? (): void => save(absolutePath)
-              : undefined;
+          const onOpen =
+            isPairedScope || cloud ? undefined : (): void => open(absolutePath);
           return attachment.kind === 'file' ? (
             <MessageFileTile
               key={absolutePath}
@@ -152,9 +119,13 @@ export function MessageImages({
                 key: absolutePath,
                 name,
                 ...(onOpen === undefined ? {} : { onOpen }),
-                onHoverStart: (anchor): void =>
-                  handleMouseEnter(absolutePath, anchor),
-                onHoverEnd: handleMouseLeave,
+                ...(isPairedScope
+                  ? {}
+                  : {
+                      onHoverStart: (anchor): void =>
+                        handleMouseEnter(absolutePath, anchor),
+                      onHoverEnd: handleMouseLeave,
+                    }),
               }}
             />
           ) : (
@@ -165,10 +136,8 @@ export function MessageImages({
                 src: attachment.src,
                 kind: attachment.kind,
                 alt: name,
-                ...(cloud
-                  ? onOpen === undefined
-                    ? {}
-                    : { onOpen }
+                ...(onOpen === undefined
+                  ? {}
                   : readOnly && attachment.kind === 'video'
                     ? sealed
                       ? {}
@@ -180,7 +149,7 @@ export function MessageImages({
         })}
       </MessageMediaRow>
       {viewer}
-      {hoveredPath && (
+      {!isPairedScope && hoveredPath && (
         <AttachmentPreviewPopover
           absolutePath={hoveredPath}
           filename={getFilenameFromPath(hoveredPath)}

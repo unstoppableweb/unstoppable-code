@@ -42,6 +42,7 @@ import {
 import { worktreeLedgerIncarnation } from '../ledger/lifecycle-containers';
 import { createElectronExecutionRuntime } from '../pipelines/execution-runtime';
 import { relocateExecutionCheckout } from '../pipelines/execution-checkout-location';
+import { notifyDurablePausedPipelinesChanged } from '../pipelines/paused-pipeline-cache-signal';
 import {
   listExecutionSummaries,
   loadExecutionState,
@@ -861,26 +862,32 @@ export async function migratePipelineExecutions(params: {
   const executionsDir = createElectronExecutionRuntime().executionsDir;
   const summaries = await listExecutionSummaries(executionsDir);
   const snapshots = new Map<string, ExecutionState>();
-  for (const summary of summaries) {
-    if (
-      summary.project_id !== params.sourceWorkspaceId ||
-      summary.worktree_id !== params.sourceWorktreeId
-    ) {
-      continue;
+  try {
+    for (const summary of summaries) {
+      if (
+        summary.project_id !== params.sourceWorkspaceId ||
+        summary.worktree_id !== params.sourceWorktreeId
+      ) {
+        continue;
+      }
+      const state = await loadExecutionState(summary.id, executionsDir);
+      if (!state) {
+        continue;
+      }
+      snapshots.set(summary.id, structuredClone(state));
+      await saveExecutionState(
+        {
+          ...relocateExecutionCheckout(state, params),
+          project_id: params.destinationWorkspaceId,
+          worktree_id: params.destinationWorktreeId,
+        },
+        executionsDir,
+      );
     }
-    const state = await loadExecutionState(summary.id, executionsDir);
-    if (!state) {
-      continue;
+  } finally {
+    if (snapshots.size > 0) {
+      notifyDurablePausedPipelinesChanged(Array.from(snapshots.keys()));
     }
-    snapshots.set(summary.id, structuredClone(state));
-    await saveExecutionState(
-      {
-        ...relocateExecutionCheckout(state, params),
-        project_id: params.destinationWorkspaceId,
-        worktree_id: params.destinationWorktreeId,
-      },
-      executionsDir,
-    );
   }
   return snapshots;
 }
@@ -889,11 +896,17 @@ export async function restorePipelineSnapshots(
   snapshots: Map<string, ExecutionState>,
 ): Promise<void> {
   const executionsDir = createElectronExecutionRuntime().executionsDir;
-  await settleAll(
-    Array.from(snapshots.values()).map((state) =>
-      saveExecutionState(state, executionsDir),
-    ),
-  );
+  try {
+    await settleAll(
+      Array.from(snapshots.values()).map((state) =>
+        saveExecutionState(state, executionsDir),
+      ),
+    );
+  } finally {
+    if (snapshots.size > 0) {
+      notifyDurablePausedPipelinesChanged(Array.from(snapshots.keys()));
+    }
+  }
 }
 
 /** A worktree row and the workspace whose `worktrees.json` holds it. */

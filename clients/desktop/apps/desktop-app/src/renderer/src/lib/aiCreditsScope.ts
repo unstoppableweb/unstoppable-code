@@ -6,6 +6,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import { serializeWorkspaceContext } from '@canopy/protocol/workspace-context';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isWebCoreScope } from '@/lib/chat-authority';
 
 /**
@@ -70,7 +71,8 @@ export function chatAiCreditsScope(
   // main resolves a work scope's owner from its local project; a cloud
   // project is placed in its owner's context, so the navigation scope names
   // the same owner without sending main a web core id (CAN-6175 D1).
-  if (isWebCoreScope(projectId)) return undefined;
+  if (isWebCoreScope(projectId) || isPairedComputerId(projectId))
+    return undefined;
   return {
     kind: 'work',
     projectId,

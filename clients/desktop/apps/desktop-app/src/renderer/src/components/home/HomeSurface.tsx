@@ -230,6 +230,8 @@ import {
 } from './homeGating';
 import { useHomeHeading } from './useHomeHeading';
 import { useHomeComposerAutofocus } from './useHomeComposerAutofocus';
+import { DesktopBillingSetupGate } from '@/components/billing/DesktopBillingSetupGate';
+import { useDesktopBillingGate } from '@/hooks/useDesktopBillingReadiness';
 import { useSidebarScopingContext } from '@/components/sidebar/useSidebarScopingContext';
 
 export interface HomeSurfaceProps {
@@ -930,6 +932,8 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
     (s) => s.pendingHomeComposerText,
   );
   const consumedHomeComposerNonceRef = useRef(0);
+  // Set by `HomeComposerControls` while nothing can pay for the staged model.
+  const billingSendGuardRef = useRef<(() => boolean) | null>(null);
   useLayoutEffect(() => {
     if (variant !== 'page' || !pendingHomeComposerText) return;
     if (consumedHomeComposerNonceRef.current === pendingHomeComposerText.nonce)
@@ -1603,6 +1607,9 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
     );
     if (!draftWorkspaceId) return;
     if (pendingAttachmentImportIds.length > 0) return;
+    // Billing dead end: keep the draft and open the model picker rather than
+    // start a chat whose first turn main would refuse.
+    if (origin === 'user' && billingSendGuardRef.current?.() === true) return;
     // Use the controls' resolver against live state for Enter and click alike.
     const currentScope = getHomeScope();
     if (
@@ -1756,6 +1763,17 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
 
   const heading = useHomeHeading();
   const homeComposerRef = useRef<HTMLDivElement>(null);
+  // Billing setup gate: while nothing can run a model, the provider list
+  // replaces the composer box. The draft lives in `homeComposerStore` and the
+  // Slate editor object here, so it survives the swap both ways.
+  // A cloud (web-core) target is funded by the web account (its own keys,
+  // gateway or credits), which desktop readiness does not read, so the gate
+  // leaves it alone, as the Home send guard does.
+  const billingGateShown =
+    useDesktopBillingGate().gate.shown && !isHomeCloudTarget(workspaceId);
+  // The project the next Home chat would start in, for the gate's policy
+  // dead-end check.
+  const billingGateProjectId = workspaceId ?? homeScope.fallbackWorkspaceId;
   const [voiceRecording, setVoiceRecording] = useState(false);
   const [planModeHint, setPlanModeHint] = useState<PlanModeSuggestion | null>(
     null,
@@ -1936,7 +1954,9 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
                 ? {}
                 : { details: sendError.details })}
               blockMessageFromReplay
-              {...(sendErrorRetryable
+              // The Home send guard lives in the composer controls, which the
+              // billing gate unmounts, so Retry would bypass it.
+              {...(sendErrorRetryable && !billingGateShown
                 ? {
                     onRetry: (): void => {
                       void handleSend();
@@ -1949,6 +1969,8 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
         ]}
         aboveContext={
           // Keep the plan hint, tray and picker drawer together above the composer.
+          // The billing setup gate replaces the composer, so its drawer goes too.
+          !billingGateShown &&
           (showComposerContext || planModeHint?.visible === true) && (
             <ComposerDrawer
               edge="top"
@@ -2009,134 +2031,146 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
           )
         }
         composer={
-          <div>
-            <ChatComposerShell
-              shellRef={homeComposerRef}
-              dataTestId="home-composer"
-              className="z-20 w-full"
-            >
-              {/* The org gateway a member has no working key for. Home is a
+          billingGateShown ? (
+            <DesktopBillingSetupGate
+              surface="home"
+              {...(billingGateProjectId !== null
+                ? { projectId: billingGateProjectId }
+                : {})}
+              composerRef={homeComposerRef}
+              onReturnFocus={(): void => focusEditor(editor)}
+            />
+          ) : (
+            <div>
+              <ChatComposerShell
+                shellRef={homeComposerRef}
+                dataTestId="home-composer"
+                className="z-20 w-full"
+              >
+                {/* The org gateway a member has no working key for. Home is a
  composer like any other: without this, the first thing a
  new member of an enforcing org does is send a task that
  cannot run, with nothing on screen saying why. Kept inside
  the composer box so it does not shift the vertical center
  line anchored on the composer box. */}
-              <ModelGatewayKeyBanner
-                selectedGatewayOrganizationId={selectedGatewayOrganizationId}
-              />
-              <span
-                ref={composerMenu.anchorRef}
-                aria-hidden
-                className="pointer-events-none absolute inset-0"
-              />
-              <DraftComposerEditor
-                editor={editor}
-                typeToFocus
-                value={editorValue}
-                onChange={handleEditorChange}
-                onKeyDown={handleEditorKeyDown}
-                onPaste={handleEditorPaste}
-                placeholder={
-                  // While dictating, the empty box prompts for speech, as the
-                  // chat composer does.
-                  voiceRecording
-                    ? 'Start talking…'
-                    : mode === 'pipeline'
-                      ? 'Describe the task we are working on'
-                      : defaultChatPlaceholder(true, true)
-                }
-                dataTestId="home-composer-editor"
-              />
+                <ModelGatewayKeyBanner
+                  selectedGatewayOrganizationId={selectedGatewayOrganizationId}
+                />
+                <span
+                  ref={composerMenu.anchorRef}
+                  aria-hidden
+                  className="pointer-events-none absolute inset-0"
+                />
+                <DraftComposerEditor
+                  editor={editor}
+                  typeToFocus
+                  value={editorValue}
+                  onChange={handleEditorChange}
+                  onKeyDown={handleEditorKeyDown}
+                  onPaste={handleEditorPaste}
+                  placeholder={
+                    // While dictating, the empty box prompts for speech, as the
+                    // chat composer does.
+                    voiceRecording
+                      ? 'Start talking…'
+                      : mode === 'pipeline'
+                        ? 'Describe the task we are working on'
+                        : defaultChatPlaceholder(true, true)
+                  }
+                  dataTestId="home-composer-editor"
+                />
 
-              {mode === 'chat' && scheduledSendDraft && (
-                <div className="px-4 pt-2">
-                  <Chip
-                    icon={ScheduleIcon}
-                    onRemove={() => setScheduledSendDraft(null)}
-                    removeLabel="Clear scheduled send"
-                    data-testid="home-scheduled-send-pill"
-                    removeTestId="home-scheduled-send-pill-clear"
-                  >
-                    Scheduled send{' '}
-                    {new Date(scheduledSendDraft.runAt).toLocaleString()}
-                  </Chip>
-                </div>
-              )}
+                {mode === 'chat' && scheduledSendDraft && (
+                  <div className="px-4 pt-2">
+                    <Chip
+                      icon={ScheduleIcon}
+                      onRemove={() => setScheduledSendDraft(null)}
+                      removeLabel="Clear scheduled send"
+                      data-testid="home-scheduled-send-pill"
+                      removeTestId="home-scheduled-send-pill-clear"
+                    >
+                      Scheduled send{' '}
+                      {new Date(scheduledSendDraft.runAt).toLocaleString()}
+                    </Chip>
+                  </div>
+                )}
 
-              <HomeComposerControls
-                onAttachWorkflow={openAttachWorkflow}
-                key={`${accountEpoch}:${homeComposerContextKey(scopingContext)}`}
-                composerActionScope={composerActionScope}
-                composerMenu={composerMenu}
-                searchFiles={searchComposerFiles}
-                onSelectFile={(file) =>
-                  composerMenu.insertFile(file, (fileIndex ?? []).length)
-                }
-                editor={editor}
-                hintDraftRevision={hintDraftRevision}
-                disabled={composerDisabled}
-                targetPending={targetReadiness === 'pending'}
-                shortcutEnabled={variant === 'page'}
-                onSend={() => handleSend()}
-                onEditorExternallyChanged={handleEditorExternallyChanged}
-                commands={composerCommands}
-                commandsRefreshing={slashCommandsRefreshing}
-                isCodex={isCodexProvider}
-                onSelectCommand={handlePopupSelectCommand}
-                composerBoxRef={homeComposerRef}
-                onVoiceRecordingChange={setVoiceRecording}
-                onPlanModeHintChange={setPlanModeHint}
-                voiceDestinationKey={`${workspaceId ?? ''}/${draftGeneration}`}
-                onSpeechModelPromptChange={setSpeechModelPrompt}
-              />
-              {mode === 'pipeline' && taskPlanPreset && (
-                <div
-                  data-testid="home-task-plan-guidance"
-                  className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 pb-3"
-                >
-                  <Surface
-                    variant="group"
-                    size="small"
-                    className="shrink-0 inline-block"
+                <HomeComposerControls
+                  onAttachWorkflow={openAttachWorkflow}
+                  key={`${accountEpoch}:${homeComposerContextKey(scopingContext)}`}
+                  composerActionScope={composerActionScope}
+                  composerMenu={composerMenu}
+                  searchFiles={searchComposerFiles}
+                  onSelectFile={(file) =>
+                    composerMenu.insertFile(file, (fileIndex ?? []).length)
+                  }
+                  editor={editor}
+                  hintDraftRevision={hintDraftRevision}
+                  disabled={composerDisabled}
+                  targetPending={targetReadiness === 'pending'}
+                  shortcutEnabled={variant === 'page'}
+                  onSend={() => handleSend()}
+                  billingSendGuardRef={billingSendGuardRef}
+                  onEditorExternallyChanged={handleEditorExternallyChanged}
+                  commands={composerCommands}
+                  commandsRefreshing={slashCommandsRefreshing}
+                  isCodex={isCodexProvider}
+                  onSelectCommand={handlePopupSelectCommand}
+                  composerBoxRef={homeComposerRef}
+                  onVoiceRecordingChange={setVoiceRecording}
+                  onPlanModeHintChange={setPlanModeHint}
+                  voiceDestinationKey={`${workspaceId ?? ''}/${draftGeneration}`}
+                  onSpeechModelPromptChange={setSpeechModelPrompt}
+                />
+                {mode === 'pipeline' && taskPlanPreset && (
+                  <div
+                    data-testid="home-task-plan-guidance"
+                    className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 pb-3"
                   >
-                    <div className="inline-flex items-center gap-1 py-0.5 pl-2.5 pr-0.5 text-xs font-medium fg-secondary">
-                      <span>Task planning</span>
-                      <Tooltip label="Cancel task planning">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          iconOnly
-                          data-testid="home-task-plan-cancel"
-                          aria-label="Cancel task planning"
-                          disabled={composerDisabled}
-                          onClick={(): void => {
-                            useHomeComposerStore.getState().setMode('chat');
-                            focusEditor(editor);
-                          }}
-                        >
-                          <CloseMediumIcon size={16} aria-hidden="true" />
-                        </Button>
-                      </Tooltip>
-                    </div>
-                  </Surface>
-                  <p
-                    role="status"
-                    className="min-w-0 flex-1 basis-64 text-xs fg-secondary"
-                  >
-                    <span className="sr-only">Task planning selected. </span>
-                    Describe your task above, then submit to generate a plan.
-                  </p>
-                </div>
-              )}
-            </ChatComposerShell>
-          </div>
+                    <Surface
+                      variant="group"
+                      size="small"
+                      className="shrink-0 inline-block"
+                    >
+                      <div className="inline-flex items-center gap-1 py-0.5 pl-2.5 pr-0.5 text-xs font-medium fg-secondary">
+                        <span>Task planning</span>
+                        <Tooltip label="Cancel task planning">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            iconOnly
+                            data-testid="home-task-plan-cancel"
+                            aria-label="Cancel task planning"
+                            disabled={composerDisabled}
+                            onClick={(): void => {
+                              useHomeComposerStore.getState().setMode('chat');
+                              focusEditor(editor);
+                            }}
+                          >
+                            <CloseMediumIcon size={16} aria-hidden="true" />
+                          </Button>
+                        </Tooltip>
+                      </div>
+                    </Surface>
+                    <p
+                      role="status"
+                      className="min-w-0 flex-1 basis-64 text-xs fg-secondary"
+                    >
+                      <span className="sr-only">Task planning selected. </span>
+                      Describe your task above, then submit to generate a plan.
+                    </p>
+                  </div>
+                )}
+              </ChatComposerShell>
+            </div>
+          )
         }
         hanging={
           <>
             {/* CAN-3606: the pasted-link destination, in every state, sits
                 centered under the composer rather than in the picker
                 overhang, so the composer and headline never move. */}
-            {linkTargetVisible && (
+            {linkTargetVisible && !billingGateShown && (
               <div
                 data-testid="home-link-target-slot"
                 className="flex justify-center px-4 pt-4"
@@ -2196,7 +2230,10 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
                   isPageVariant={variant === 'page'}
                 />
 
+                {/* Its fix rows start a chat and send its first turn, which
+                    nothing can pay for while the billing setup gate shows. */}
                 {variant === 'page' &&
+                  !billingGateShown &&
                   selectedWorkspace &&
                   selectedWorkspace.type !== 'cowork' && (
                     <HomeWorkspaceReadiness
@@ -2206,7 +2243,9 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
                     />
                   )}
 
-                {suggestedPrompts.length > 0 && (
+                {/* A suggested prompt fills the composer, which the billing
+                    setup gate replaces. */}
+                {suggestedPrompts.length > 0 && !billingGateShown && (
                   <SuggestedPromptChips
                     prompts={suggestedPrompts}
                     surface="home"

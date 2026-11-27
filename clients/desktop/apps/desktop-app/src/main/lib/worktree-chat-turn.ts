@@ -126,7 +126,10 @@ import {
   type SessionTurnSettings,
   restrictSessionApprovalRules,
 } from '../agents/session-manager';
-import { isNoBillingSourceRefusalCached } from '../agents/no-billing-source-refusal';
+import {
+  isHelperNoBillingSourceRefusalCached,
+  isNoBillingSourceRefusalCached,
+} from '../agents/no-billing-source-refusal';
 import { isHelperNoBillingSourceError } from '../agents/helper-no-billing-source';
 import {
   isRecreateDeferrable,
@@ -631,7 +634,7 @@ export function scheduleChatSummary(options: ScheduleChatSummaryOptions): void {
         // the helper would only be skipped (CAN-7062): open no audit entry, so
         // each turn adds nothing, and leave naming pending for after sign-in.
         if (
-          isNoBillingSourceRefusalCached(
+          isHelperNoBillingSourceRefusalCached(
             {
               projectId: options.standaloneChatProjectId ?? options.projectId,
               model: summaryModel,

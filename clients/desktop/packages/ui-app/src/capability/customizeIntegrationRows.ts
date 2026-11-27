@@ -21,7 +21,7 @@ import { curatedMcpConnectionState } from './unifiedPluginEntries';
  * or rewritten, ids never change, and a copy without a key stays its own row.
  */
 
-/** Copies one row can stand for: plugins and MCP rows (servers, connectors). */
+/** Copies one row can stand for: plugins and MCP server rows. */
 function joinsIntegration(
   entry: UnifiedPluginEntry,
 ): entry is UnifiedPluginEntry & {
@@ -29,6 +29,11 @@ function joinsIntegration(
 } {
   return (
     (entry.kind === 'plugin' || entry.kind === 'app') &&
+    // A provider account's connector is a route of its own, with its own
+    // connected state: grouped with the service's plugin, either the plugin
+    // stood for it (hiding the connection) or it stood for the plugin on
+    // Plugins, where it does not belong.
+    entry.ref.type !== 'provider-connector' &&
     entry.integrationKey !== undefined &&
     entry.pluginServerResult !== true &&
     entry.origin !== 'shared'
@@ -365,19 +370,25 @@ export interface CustomizeIntegrationRows {
  * representative keeps its own id, actions and detail page; install targets
  * that copy, which is native to the default harness when one is. The row's
  * installed state covers every installed copy, and the hidden copies stay
- * installed and working.
+ * installed and working. With `splitMcpCopies` (All search and MCP servers),
+ * a standalone server is grouped only with copies of the same endpoint, never
+ * with a plugin, so it keeps a row of its own. `splitPluginCopies` also keeps
+ * each marketplace plugin listing's own identity, actions and install state.
  */
 export function mergeCustomizeIntegrations(
   entries: readonly UnifiedPluginEntry[],
   harness: CustomizeDefaultHarness,
   states?: InstalledEntryStatusStates,
-  splitSearchResults = false,
+  splitMcpCopies = false,
+  installedBeforeProxy = false,
+  splitPluginCopies = false,
 ): CustomizeIntegrationRows {
   const groups = new Groups();
   const keyOf = (
     entry: UnifiedPluginEntry & { integrationKey: string },
   ): string => {
-    if (!splitSearchResults || isPluginCopy(entry))
+    if (splitPluginCopies && isPluginCopy(entry)) return `plugin:${entry.id}`;
+    if (!splitMcpCopies || isPluginCopy(entry))
       return `key:${entry.integrationKey}`;
     const versionKey = mcpVersionKey(entry);
     return versionKey !== undefined ? `mcp:${versionKey}` : `entry:${entry.id}`;
@@ -385,7 +396,10 @@ export function mergeCustomizeIntegrations(
   for (const entry of entries) {
     if (!joinsIntegration(entry)) continue;
     groups.find(keyOf(entry));
-    if (entry.marketplaceGroup !== undefined)
+    if (
+      entry.marketplaceGroup !== undefined &&
+      !(splitPluginCopies && isPluginCopy(entry))
+    )
       groups.union(keyOf(entry), `group:${entry.marketplaceGroup}`);
   }
   // A row a host already grouped brings its provider listings along, so the
@@ -413,11 +427,12 @@ export function mergeCustomizeIntegrations(
   const rowIdOf = new Map<string, string>();
   for (const [root, members] of membersByRoot) {
     if (members.length < 2) continue;
-    const proxy = splitSearchResults
-      ? members
-          .filter((member) => member.accountProxyMcp === true)
-          .sort((a, b) => a.id.localeCompare(b.id))[0]
-      : undefined;
+    const proxy =
+      splitMcpCopies && !(installedBeforeProxy && members.some(isInstalled))
+        ? members
+            .filter((member) => member.accountProxyMcp === true)
+            .sort((a, b) => a.id.localeCompare(b.id))[0]
+        : undefined;
     const representative =
       proxy ??
       customizeIntegrationRepresentative(members, harness, isInstalled);
@@ -426,8 +441,33 @@ export function mergeCustomizeIntegrations(
       representative,
       ...members.filter((member) => member !== representative),
     ];
-    if (splitSearchResults && mcpVersionKey(representative) !== undefined) {
-      merged.set(root, withCopiesIdentity(representative, members));
+    const installedMembers = members.filter(isInstalled);
+    const attention = hiddenAttention(representative, installedMembers);
+    const harnessInstalls = mergedHarnessInstalls(installedMembers);
+    if (splitMcpCopies && mcpVersionKey(representative) !== undefined) {
+      // On MCP servers, copies of one endpoint keep the representative's own
+      // row, but hiding a copy still never hides its recovery: its failed
+      // harness installs (with what Try again stages), sign-ins and failing
+      // health. All search keeps each row's own state.
+      const recovery: Partial<UnifiedPluginEntry> =
+        installedBeforeProxy && isInstalled(representative)
+          ? {
+              ...attention.fields,
+              ...(harnessInstalls !== undefined ? { harnessInstalls } : {}),
+              ...(attention.copyId !== undefined
+                ? {
+                    integrationCopies: {
+                      memberIds: ordered.map((member) => member.id),
+                      attentionCopyId: attention.copyId,
+                    },
+                  }
+                : {}),
+            }
+          : {};
+      merged.set(
+        root,
+        withCopiesIdentity({ ...representative, ...recovery }, members),
+      );
       membersOf.set(representative.id, ordered);
       for (const member of members) rowIdOf.set(member.id, representative.id);
       continue;
@@ -435,9 +475,6 @@ export function mergeCustomizeIntegrations(
     const providers = [
       ...new Set(members.flatMap((member) => member.marketplaceProvider ?? [])),
     ].sort();
-    const installedMembers = members.filter(isInstalled);
-    const attention = hiddenAttention(representative, installedMembers);
-    const harnessInstalls = mergedHarnessInstalls(installedMembers);
     const copies: UnifiedEntryIntegrationCopies = {
       memberIds: ordered.map((member) => member.id),
       ...(isInstalled(representative)

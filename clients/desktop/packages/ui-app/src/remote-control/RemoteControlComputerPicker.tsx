@@ -1,10 +1,10 @@
 import { useId, useRef, useState, type JSX } from 'react';
 import {
   Dot,
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  FloatingMenu,
+  MenuDivider,
+  MenuItem,
+  MenuItemIcon,
+  Menu,
   ListRow,
   NestedMenuFlyout,
   type DotTone,
@@ -90,15 +90,15 @@ export function RemoteControlComputerMenuItems({
   return (
     <>
       {localComputer ? (
-        <DropdownMenuItem
+        <MenuItem
           role="menuitemradio"
           aria-checked={checked?.deviceId === null}
           data-testid={`${testIdPrefix}-option-local`}
           onClick={() => choose(null)}
         >
-          <DropdownMenuItemIcon>
+          <MenuItemIcon>
             <MacbookIcon size={16} aria-hidden="true" />
-          </DropdownMenuItemIcon>
+          </MenuItemIcon>
           <span
             className={`${REPLAY_MASK_CLASS} min-w-0 flex-1 truncate`}
             title={localComputer.name}
@@ -111,12 +111,12 @@ export function RemoteControlComputerMenuItems({
           {checked?.deviceId === null ? (
             <CheckIcon size={16} aria-hidden="true" className="shrink-0" />
           ) : null}
-        </DropdownMenuItem>
+        </MenuItem>
       ) : null}
       {computers.map((computer) => {
         const selected = checked?.deviceId === computer.deviceId;
         return (
-          <DropdownMenuItem
+          <MenuItem
             key={computer.deviceId}
             role="menuitemradio"
             aria-checked={selected}
@@ -128,9 +128,9 @@ export function RemoteControlComputerMenuItems({
             data-testid={`${testIdPrefix}-option-${computer.deviceId}`}
             onClick={() => choose(computer.deviceId)}
           >
-            <DropdownMenuItemIcon>
+            <MenuItemIcon>
               <MacbookIcon size={16} aria-hidden="true" />
-            </DropdownMenuItemIcon>
+            </MenuItemIcon>
             <span
               className={`${REPLAY_MASK_CLASS} min-w-0 flex-1 truncate`}
               title={computer.name}
@@ -145,35 +145,35 @@ export function RemoteControlComputerMenuItems({
             {selected ? (
               <CheckIcon size={16} aria-hidden="true" className="shrink-0" />
             ) : null}
-          </DropdownMenuItem>
+          </MenuItem>
         );
       })}
-      {dividerBeforeAdd ? <DropdownMenuDivider /> : null}
-      <DropdownMenuItem
+      {dividerBeforeAdd ? <MenuDivider /> : null}
+      <MenuItem
         data-testid={`${testIdPrefix}-add`}
         onClick={() => {
           onClose();
           onAdd();
         }}
       >
-        <DropdownMenuItemIcon>
+        <MenuItemIcon>
           <PlusIcon size={16} aria-hidden="true" />
-        </DropdownMenuItemIcon>
+        </MenuItemIcon>
         <span className="min-w-0 flex-1 truncate">{ADD_COMPUTER_LABEL}</span>
-      </DropdownMenuItem>
+      </MenuItem>
       {stop ? (
-        <DropdownMenuItem
+        <MenuItem
           data-testid={`${testIdPrefix}-stop`}
           onClick={() => {
             onClose();
             stop.onSelect();
           }}
         >
-          <DropdownMenuItemIcon>
+          <MenuItemIcon>
             <StopIcon size={16} aria-hidden="true" />
-          </DropdownMenuItemIcon>
+          </MenuItemIcon>
           <span className="min-w-0 flex-1 truncate">{stop.label}</span>
-        </DropdownMenuItem>
+        </MenuItem>
       ) : null}
     </>
   );
@@ -319,7 +319,7 @@ export function RemoteControlComputerPicker({
           </span>
         </ListRow>
       </div>
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={open}
         onOpenChange={setOpen}
@@ -339,7 +339,7 @@ export function RemoteControlComputerPicker({
           testIdPrefix="sidebar-machine"
           dividerBeforeAdd
         />
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

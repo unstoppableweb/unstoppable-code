@@ -2,12 +2,14 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  CanopyErrorPayloadSchema,
   CORE_OPERATION_LEDGER_INSTRUCTION_DEFINITIONS,
   CORE_OPERATION_LEDGER_QUERY_DEFINITIONS,
   CORE_OPERATION_LEDGER_STREAM_DEFINITIONS,
   IN_PROCESS_LEASE_TERMS,
   IN_PROCESS_WORKER_TARGET,
   OPERATION_LEDGER_GRANTS,
+  isUnknownKeyedWriteOutcome,
   type CanopyCallerDescriptor,
   type DelegationDispatchInput,
 } from '@canopy/protocol/canopy-core';
@@ -1563,6 +1565,487 @@ describe('owner recovery for domains claimed late (CAN-6986 L3)', () => {
         restart: { class: 'resumable', disposition: 'resumed' },
       });
       remote.close();
+    },
+  );
+});
+
+type Fault = () => Error;
+
+const bareFault: Fault = () =>
+  new Error('The connection closed before the reply.');
+
+// A lost reply as core-client raises it: a disconnect, its own deadline
+// after dispatch, or its shutdown at capacity with calls in flight. An
+// inherent call (admission) keeps a same-request retry; the others (finish,
+// transition) get never (core-client `forDefinition`).
+const CLIENT_FAULT_MESSAGES = {
+  unavailable: 'The connection to the core closed.',
+  deadline_exceeded: 'The request deadline passed.',
+  resource_exhausted: 'Too many cancelled requests are awaiting late replies.',
+} as const;
+
+function clientFault(
+  kind: keyof typeof CLIENT_FAULT_MESSAGES,
+  retry: 'same_request' | 'never' = 'same_request',
+): Fault {
+  const message = CLIENT_FAULT_MESSAGES[kind];
+  return () =>
+    Object.assign(new Error(message), {
+      name: 'CanopyClientError',
+      payload: { kind, message, retry: { kind: retry } },
+    });
+}
+
+const FAULTS: readonly (readonly [string, Fault])[] = [
+  ['a bare error', bareFault],
+  ['a disconnect', clientFault('unavailable')],
+  ['its deadline after dispatch', clientFault('deadline_exceeded')],
+  ['a capacity shutdown', clientFault('resource_exhausted')],
+];
+
+// The same losses for a write that is not idempotent, as finish and
+// transition are.
+const WRITE_FAULTS: readonly (readonly [string, Fault])[] = [
+  ['a disconnect', clientFault('unavailable', 'never')],
+  ['its deadline after dispatch', clientFault('deadline_exceeded', 'never')],
+  ['a capacity shutdown', clientFault('resource_exhausted', 'never')],
+];
+
+// Drops one operation's next reply, applied or not. Then the ledger
+// restarts, or the connection stays down and every later call fails.
+function lossy(
+  name: string,
+  fault: Fault = bareFault,
+): {
+  transport: () => Promise<OperationLedgerTransport>;
+  drop: (
+    operation: string,
+    applied: boolean,
+    after?: 'restart' | 'down',
+  ) => void;
+  daemon: () => ReturnType<typeof holder>;
+} {
+  let daemon = holder(name);
+  let pending: {
+    operation: string;
+    applied: boolean;
+    after: 'restart' | 'down';
+  } | null = null;
+  let down = false;
+  const wrap = (inner: OperationLedgerTransport): OperationLedgerTransport => ({
+    query: async (operation, params) => {
+      if (down) throw fault();
+      return inner.query(operation, params);
+    },
+    instruction: async (operation, params) => {
+      if (down) throw fault();
+      if (pending?.operation !== operation)
+        return inner.instruction(operation, params);
+      const { applied, after } = pending;
+      pending = null;
+      if (applied) await inner.instruction(operation, params);
+      if (after === 'down') {
+        down = true;
+        throw fault();
+      }
+      daemon.service.close();
+      daemon = holder(name);
+      connection = wrap(daemon.connect());
+      throw fault();
+    },
+    openStream: async (operation, params) => {
+      if (down) throw fault();
+      return inner.openStream(operation, params);
+    },
+  });
+  let connection = wrap(daemon.connect());
+  return {
+    transport: (): Promise<OperationLedgerTransport> =>
+      Promise.resolve(connection),
+    drop: (operation, applied, after = 'restart'): void => {
+      pending = { operation, applied, after };
+    },
+    daemon: () => daemon,
+  };
+}
+
+async function operationsIn(
+  daemon: ReturnType<typeof holder>,
+): Promise<string[]> {
+  const page = await daemon.service.list({ limit: 100 });
+  return page.items.map((item) => item.operationId);
+}
+
+describe('owner writes in flight across a ledger restart (CAN-6986 L4)', () => {
+  it.each([
+    ['after', true],
+    ['before', false],
+  ])(
+    'rejects a keyed admission whose reply was lost %s it was applied as an unknown outcome, and never sends it again',
+    async (_when, applied) => {
+      const link = lossy('daemon');
+      const owner = new RemoteOperationService({ transport: link.transport });
+      owner.registerDomain(helperDomain({ refuse: false }));
+      await owner.ready();
+      link.drop('core.operationLedger.admit', applied);
+      await expect(owner.admit(keyed('turn-1'))).rejects.toMatchObject({
+        name: 'OperationLedgerOutcomeUnknownError',
+      });
+      const daemon = link.daemon();
+      expect(await operationsIn(daemon)).toHaveLength(applied ? 1 : 0);
+      expect(daemon.calls).not.toContain('core.operationLedger.lookupReceipt');
+      expect(daemon.calls).not.toContain('core.operationLedger.admit');
+      owner.close();
+    },
+  );
+
+  it('rejects an unkeyed admission whose reply was lost as an unknown outcome, and never sends it again', async () => {
+    const link = lossy('daemon');
+    const owner = new RemoteOperationService({ transport: link.transport });
+    owner.registerDomain(helperDomain({ refuse: false }));
+    await owner.ready();
+    link.drop('core.operationLedger.admit', true);
+    await expect(owner.admit(request())).rejects.toMatchObject({
+      name: 'OperationLedgerOutcomeUnknownError',
+    });
+    const daemon = link.daemon();
+    expect(await operationsIn(daemon)).toHaveLength(1);
+    expect(daemon.calls).not.toContain('core.operationLedger.admit');
+    owner.close();
+  });
+
+  it('rejects a transition whose reply was lost as an unknown outcome, and never sends it again', async () => {
+    const link = lossy('daemon');
+    const owner = new RemoteOperationService({ transport: link.transport });
+    owner.registerDomain(helperDomain({ refuse: false }));
+    const { operation } = await owner.admit(request({ status: 'queued' }));
+    link.drop('core.operationLedger.transition', true);
+    await expect(
+      owner.transition(operation.operationId, 'running'),
+    ).rejects.toMatchObject({ name: 'OperationLedgerOutcomeUnknownError' });
+    const daemon = link.daemon();
+    expect(await daemon.service.get(operation.operationId)).toMatchObject({
+      status: 'running',
+    });
+    expect(daemon.calls).not.toContain('core.operationLedger.transition');
+    owner.close();
+  });
+
+  it('still reports nothing recorded when the owner connection fails before anything is sent', async () => {
+    const daemon = holder('daemon');
+    const owner = new RemoteOperationService({
+      transport: (): Promise<OperationLedgerTransport> =>
+        Promise.reject(new Error('No owner connection.')),
+    });
+    await expect(owner.admit(keyed('turn-1'))).rejects.toMatchObject({
+      name: 'OperationLedgerError',
+      code: 'STORAGE_UNAVAILABLE',
+    });
+    expect(daemon.calls).toEqual([]);
+    expect(await operationsIn(daemon)).toEqual([]);
+    owner.close();
+  });
+});
+
+describe('a terminal write whose transport failed (CAN-6986 L4)', () => {
+  it('answers a finish whose reply was lost after it was applied from the record, sending it once', async () => {
+    const link = lossy('daemon');
+    const owner = new RemoteOperationService({ transport: link.transport });
+    owner.registerDomain(helperDomain({ refuse: false }));
+    const { operation } = await owner.admit(request());
+    link.drop('core.operationLedger.finish', true);
+    await expect(
+      owner.finish(operation.operationId, { status: 'completed' }),
+    ).resolves.toMatchObject({
+      operationId: operation.operationId,
+      status: 'completed',
+    });
+    const daemon = link.daemon();
+    expect(daemon.calls).toContain('core.operationLedger.get');
+    expect(daemon.calls).not.toContain('core.operationLedger.finish');
+    owner.close();
+  });
+
+  it('sends a finish whose reply was lost before it was applied once more, after reading the record', async () => {
+    const link = lossy('daemon');
+    const owner = new RemoteOperationService({ transport: link.transport });
+    owner.registerDomain(helperDomain({ refuse: false }));
+    const { operation } = await owner.admit(request());
+    link.drop('core.operationLedger.finish', false);
+    await expect(
+      owner.finish(operation.operationId, { status: 'completed' }),
+    ).resolves.toMatchObject({ status: 'completed' });
+    const daemon = link.daemon();
+    expect(
+      daemon.calls.filter(
+        (call) =>
+          call === 'core.operationLedger.get' ||
+          call === 'core.operationLedger.finish',
+      ),
+    ).toEqual(['core.operationLedger.get', 'core.operationLedger.finish']);
+    expect(await daemon.service.get(operation.operationId)).toMatchObject({
+      status: 'completed',
+    });
+    owner.close();
+  });
+
+  it.each([
+    ['after', true],
+    ['before', false],
+  ])(
+    'settles a finishOrRecord whose reply was lost %s it was applied, reporting nothing',
+    async (_when, applied) => {
+      const link = lossy('daemon');
+      const onError = jest.fn();
+      const owner = new RemoteOperationService({
+        transport: link.transport,
+        onError,
+      });
+      owner.registerDomain(helperDomain({ refuse: false }));
+      const { operation } = await owner.admit(request());
+      link.drop('core.operationLedger.finishOrRecord', applied);
+      await expect(
+        owner.finishOrRecord(operation.operationId, { status: 'completed' }),
+      ).resolves.toMatchObject({ status: 'completed' });
+      expect(onError).not.toHaveBeenCalled();
+      expect(
+        await link.daemon().service.get(operation.operationId),
+      ).toMatchObject({ status: 'completed' });
+      owner.close();
+    },
+  );
+});
+
+describe('a lost reply as the owner connection raises it (CAN-6986 L4)', () => {
+  const CLIENT_FAULTS = FAULTS.filter(([, fault]) => fault !== bareFault);
+
+  it.each(CLIENT_FAULTS)(
+    'is not an unknown outcome to the shared keyed check when %s loses it',
+    (_name, fault) => {
+      const error = fault();
+      const payload = CanopyErrorPayloadSchema.parse(
+        'payload' in error ? error.payload : undefined,
+      );
+      expect(payload.retry).toEqual({ kind: 'same_request' });
+      expect(isUnknownKeyedWriteOutcome(payload)).toBe(false);
+    },
+  );
+
+  it.each(
+    CLIENT_FAULTS.flatMap(([name, fault]) => [
+      [name, 'after', true, fault] as const,
+      [name, 'before', false, fault] as const,
+    ]),
+  )(
+    'rejects a keyed admission whose reply %s lost %s it was applied as an unknown outcome, and never sends it again',
+    async (_name, _when, applied, fault) => {
+      const link = lossy('daemon', fault);
+      const owner = new RemoteOperationService({ transport: link.transport });
+      owner.registerDomain(helperDomain({ refuse: false }));
+      await owner.ready();
+      link.drop('core.operationLedger.admit', applied);
+      await expect(owner.admit(keyed('turn-1'))).rejects.toMatchObject({
+        name: 'OperationLedgerOutcomeUnknownError',
+      });
+      const daemon = link.daemon();
+      expect(await operationsIn(daemon)).toHaveLength(applied ? 1 : 0);
+      expect(daemon.calls).not.toContain('core.operationLedger.lookupReceipt');
+      expect(daemon.calls).not.toContain('core.operationLedger.admit');
+      owner.close();
+    },
+  );
+
+  it.each(WRITE_FAULTS)(
+    'rejects a transition whose reply %s lost as an unknown outcome, and never sends it again',
+    async (_name, fault) => {
+      const link = lossy('daemon', fault);
+      const owner = new RemoteOperationService({ transport: link.transport });
+      owner.registerDomain(helperDomain({ refuse: false }));
+      const { operation } = await owner.admit(request({ status: 'queued' }));
+      link.drop('core.operationLedger.transition', true);
+      await expect(
+        owner.transition(operation.operationId, 'running'),
+      ).rejects.toMatchObject({ name: 'OperationLedgerOutcomeUnknownError' });
+      expect(link.daemon().calls).not.toContain(
+        'core.operationLedger.transition',
+      );
+      owner.close();
+    },
+  );
+
+  it.each(WRITE_FAULTS)(
+    'answers a finish whose reply %s lost after it was applied from the record',
+    async (_name, fault) => {
+      const link = lossy('daemon', fault);
+      const owner = new RemoteOperationService({ transport: link.transport });
+      owner.registerDomain(helperDomain({ refuse: false }));
+      const { operation } = await owner.admit(request());
+      link.drop('core.operationLedger.finish', true);
+      await expect(
+        owner.finish(operation.operationId, { status: 'completed' }),
+      ).resolves.toMatchObject({ status: 'completed' });
+      expect(link.daemon().calls).not.toContain('core.operationLedger.finish');
+      owner.close();
+    },
+  );
+});
+
+describe('a lost reply whose recovery read fails too (CAN-6986 L4)', () => {
+  it.each(FAULTS)(
+    'keeps a keyed admission lost to %s unknown when the connection stays down',
+    async (_name, fault) => {
+      const link = lossy('daemon', fault);
+      const owner = new RemoteOperationService({ transport: link.transport });
+      owner.registerDomain(helperDomain({ refuse: false }));
+      await owner.ready();
+      link.drop('core.operationLedger.admit', true, 'down');
+      await expect(owner.admit(keyed('turn-1'))).rejects.toMatchObject({
+        name: 'OperationLedgerOutcomeUnknownError',
+      });
+      expect(await operationsIn(link.daemon())).toHaveLength(1);
+      owner.close();
+    },
+  );
+
+  it.each([FAULTS[0], ...WRITE_FAULTS])(
+    'keeps a finish lost to %s unknown when the connection stays down',
+    async (_name, fault) => {
+      const link = lossy('daemon', fault);
+      const owner = new RemoteOperationService({ transport: link.transport });
+      owner.registerDomain(helperDomain({ refuse: false }));
+      const { operation } = await owner.admit(request());
+      link.drop('core.operationLedger.finish', true, 'down');
+      await expect(
+        owner.finish(operation.operationId, { status: 'completed' }),
+      ).rejects.toMatchObject({ name: 'OperationLedgerOutcomeUnknownError' });
+      expect(
+        await link.daemon().service.get(operation.operationId),
+      ).toMatchObject({ status: 'completed' });
+      owner.close();
+    },
+  );
+
+  it.each([FAULTS[0], ...WRITE_FAULTS])(
+    'reports a finishOrRecord lost to %s as unknown when the connection stays down',
+    async (_name, fault) => {
+      const link = lossy('daemon', fault);
+      const onError = jest.fn();
+      const owner = new RemoteOperationService({
+        transport: link.transport,
+        onError,
+      });
+      owner.registerDomain(helperDomain({ refuse: false }));
+      const { operation } = await owner.admit(request());
+      link.drop('core.operationLedger.finishOrRecord', true, 'down');
+      await expect(
+        owner.finishOrRecord(operation.operationId, { status: 'completed' }),
+      ).resolves.toBeNull();
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'OperationLedgerOutcomeUnknownError' }),
+        'finish',
+      );
+      owner.close();
+    },
+  );
+});
+
+describe('ledger failures across the owner connection (CAN-6986 L3b G10)', () => {
+  it.each([
+    'WRITER_UNAVAILABLE',
+    'BACKUP_UNVERIFIED',
+    'UNSUPPORTED_SCHEMA',
+  ] as const)(
+    'raises %s at the owner as the in-process ledger would',
+    async (code) => {
+      const service = new OperationService({
+        openLedger: (): OperationLedger => {
+          throw new OperationLedgerError(code, 'The ledger cannot be used.');
+        },
+      });
+      const dispatcher = createCanopyDispatcher({
+        profile: 'core',
+        definitions: DEFINITIONS,
+        handlers: createCoreOperationLedgerHandlers(service),
+      });
+      const client = createInProcessCanopyClient(dispatcher, OWNER);
+      const transport: OperationLedgerTransport = {
+        query: (operation, params) => client.query(operation, params),
+        instruction: (operation, params) =>
+          client.instruction(operation, params),
+        openStream: (operation, params) => client.openStream(operation, params),
+      };
+      const owner = new RemoteOperationService({
+        transport: (): Promise<OperationLedgerTransport> =>
+          Promise.resolve(transport),
+      });
+      await expect(owner.get('operation-1')).rejects.toMatchObject({
+        name: 'OperationLedgerError',
+        code,
+      });
+      owner.close();
+      service.close();
+    },
+  );
+
+  it.each([
+    ['WRITER_UNAVAILABLE', 'unavailable', 'same_request'],
+    ['BACKUP_UNVERIFIED', 'failed_precondition', 'never'],
+    ['UNSUPPORTED_SCHEMA', 'failed_precondition', 'never'],
+  ] as const)(
+    'refuses a keyed admission with %s at the owner, never as an unknown outcome',
+    async (code, kind, retry) => {
+      const service = new OperationService({
+        openLedger: (): OperationLedger => {
+          throw new OperationLedgerError(code, 'The ledger cannot be used.');
+        },
+      });
+      const dispatcher = createCanopyDispatcher({
+        profile: 'core',
+        definitions: DEFINITIONS,
+        handlers: createCoreOperationLedgerHandlers(service),
+      });
+      const client = createInProcessCanopyClient(dispatcher, OWNER);
+      const healthy = holder(`admission-${code}`).connect();
+      const sent: string[] = [];
+      const answers = new Map<string, unknown>();
+      const transport: OperationLedgerTransport = {
+        query: (operation, params) => healthy.query(operation, params),
+        instruction: async (operation, params) => {
+          if (operation !== 'core.operationLedger.admit')
+            return healthy.instruction(operation, params);
+          sent.push(operation);
+          try {
+            return await client.instruction(operation, params);
+          } catch (error) {
+            answers.set(
+              operation,
+              typeof error === 'object' && error !== null && 'payload' in error
+                ? error.payload
+                : undefined,
+            );
+            throw error;
+          }
+        },
+        openStream: (operation, params) =>
+          healthy.openStream(operation, params),
+      };
+      const owner = new RemoteOperationService({
+        transport: (): Promise<OperationLedgerTransport> =>
+          Promise.resolve(transport),
+      });
+      const refused = await owner.admit(keyed('turn-1')).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(sent).toEqual(['core.operationLedger.admit']);
+      expect(refused).toMatchObject({ name: 'OperationLedgerError', code });
+      const answer = CanopyErrorPayloadSchema.parse(
+        answers.get('core.operationLedger.admit'),
+      );
+      expect(answer).toMatchObject({ kind, retry: { kind: retry } });
+      expect(isUnknownKeyedWriteOutcome(answer)).toBe(false);
+      owner.close();
+      service.close();
     },
   );
 });

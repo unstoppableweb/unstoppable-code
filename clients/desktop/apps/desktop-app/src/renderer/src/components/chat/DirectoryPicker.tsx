@@ -3,8 +3,8 @@ import { PickerTrigger, Stack } from '@canopy/ui-shared/components';
 import { useCallback, useId, useRef, useState, type JSX } from 'react';
 import {
   COMPOSER_ROW_MENU_GAP,
-  FLOATING_PICKER_GAP,
-  FloatingMenu,
+  PICKER_GAP,
+  Menu,
   DirectoryPickerOptionRow,
   HoverCard,
 } from '@canopy/ui-shared';
@@ -169,7 +169,7 @@ export function DirectoryPicker({
         )}
       </HoverCard>
 
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={open}
         onOpenChange={setOpen}
@@ -179,7 +179,7 @@ export function DirectoryPicker({
         // trigger's edge, like the effort panel beside it.
         {...(statusRow
           ? { gap: COMPOSER_ROW_MENU_GAP, alignOffset: -8 }
-          : { gap: FLOATING_PICKER_GAP })}
+          : { gap: PICKER_GAP })}
         heightLimit={224}
         interaction="listbox"
         role="listbox"
@@ -195,7 +195,7 @@ export function DirectoryPicker({
           ]}
           onSelect={handleSelect}
         />
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

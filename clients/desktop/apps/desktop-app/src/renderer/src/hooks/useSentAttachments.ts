@@ -3,6 +3,8 @@ import { PREVIEWABLE_IMAGE_FILENAME, VIDEO_FILENAME } from '@/lib/file-type';
 import { webCoreLocalId } from '@/lib/chat-authority';
 import { cloudAttachmentPreview } from '@/cloud-chats/cloud-chat-attachments';
 import { loadCloudAttachmentThumbnail } from '@/cloud-chats/cloud-attachment-thumbnails';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
+import { ChatMarkdownFileTargetContext } from '@/components/chat/chat-markdown-file-target';
 import { CloudChatFileTargetContext } from '@/cloud-chats/cloud-chat-file-target';
 
 /**
@@ -24,11 +26,19 @@ export function useImagePreviews(
   const cloudTarget = useContext(CloudChatFileTargetContext);
   const cloudChatId =
     cloudTarget === null ? null : webCoreLocalId(cloudTarget.key);
+  const fileTarget = useContext(ChatMarkdownFileTargetContext);
+  const isPairedScope =
+    fileTarget !== null && isPairedComputerId(fileTarget.projectId);
   useEffect(() => {
     let cancelled = false;
     const wanted = key === '' ? [] : key.split('\n');
     void Promise.all(
       wanted.map((absolutePath) => {
+        // A paired computer's attachment path belongs to another machine and
+        // must never be read through this computer's local file-preview IPC.
+        if (isPairedScope) {
+          return Promise.resolve<[string, string | null]>([absolutePath, null]);
+        }
         // A cloud chat's attachment is never read through main.
         const cloud = cloudAttachmentPreview(absolutePath);
         if (cloud !== undefined)
@@ -58,7 +68,7 @@ export function useImagePreviews(
     return (): void => {
       cancelled = true;
     };
-  }, [key, videoFrame, cloudChatId]);
+  }, [key, videoFrame, cloudChatId, isPairedScope]);
   return previews;
 }
 

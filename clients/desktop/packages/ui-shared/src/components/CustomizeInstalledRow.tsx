@@ -9,7 +9,12 @@ import {
 import { mcpPlacementLabel, mcpRowHealthModel } from '../lib/mcp-row-health';
 import { formatDateOrEmpty } from '../lib/format-date';
 import { ClaudeLogo, CodexLogo } from '../icons';
-import { PersonIcon, RefreshIcon, SkillIcon } from '../icons/AppIcons';
+import {
+  PersonIcon,
+  RefreshIcon,
+  SkillIcon,
+  ThumbsUpIcon,
+} from '../icons/AppIcons';
 import { curatedPluginLogo } from '../lib/curated-plugin-logos';
 import { curatedLogoKey } from '../lib/curated-logo-key';
 import {
@@ -17,6 +22,7 @@ import {
   customizeHarnessRetryLabel,
   customizeIntegrationInstalledLabel,
   customizeWorksWithHarnesses,
+  CUSTOMIZE_DISCOVERY_HARNESS_OPTIONS,
   type CustomizeSkillMatch,
 } from '../lib/customize-discovery';
 import { MCP_BRAND_LOGOS } from '../lib/mcp-brand-logos';
@@ -180,7 +186,7 @@ const INTERNAL_SOURCE_LABELS = new Set([
  */
 function discoveryFallbackSource(entry: UnifiedPluginEntry): string {
   // An MCP server added by hand, often on a private host, names no maker.
-  if (entry.kind === 'app' && !entry.marketplaceSourceName)
+  if (entry.ref.type === 'local-mcp' && !entry.marketplaceSourceName)
     return 'Custom MCP server';
   const marketplace = entry.marketplaceSourceName?.trim();
   if (marketplace) return marketplace;
@@ -827,8 +833,46 @@ export function customizeRowDomId(sectionId: string, entryId: string): string {
   return `customize-${encodeURIComponent(sectionId)}-${encodeURIComponent(entryId)}`;
 }
 
+/**
+ * A row's short kind label: MCP servers say `MCP` so the name keeps its room
+ * (CAN-7856). Detail headers keep the full `MCP server`.
+ */
+function customizeRowTypeLabel(entry: UnifiedPluginEntry): string {
+  return entry.kind === 'app' ? 'MCP' : (entry.typeLabel ?? '');
+}
+
+/** What the recommendation mark means; the row's description repeats it. */
+const RECOMMENDED_HINT = 'Preferred MCP listing for this integration';
+
+/**
+ * The curated catalog's editorial pick (CAN-7856), as a small mark after the
+ * name. It claims nothing about sign-in or vendor approval. The mark sits
+ * inside the row's primary control, so it takes no focus of its own: its
+ * label joins that control's accessible name and its hint joins the row's
+ * description.
+ */
+function CustomizeRecommendedMark({
+  entryId,
+}: {
+  readonly entryId: string;
+}): JSX.Element {
+  return (
+    <Tooltip label={RECOMMENDED_HINT}>
+      <span
+        data-testid={`customize-row-recommended-${entryId}`}
+        className="inline-flex h-4 w-4 shrink-0 items-center justify-center fg-tertiary"
+      >
+        <ThumbsUpIcon size="xs" ariaHidden />
+        <span className="sr-only">Recommended</span>
+      </span>
+    </Tooltip>
+  );
+}
+
 export interface CustomizeInstalledRowProps {
   readonly entry: UnifiedPluginEntry;
+  /** Active product name supplied by the desktop or web host. */
+  readonly brandName?: string;
   /** Owning section; qualifies DOM ids and scopes test ids. */
   readonly sectionId: string;
   readonly primaryTestId?: string;
@@ -1010,6 +1054,7 @@ function HarnessIcons({
  */
 export function CustomizeInstalledRow({
   entry,
+  brandName = 'this app',
   sectionId,
   primaryTestId,
   menuTestId,
@@ -1129,11 +1174,14 @@ export function CustomizeInstalledRow({
   const title = (
     <span
       data-testid={`customize-row-name-line-${entry.id}`}
-      className="relative z-10 flex min-w-0 items-center gap-x-1.5 overflow-hidden"
+      className="@container/customize-row-name relative z-10 flex min-w-0 items-center gap-x-1.5 overflow-hidden"
     >
       {/* The line clips rather than spilling into the row's controls.
               The name truncates as space runs out;
-              the kind and surface icon stay whole. */}
+              the kind and surface icon stay whole. Below 9rem the kind
+              gives up its room: with the recommendation mark and both
+              placement icons it would otherwise leave the name no width
+              (CAN-7856). */}
       <Tooltip
         label={
           entry.description
@@ -1159,17 +1207,15 @@ export function CustomizeInstalledRow({
         </Badge>
       )}
       {showEntryType && entry.typeLabel && (
-        <MarketplaceTypeLabel
-          kind={entry.kind}
-          label={entry.typeLabel}
-          dataTestId={`customize-row-type-${entry.id}`}
-        />
+        <span className="flex shrink-0 @max-[9rem]/customize-row-name:hidden">
+          <MarketplaceTypeLabel
+            kind={entry.kind}
+            label={customizeRowTypeLabel(entry)}
+            dataTestId={`customize-row-type-${entry.id}`}
+          />
+        </span>
       )}
-      {recommended && (
-        <Badge tone="neutral" className="shrink-0">
-          Recommended
-        </Badge>
-      )}
+      {recommended && <CustomizeRecommendedMark entryId={entry.id} />}
       {placement !== undefined && placement !== 'account' && (
         <EntrySurfaceIcon
           surface="desktop"
@@ -1226,6 +1272,12 @@ export function CustomizeInstalledRow({
   );
   // New Customize: the logo chain a detail page reads too.
   const discoveryLogo = discovery ? customizeEntryLogo(entry) : undefined;
+  const curatedHarnesses = customizeWorksWithHarnesses(entry);
+  const curatedHarnessNames = CUSTOMIZE_DISCOVERY_HARNESS_OPTIONS.filter(
+    ({ value }) => curatedHarnesses.includes(value),
+  )
+    .map(({ label }) => label)
+    .join(', ');
   const logoKey = discoveryLogo
     ? discoveryLogo.curatedKey
     : curatedLogoKey(entry);
@@ -1257,6 +1309,33 @@ export function CustomizeInstalledRow({
         {createdByViewer(entry) && !entry.installedFrom && (
           <CustomItemBadge entry={entry} selected={selected} />
         )}
+        {discovery &&
+          entry.ref.type === 'curated-mcp' &&
+          entry.curatedManagedConnection === true && (
+            <span className="pointer-events-auto absolute -bottom-1 -right-1 z-20 inline-flex rounded-full bg-base">
+              <Tooltip
+                label={`We recommend ${brandName}'s curated connectors because ${brandName} manages the connection and makes it available across supported harnesses. Connect ${entry.name} once and use it with ${curatedHarnessNames || 'its supported agents'}. Plugins from other catalogs may require separate setup or have compatibility limitations.`}
+                showOnPress
+              >
+                <span
+                  tabIndex={0}
+                  role="img"
+                  aria-label={`${brandName}-curated connector`}
+                  data-testid={`customize-row-curated-connector-${entry.id}`}
+                  className="inline-flex size-5 items-center justify-center rounded-full bg-base"
+                >
+                  <McpServerLogoComponent
+                    brandMark
+                    name={brandName}
+                    size={20}
+                    shape="circle"
+                    chrome="transparent"
+                    fallback="icon"
+                  />
+                </span>
+              </Tooltip>
+            </span>
+          )}
       </span>
       <span className={`min-w-0 flex-1${dimmed ? ' opacity-60' : ''}`}>
         {href !== undefined ? (
@@ -1311,7 +1390,13 @@ export function CustomizeInstalledRow({
         id={`${domId}-description`}
         className={`sr-only ${REPLAY_BLOCK_CLASS}`}
       >
-        {[entry.description, metadata.tooltip].filter(Boolean).join(' · ')}
+        {[
+          entry.description,
+          metadata.tooltip,
+          recommended ? RECOMMENDED_HINT : undefined,
+        ]
+          .filter(Boolean)
+          .join(' · ')}
       </span>
       <div
         data-testid={`customize-row-controls-${entry.id}`}

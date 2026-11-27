@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import type { ActivityFileDiffResponse } from '@canopy/desktop-shared/types';
 import type {
   FileDiffContext,
@@ -38,9 +39,11 @@ export function useFileDiffSnapshot(
     snapshot: FileDiffSnapshot | null;
     error: string | null;
   }>({ key: '', snapshot: null, error: null });
+  const paired =
+    isPairedComputerId(projectId) || isPairedComputerId(worktreeId);
   const key = JSON.stringify([projectId, worktreeId, context]);
   useEffect(() => {
-    if (!enabled || !context) return;
+    if (!enabled || !context || paired) return;
     const request = {
       projectId,
       worktreeId,

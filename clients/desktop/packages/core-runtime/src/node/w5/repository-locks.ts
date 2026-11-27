@@ -9,6 +9,8 @@ interface Lease {
   active: boolean;
   writable: boolean;
   release: () => void;
+  /** Settles once the lease releases. */
+  released: Promise<void>;
   taskTail: Promise<void>;
 }
 interface LockScope {
@@ -54,6 +56,48 @@ export function hasW5WritableLocksInFlight(): boolean {
   return writableLeases > 0;
 }
 
+/** Per path, the release of each writer-capable lease held or queued on it. */
+const writers = new Map<
+  string,
+  { lock: W5RepositoryLock; released: Set<Promise<void>> }
+>();
+
+function trackWriter(lock: W5RepositoryLock, released: Promise<void>): void {
+  writableLeases += 1;
+  const entry = writers.get(lock.path);
+  if (entry) entry.released.add(released);
+  else writers.set(lock.path, { lock, released: new Set([released]) });
+}
+
+function untrackWriter(lock: W5RepositoryLock, released: Promise<void>): void {
+  writableLeases -= 1;
+  const entry = writers.get(lock.path);
+  entry?.released.delete(released);
+  if (entry?.released.size === 0) writers.delete(lock.path);
+}
+
+export interface W5WriterInFlight {
+  readonly lock: W5RepositoryLock;
+  /** Settles once every writer-capable lease on the lock at the call releases. */
+  readonly released: Promise<void>;
+}
+
+/**
+ * The locks `matches` accepts that a writer-capable lease holds or queues
+ * for now; synchronous and empty while none does. Writers that arrive later
+ * are not included, so a caller that waits cannot starve.
+ */
+export function w5WritersInFlight(
+  matches: (lock: W5RepositoryLock) => boolean,
+): W5WriterInFlight[] {
+  if (writableLeases === 0) return [];
+  return Array.from(writers.values()).flatMap(({ lock, released }) =>
+    matches(lock)
+      ? [{ lock, released: Promise.all(released).then(() => undefined) }]
+      : [],
+  );
+}
+
 async function acquire(
   lock: W5RepositoryLock,
   readOnly = false,
@@ -65,17 +109,18 @@ async function acquire(
   });
   tails.set(lock.path, tail);
   const writable = !readOnly && !readOnlyContext();
-  if (writable) writableLeases += 1;
+  if (writable) trackWriter(lock, tail);
   await previous;
   const lease: Lease = {
     lock,
     active: true,
     writable,
+    released: tail,
     taskTail: Promise.resolve(),
     release: () => {
       if (!lease.active) return;
       lease.active = false;
-      if (lease.writable) writableLeases -= 1;
+      if (lease.writable) untrackWriter(lock, tail);
       release();
       if (tails.get(lock.path) === tail) tails.delete(lock.path);
     },
@@ -243,7 +288,7 @@ export async function withW5CommitLocks<T>(
   for (const lease of leases.values()) {
     if (!lease.writable && !readOnlyContext()) {
       lease.writable = true;
-      writableLeases += 1;
+      trackWriter(lease.lock, lease.released);
     }
   }
   const ordered = Array.from(leases.values())

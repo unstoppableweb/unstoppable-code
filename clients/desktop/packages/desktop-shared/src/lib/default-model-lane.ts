@@ -16,6 +16,7 @@ import {
   resolveModelIdForGatewayId,
 } from '@canopy/execution-engine/lib/gateway-model-availability';
 import type { BillingLane } from '@canopy/protocol/preferences';
+import { findEquivalentModel } from './model-identity';
 
 export type { BillingLane } from '@canopy/protocol/preferences';
 
@@ -55,6 +56,23 @@ export function isAiCreditsOnlyBilling(a: BillingLaneAvailability): boolean {
     a.claudeNativeAuth === false &&
     a.codexNativeAuth === false
   );
+}
+
+/**
+ * The installed Ollama models this app can select, in the fixed order both
+ * hosts use to pick an Ollama-only default: registry members that pass
+ * `isSelectableOllamaModel`, sorted by id. One predicate serves readiness and
+ * the default candidate, so an install holding only a non-selectable model
+ * never passes the billing gate onto a default it cannot run.
+ */
+export function selectableOllamaModels(
+  installed: readonly { id: string }[],
+  isModelInRegistry: (model: ChatModel) => boolean,
+): ChatModel[] {
+  return installed
+    .map((entry) => entry.id)
+    .filter((id) => isSelectableOllamaModel(id) && isModelInRegistry(id))
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
 export interface LaneModelDefaults {
@@ -114,8 +132,8 @@ export interface EnforcedOrgGatewayLane {
  *
  * Like an enforced org gateway ({@link EnforcedOrgGatewayLane} §1), these
  * models run on the user's own gateway key rather than AI Credits, so they ride
- * the credits lane. Unlike enforcement they only fill in when AI Credits are
- * not confirmed eligible: with credits available, the credits lane keeps its
+ * the credits lane. Unlike enforcement they only fill in when AI Credits can't
+ * pay (see {@link personalGatewayStandsIn}): with credits available, the credits lane keeps its
  * own candidates and today's default. Without this, a user whose only working
  * route is their own gateway got `no-dispatchable-model`, and the composer fell
  * back to a built-in model the account cannot bill.
@@ -130,19 +148,52 @@ export interface PersonalGatewayLane {
 }
 
 /**
- * The personal gateway supplies the credits lane only once AI Credits are
- * CONFIRMED unavailable. While eligibility is unknown (the startup read, or a
- * degraded one such as a keychain lock) it stays out: standing in on a guess
- * would report the credits lane as confirmed, outranking an inconclusive
- * Claude probe and moving a funded credits user onto their own key.
+ * The same model as `model` on the Personal gateway, or `undefined`. A built-in
+ * Claude or Codex default and the gateway's route for it are one model under
+ * two ids (`gpt-6.1-sol` and `gpt-6.1-sol@<organization>`), so a user whose
+ * only route is their own gateway keeps the model they chose and pays for it
+ * with their own key. Ambiguous or near-miss matches return nothing; see
+ * `findEquivalentModel`.
  */
-function personalGatewayFillsCreditsLane(
+export function personalGatewayEquivalentModel(
+  model: ChatModel,
+  personalGateway: PersonalGatewayLane | undefined,
+  options: { readonly allowVariantFallback?: boolean } = {},
+): ChatModel | undefined {
+  if (!personalGateway || personalGateway.models.length === 0) return undefined;
+  if (personalGateway.models.includes(model)) return model;
+  return findEquivalentModel(
+    model,
+    personalGateway.models.map((id) => ({ id })),
+    options,
+  )?.id;
+}
+
+/**
+ * Whether the Personal gateway stands in for the credits lane.
+ *
+ * Once AI Credits are CONFIRMED unavailable, always. While eligibility is
+ * unknown (the startup read, or a failed one such as the cloud being
+ * unreachable or a keychain lock) only when Claude and Codex are both
+ * confirmed signed out: the gateway's key is on this computer, so it is the
+ * one route that can run, and waiting on the credits read stranded a
+ * gateway-only user on built-in models they can't pay for. With any native
+ * lane signed in or unknown it stays out, so an unknown credits read never
+ * outranks a subscription or moves a funded credits user onto their own key
+ * on a guess.
+ *
+ * Shared so the renderer seed, main's resolver and the composer agree.
+ */
+export function personalGatewayStandsIn(
   availability: BillingLaneAvailability,
   personalGateway: PersonalGatewayLane | undefined,
 ): personalGateway is PersonalGatewayLane {
+  if ((personalGateway?.models.length ?? 0) === 0) return false;
+  if (availability.creditsEligible === false) return true;
   return (
-    availability.creditsEligible === false &&
-    (personalGateway?.models.length ?? 0) > 0
+    availability.creditsEligible === undefined &&
+    availability.claudeNativeAuth === false &&
+    availability.codexNativeAuth === false
   );
 }
 
@@ -154,11 +205,19 @@ export type DefaultModelLaneResolution =
       provisional: boolean;
       reason:
         | 'pinned'
+        | 'ollama-only'
         | 'claude-native'
         | 'codex-native'
         | 'ai-credits'
         | 'last-known-lane'
         | 'policy-fallback';
+      /**
+       * Set when the AI Credits lane resolved onto the user's Personal gateway
+       * standing in for credits, so a host can keep a configured model on
+       * the gateway's route for it instead of billing credits the account
+       * doesn't have.
+       */
+      personalGateway?: PersonalGatewayLane;
     }
   | {
       outcome: 'no-dispatchable-model';
@@ -338,7 +397,7 @@ function laneAvailability(
       // carries the org's gateway, funded by the member's own key. A Personal
       // gateway does the same when credits can't (see PersonalGatewayLane).
       return orgGateway?.enforced === true ||
-        personalGatewayFillsCreditsLane(availability, personalGateway)
+        personalGatewayStandsIn(availability, personalGateway)
         ? true
         : availability.creditsEligible;
     case 'ollama':
@@ -355,7 +414,9 @@ function providerLane(provider: AgentProviderType): BillingLane {
 function defaultCandidates(
   lane: BillingLane,
   defaults: LaneModelDefaults,
+  preferredProvider: AgentProviderType,
   creditsCandidates: readonly ChatModel[],
+  helperCandidates: boolean,
   clampThinkingLevel?: (
     level: ProviderModelSelection['thinkingLevel'],
     model: ChatModel,
@@ -382,13 +443,46 @@ function defaultCandidates(
   // Like enforcement, this also replaces a caller's cheap `creditsCandidates`
   // (branch names, summaries): hosted helpers can't run without credits, so
   // helper work runs on the user's own gateway model and key.
+  //
+  // What the caller asked for leads, on the gateway's route for the same
+  // model: a Claude default of Opus runs as the gateway's Opus rather than
+  // whatever the gateway lists first. An explicit AI Credits default goes
+  // first, then the preferred provider's default.
+  // A helper's cheap candidates lead its own resolution the same way, so a
+  // branch name doesn't run on the user's most expensive default.
   if (personalGateway) {
-    return personalGateway.models.map((model) => ({
-      model,
-      thinkingLevel: clampThinkingLevel
-        ? clampThinkingLevel('high', model)
-        : 'high',
-    }));
+    const configured: ProviderModelSelection[] = helperCandidates
+      ? creditsCandidates.map((model) => ({ model, thinkingLevel: 'high' }))
+      : preferredProvider === 'codex'
+        ? [defaults.codex, defaults.claude]
+        : [defaults.claude, defaults.codex];
+    // An explicit AI Credits default is the user's choice for this lane, so
+    // it leads; the Claude and Codex defaults are often untouched seeds.
+    if (!helperCandidates && defaults.aiCredits) {
+      configured.unshift(defaults.aiCredits);
+    }
+    const candidates: ProviderModelSelection[] = [];
+    const add = (
+      model: ChatModel,
+      level: ProviderModelSelection['thinkingLevel'],
+    ): void => {
+      if (candidates.some((candidate) => candidate.model === model)) return;
+      candidates.push({
+        model,
+        thinkingLevel: clampThinkingLevel
+          ? clampThinkingLevel(level, model)
+          : level,
+      });
+    };
+    for (const selection of configured) {
+      const model = personalGatewayEquivalentModel(
+        selection.model,
+        personalGateway,
+      );
+      if (model) add(model, selection.thinkingLevel);
+    }
+    for (const model of personalGateway.models) add(model, 'high');
+    return candidates;
   }
   if (defaults.aiCredits) return [defaults.aiCredits];
   // The synthesized AUTO candidates carry a nominal `'high'`, which is NOT
@@ -423,7 +517,9 @@ function defaultCandidates(
 function laneCandidates(
   lane: BillingLane,
   defaults: LaneModelDefaults,
+  preferredProvider: AgentProviderType,
   creditsCandidates: readonly ChatModel[],
+  helperCandidates: boolean,
   guestPrincipal: boolean,
   clampThinkingLevel?: (
     level: ProviderModelSelection['thinkingLevel'],
@@ -435,7 +531,9 @@ function laneCandidates(
   const candidates = defaultCandidates(
     lane,
     defaults,
+    preferredProvider,
     creditsCandidates,
+    helperCandidates,
     clampThinkingLevel,
     orgGateway,
     personalGateway,
@@ -508,6 +606,20 @@ export function resolveDefaultModelLane(input: {
   isModelInRegistry: (model: ChatModel) => boolean;
   gatewayRoutesHydrated: boolean;
   ollamaPinned: boolean;
+  /**
+   * Ollama is installed with at least one model this app can select (in the
+   * registry and passing `isSelectableOllamaModel`). When it is `true`, Ollama
+   * is not pinned, and every base lane (Claude, Codex, AI Credits) is
+   * CONFIRMED unavailable, Ollama becomes the only lane and counts as
+   * available (`reason: 'ollama-only'`). A filled gateway makes the credits
+   * lane available, so a gateway user is never moved. `undefined` (no answer
+   * yet, or a host that does not read Ollama) behaves exactly as before.
+   *
+   * The pick is computed per resolution and never written to the saved
+   * default, so a later Claude sign-in restores the Claude default. When
+   * `defaults.ollama` is `null` the host supplies its first qualifying model.
+   */
+  ollamaReady?: boolean;
   creditsCandidates?: readonly ChatModel[];
   /** Present only when an org has made its gateway the only route. */
   orgGateway?: EnforcedOrgGatewayLane;
@@ -543,7 +655,7 @@ export function resolveDefaultModelLane(input: {
     input.creditsCandidates ?? CREDITS_LANE_DEFAULT_CANDIDATES;
   // Decided once so availability and candidates can't disagree about whether
   // the Personal gateway is standing in for credits.
-  const personalGateway = personalGatewayFillsCreditsLane(
+  const personalGateway = personalGatewayStandsIn(
     input.availability,
     input.personalGateway,
   )
@@ -555,17 +667,37 @@ export function resolveDefaultModelLane(input: {
     'codex-native',
     'ai-credits',
   ];
+  // Only confirmed-unavailable base lanes hand the default to Ollama: an
+  // unknown lane may still settle available, and moving a subscriber whose
+  // probe is in flight onto a local model would flip their default back and
+  // forth at launch.
+  const ollamaOnly =
+    !input.ollamaPinned &&
+    input.ollamaReady === true &&
+    baseOrder.every(
+      (lane) =>
+        laneAvailability(
+          lane,
+          input.availability,
+          false,
+          input.orgGateway,
+          personalGateway,
+        ) === false,
+    );
+  const ollamaLaneOpen = input.ollamaPinned || ollamaOnly;
   const order: BillingLane[] = input.ollamaPinned
     ? ['ollama', ...baseOrder]
-    : [
-        ...(preferredLane === 'ollama' ? [] : [preferredLane]),
-        ...baseOrder.filter((lane) => lane !== preferredLane),
-      ];
+    : ollamaOnly
+      ? ['ollama']
+      : [
+          ...(preferredLane === 'ollama' ? [] : [preferredLane]),
+          ...baseOrder.filter((lane) => lane !== preferredLane),
+        ];
   const isConfirmed = (lane: BillingLane): boolean =>
     laneAvailability(
       lane,
       input.availability,
-      input.ollamaPinned,
+      ollamaLaneOpen,
       input.orgGateway,
       personalGateway,
     ) === true;
@@ -602,7 +734,7 @@ export function resolveDefaultModelLane(input: {
     laneAvailability(
       input.lastResolvedLane,
       input.availability,
-      input.ollamaPinned,
+      ollamaLaneOpen,
       input.orgGateway,
       personalGateway,
     ) === undefined
@@ -636,7 +768,7 @@ export function resolveDefaultModelLane(input: {
     const available = laneAvailability(
       lane,
       input.availability,
-      input.ollamaPinned,
+      ollamaLaneOpen,
       input.orgGateway,
       personalGateway,
     );
@@ -644,7 +776,9 @@ export function resolveDefaultModelLane(input: {
     for (const selection of laneCandidates(
       lane,
       input.defaults,
+      input.preferredProvider,
       creditsCandidates,
+      input.creditsCandidates !== undefined,
       input.guestPrincipal === true,
       input.clampThinkingLevel,
       input.orgGateway,
@@ -674,12 +808,17 @@ export function resolveDefaultModelLane(input: {
           runtime.provisional,
         reason:
           lane === 'ollama'
-            ? 'pinned'
+            ? ollamaOnly
+              ? 'ollama-only'
+              : 'pinned'
             : lastKnown
               ? 'last-known-lane'
               : policyFallback
                 ? 'policy-fallback'
                 : lane,
+        ...(lane === 'ai-credits' && personalGateway
+          ? { personalGateway }
+          : {}),
       };
     }
     if (lane === preferredLane) preferredHadNoDispatchableModel = true;
@@ -693,7 +832,9 @@ export function resolveDefaultModelLane(input: {
     laneCandidates(
       lane,
       input.defaults,
+      input.preferredProvider,
       creditsCandidates,
+      input.creditsCandidates !== undefined,
       input.guestPrincipal === true,
       input.clampThinkingLevel,
       input.orgGateway,
@@ -714,7 +855,7 @@ export function resolveDefaultModelLane(input: {
       laneAvailability(
         lane,
         input.availability,
-        input.ollamaPinned,
+        ollamaLaneOpen,
         input.orgGateway,
         personalGateway,
       ) === false,
@@ -724,7 +865,7 @@ export function resolveDefaultModelLane(input: {
       laneAvailability(
         lane,
         input.availability,
-        input.ollamaPinned,
+        ollamaLaneOpen,
         input.orgGateway,
         personalGateway,
       ) === true,

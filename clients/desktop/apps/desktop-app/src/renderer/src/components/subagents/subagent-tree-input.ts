@@ -80,6 +80,8 @@ function snapshotFingerprint(input: ManagedSubagentInput): readonly unknown[] {
     snapshot.routeSnapshot?.requestedThinkingLevel ?? '',
     snapshot.routeSnapshot?.harnessId ?? '',
     snapshot.reportedRoute?.harnessId ?? '',
+    snapshot.reportedRoute?.runtimeModelId ?? '',
+    snapshot.reportedRoute?.runtimeModelLabel ?? '',
     snapshot.requestedModelId ?? '',
     snapshot.error?.message ?? '',
     input.createdAt ?? 0,

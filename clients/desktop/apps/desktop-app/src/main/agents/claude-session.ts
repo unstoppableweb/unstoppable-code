@@ -113,10 +113,15 @@ import { watchAccountProxySwitches } from '../account-proxy/switch-events';
 import { getCodexGatewayProxyService } from './codex-gateway-proxy-service';
 import { checkModelGatewayRoute } from '../lib/model-gateway-state';
 import { getMockLlmOrigin } from '../lib/e2e-mock-control-plane';
-import { isUnavailableModelSelection } from '@canopy/execution-engine/lib/gateway-model-availability';
+import {
+  isOrgGatewayRoute,
+  isUnavailableModelSelection,
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 import {
   isProviderNativelyAuthenticated,
+  isProviderNativelyAuthenticatedBeforeRefusal,
   isProviderNativelyAuthenticatedForRouting,
+  refreshProviderAuthAfterNativeFailure,
   peekProviderAccountIdentity,
 } from '../auth/provider-auth-state';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
@@ -831,15 +836,37 @@ async function resolveClaudeAiCreditsRouting(
     // spendable credits: nothing can pay for this turn. Falling through would
     // spawn natively and surface a raw `Please run /login`, which names the one
     // remedy the user may not have. Abort with a message that offers both
-    // (ECW-9091). A `mode` / `session-override` attempt tells us nothing about
-    // native auth, so those keep falling through to a native spawn.
+    // (ECW-9091).
+    //
+    // A `mode` / `session-override` attempt resolves before native auth is
+    // consulted, so it says nothing about the login on its own. Re-check it, as
+    // the `!entry` branch above does: a confirmed sign-out with a settled
+    // ineligible balance has nothing to pay for the turn either, and spawning
+    // natively would only surface a raw `Failed to authenticate` (billing setup
+    // gate, 2026-11-25). The re-check reads a status no older than a few
+    // seconds, so a sign-in done outside the app is seen before refusing. An
+    // authenticated or inconclusive probe (`probeFailed` reads as
+    // authenticated) and a credential supplied through Environments keep the
+    // native spawn. A failed or inconclusive credits read (`!context`,
+    // or `creditsEligibilityKnown: false`) also keeps it: only a settled
+    // ineligible balance refuses. Gateway models (Personal and organization)
+    // returned above, and an account proxy route skips this resolver.
     //
     // `error_code` makes the abort machine-identifiable (same precedent as
     // `OLLAMA_SERVER_UNAVAILABLE_ERROR_CODE`). The visible remedy is
     // `NoBillingSourceBanner`, which renders from the same availability state
     // and is already on screen when this fires — the desktop transcript has no
     // error-string surface of its own.
-    if (attempt?.reason === 'no-native-auth') {
+    const refuse =
+      attempt?.reason === 'no-native-auth' ||
+      (context !== null &&
+        context.creditsEligibilityKnown &&
+        !hasUserSuppliedProviderCredential('claude', opts.projectId) &&
+        !(await isProviderNativelyAuthenticatedBeforeRefusal(
+          'claude',
+          'ai-credits-routing',
+        )));
+    if (refuse) {
       await emit({
         type: 'error',
         error_code: NO_BILLING_SOURCE_ERROR_CODE,
@@ -2251,7 +2278,14 @@ export class ClaudeCodeProvider implements AgentProvider {
       // Feed the common on-quota state so any surface's next session recreates
       // through AI Credits when Claude's native quota is reached (CAN-838), and
       // surface the shared usage-limit banner on every chat surface.
-      if (resumeReason === 'usage_limit' && detectClaudeQuotaReached(data)) {
+      // A 429 from an AI gateway route is that gateway's rate limit or
+      // balance, not Claude's quota: marking Claude's quota would steer every
+      // surface to credits, and the banner would offer the wrong remedy.
+      if (
+        resumeReason === 'usage_limit' &&
+        !isOrgGatewayRoute(currentSelectedModel) &&
+        detectClaudeQuotaReached(data)
+      ) {
         const resetsAt = lastClaudeRejectedResetsAt ?? resume?.resetsAt;
         markProviderQuotaReached('claude', resetsAt);
         trackSideAdmission(
@@ -2289,6 +2323,10 @@ export class ClaudeCodeProvider implements AgentProvider {
         lastClaudeRejectedResetsAt = undefined;
       }
       if (resumeReason === 'authentication' && accountScope === 'native') {
+        // A stale credential can keep the cached status at signed in while
+        // every native turn fails; re-probe (deduped and rate-limited) so a
+        // confirmed sign-out reaches billing readiness.
+        refreshProviderAuthAfterNativeFailure('claude');
         const classification = classifyAgentFailure({
           provider: 'claude',
           accountScope,

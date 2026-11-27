@@ -12,7 +12,7 @@ import {
 } from '../primitives/Disclosure';
 import { RailIconButton } from './RailIconButton';
 import { Dot } from '../primitives/Badge';
-import { FloatingMenu } from '../primitives/FloatingMenu';
+import { Menu } from '../primitives/Menu';
 import { ActionMenuRowStyle } from '../primitives/ActionMenuItems';
 
 export interface RailSectionHeaderProps extends RailSectionHeaderFrameProps {
@@ -116,7 +116,7 @@ export const RailSectionHeader = forwardRef<
                 className="pointer-events-none absolute right-0.5 top-0.5"
               />
             )}
-            <FloatingMenu
+            <Menu
               open={!actionsDisabled && menuOpen}
               onOpenChange={setMenuOpen}
               anchorRef={menuRef}
@@ -129,7 +129,7 @@ export const RailSectionHeader = forwardRef<
               <ActionMenuRowStyle>
                 {renderMenuItems(() => setMenuOpen(false))}
               </ActionMenuRowStyle>
-            </FloatingMenu>
+            </Menu>
           </span>
         )}
         {onCreate && (

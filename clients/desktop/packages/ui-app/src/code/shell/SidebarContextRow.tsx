@@ -14,11 +14,11 @@ import {
   ActionMenuRowStyle,
   Button,
   ConfirmDialog,
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuLabel,
-  FloatingMenu,
+  MenuDivider,
+  MenuItem,
+  MenuItemIcon,
+  MenuLabel,
+  Menu,
   Notice,
   NoticeButton,
 } from '@canopy/ui-shared/components';
@@ -535,7 +535,7 @@ export function SidebarContextRow({
           />
         </ControlButton>
       </div>
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={open}
         onOpenChange={setOpen}
@@ -567,7 +567,7 @@ export function SidebarContextRow({
           disabled={disabled}
           testIds={testIds}
         />
-      </FloatingMenu>
+      </Menu>
       {!open && invitations?.error && declineTarget === null ? (
         <InvitationAlert
           error={invitations.error}
@@ -638,15 +638,15 @@ function InvitationAlert({
         </div>
         {error.kind === 'follow-up' ? (
           <ActionMenuRowStyle>
-            <DropdownMenuItem
+            <MenuItem
               data-testid="sidebar-context-invitations-open-organizations"
               onClick={onReview}
             >
-              <DropdownMenuItemIcon>
+              <MenuItemIcon>
                 <BuildingIcon size="xl" />
-              </DropdownMenuItemIcon>
+              </MenuItemIcon>
               Open organizations
-            </DropdownMenuItem>
+            </MenuItem>
           </ActionMenuRowStyle>
         ) : null}
       </>
@@ -729,10 +729,8 @@ function ContextInvitationItems({
   const busy = pending !== null;
   return (
     <div role="presentation" data-testid="sidebar-context-invitations">
-      <DropdownMenuDivider />
-      {items.length > 0 ? (
-        <DropdownMenuLabel>Invitations</DropdownMenuLabel>
-      ) : null}
+      <MenuDivider />
+      {items.length > 0 ? <MenuLabel>Invitations</MenuLabel> : null}
       {items.map((invite) => {
         const label = labels.get(invite.id) ?? invite.organizationName;
         // Usage-data prohibitions only turn the member's own telemetry off,
@@ -943,7 +941,7 @@ function ContextOrgScopedItems({
   // context choices above keep the picker's own rows and checkmarks.
   return (
     <>
-      <DropdownMenuDivider />
+      <MenuDivider />
       <ActionMenuRowStyle>
         {actions.feedPath !== null ? (
           <SidebarFeedMenuItem path={actions.feedPath} onOpenPath={openPath} />
@@ -973,7 +971,7 @@ function ContextOrgScopedItems({
           />
         ) : null}
         {actions.settingsPath !== null ? (
-          <DropdownMenuItem
+          <MenuItem
             data-testid={
               testIds?.organizationSettings ??
               'sidebar-context-organization-settings'
@@ -982,11 +980,11 @@ function ContextOrgScopedItems({
               if (actions.settingsPath !== null) openPath(actions.settingsPath);
             }}
           >
-            <DropdownMenuItemIcon>
+            <MenuItemIcon>
               <SettingsIcon />
-            </DropdownMenuItemIcon>
+            </MenuItemIcon>
             Organization settings
-          </DropdownMenuItem>
+          </MenuItem>
         ) : null}
       </ActionMenuRowStyle>
     </>
@@ -1045,7 +1043,7 @@ export function SidebarContextMenuItems({
   const createOrganizationPath = actions.createOrganizationPath;
   return (
     <>
-      <DropdownMenuItem
+      <MenuItem
         role="menuitemradio"
         aria-checked={context.kind === 'personal'}
         aria-label={
@@ -1059,9 +1057,9 @@ export function SidebarContextMenuItems({
         disabled={disabled}
         onClick={() => select({ kind: 'personal' })}
       >
-        <DropdownMenuItemIcon>
+        <MenuItemIcon>
           <SidebarContextGlyph kind="personal" />
-        </DropdownMenuItemIcon>
+        </MenuItemIcon>
         <span className="min-w-0 flex-1 truncate">Personal</span>
         {personalNeedsAttention ? (
           <UpdatesDot testId={`${activityPrefix}personal`} />
@@ -1069,7 +1067,7 @@ export function SidebarContextMenuItems({
         {context.kind === 'personal' ? (
           <CheckIcon size={16} aria-hidden="true" className="shrink-0" />
         ) : null}
-      </DropdownMenuItem>
+      </MenuItem>
       {options.map(({ organization, secondary }) => {
         const selected =
           context.kind === 'organization' &&
@@ -1080,7 +1078,7 @@ export function SidebarContextMenuItems({
           ? `${organization.name} ${secondary}`
           : organization.name;
         return (
-          <DropdownMenuItem
+          <MenuItem
             key={organization.id}
             role="menuitemradio"
             aria-checked={selected}
@@ -1103,12 +1101,12 @@ export function SidebarContextMenuItems({
               })
             }
           >
-            <DropdownMenuItemIcon>
+            <MenuItemIcon>
               <SidebarContextGlyph
                 kind="organization"
                 logoUrl={organization.logoUrl}
               />
-            </DropdownMenuItemIcon>
+            </MenuItemIcon>
             <span className="min-w-0 flex-1 truncate">{organization.name}</span>
             {secondary ? (
               <span className="shrink-0 text-xs fg-secondary">{secondary}</span>
@@ -1119,7 +1117,7 @@ export function SidebarContextMenuItems({
             {selected ? (
               <CheckIcon size={16} aria-hidden="true" className="shrink-0" />
             ) : null}
-          </DropdownMenuItem>
+          </MenuItem>
         );
       })}
       {invitations && orgScoped.authenticated !== false ? (

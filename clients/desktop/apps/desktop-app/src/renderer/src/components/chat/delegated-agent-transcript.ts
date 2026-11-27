@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useMemo } from 'react';
 import { delegationChildMessages } from '@canopy/agent-transcript';
 import { DELEGATION_TRANSCRIPT_CHAT_LOG } from '@canopy/protocol/delegation';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import type { DelegatedAgentCallBlock } from '@canopy/agent-transcript/types';
 import type { TranscriptReadSource } from '@canopy/app-core';
 import {
@@ -22,6 +23,44 @@ import {
 /** The chat (and archive) whose transcript is being rendered. */
 export const DelegationTranscriptSourceContext =
   createContext<DelegationTranscriptSource | null>(null);
+
+export function isPairedDelegationSource(
+  source: Pick<
+    DelegationTranscriptSource,
+    'projectId' | 'worktreeId' | 'chatId'
+  >,
+): boolean {
+  return (
+    isPairedComputerId(source.projectId) ||
+    isPairedComputerId(source.worktreeId) ||
+    isPairedComputerId(source.chatId)
+  );
+}
+
+export function resolveDelegationTranscriptSource(params: {
+  readonly projectId?: string;
+  readonly worktreeId?: string;
+  readonly chatId?: string;
+  readonly archivedContainerId?: string;
+  readonly standaloneHistory?: boolean;
+}): DelegationTranscriptSource | null {
+  const {
+    projectId,
+    worktreeId,
+    chatId,
+    archivedContainerId,
+    standaloneHistory,
+  } = params;
+  if (!projectId || !worktreeId || !chatId) return null;
+  if (isPairedDelegationSource({ projectId, worktreeId, chatId })) return null;
+  return {
+    projectId,
+    worktreeId,
+    chatId,
+    ...(archivedContainerId ? { archivedContainerId } : {}),
+    ...(standaloneHistory ? { standaloneHistory: true } : {}),
+  };
+}
 
 /** The shared transcript readers' form of the rendered chat. */
 export function transcriptReadSource(
@@ -93,7 +132,11 @@ function persistedBlock(
 export function useDelegatedAgentTranscript(
   block: DelegatedAgentDisplayBlock,
 ): DelegatedAgentDisplayBlock {
-  const source = useContext(DelegationTranscriptSourceContext);
+  const rawSource = useContext(DelegationTranscriptSourceContext);
+  const source =
+    rawSource !== null && !isPairedDelegationSource(rawSource)
+      ? rawSource
+      : null;
   const logged = block.transcriptStore === DELEGATION_TRANSCRIPT_CHAT_LOG;
   const streamBacked = isStreamBackedDelegation(block.transcriptStore);
   const key =

@@ -41,8 +41,8 @@ import { useCursorModels } from '@/hooks/useCursorModels';
 import {
   Button,
   ErrorState,
-  FLOATING_MENU_GAP,
-  FloatingMenu,
+  MENU_GAP,
+  Menu,
   ModelGroupHeader,
 } from '@canopy/ui-shared';
 import {
@@ -734,12 +734,12 @@ function ConfigurableHarnessRow({
               <MoreHorizontalIcon size="sm" aria-hidden="true" />
             </Button>
           </span>
-          <FloatingMenu
+          <Menu
             open={menuOpen}
             onOpenChange={setMenuOpen}
             anchorRef={menuButtonRef}
             placement="bottom-right"
-            gap={FLOATING_MENU_GAP}
+            gap={MENU_GAP}
             aria-label={`Actions for ${label}`}
             data-testid={`harness-row-menu-surface-${assignment.modelId}`}
             className="w-48"
@@ -755,7 +755,7 @@ function ConfigurableHarnessRow({
                 }}
               />
             </ActionMenuRowStyle>
-          </FloatingMenu>
+          </Menu>
         </>
       )}
     </HarnessBoardRow>

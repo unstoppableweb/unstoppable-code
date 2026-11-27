@@ -39,6 +39,7 @@ import {
 } from '@/components/suggestions/SuggestedPromptChips';
 import { useSuggestedPrompts } from '@/components/suggestions/useSuggestedPrompts';
 import { isCoworkChatTarget } from '@/lib/cowork';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { useWorkspaceIsReadOnly } from '@/lib/workspace-access';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
@@ -151,15 +152,21 @@ export const WorktreeChatSurface = memo(function WorktreeChatSurface({
   // with nothing that sends or acts on a turn: no composer, no interface-mode
   // toggle, and no managed Claude Code terminal (mounting one spawns a PTY).
   const readOnly = useWorkspaceIsReadOnly();
-  const terminalMode = isClaudeCodeChatMode && !readOnly;
   // This renderer is reused for synthetic assistant scopes and Cowork entries.
   // A real Code worktree, a Cowork Work Entry, and the App Advisor may opt
   // into the Cursor harness; every other scope keeps Cursor out of its picker.
   const selectedProjectId = selectedWorktree?.projectId;
-  const { chatInterfaceModes, chatQueueEdits, chatResetToPoint, chatTabFork } =
-    useScopeCapabilities({
-      projectId: selectedProjectId ?? '',
-    });
+  const {
+    chatInterfaceModes,
+    chatQueueCancel,
+    chatQueueEdits,
+    chatResetToPoint,
+    chatTabFork,
+    terminalPty,
+  } = useScopeCapabilities({
+    projectId: selectedProjectId ?? '',
+  });
+  const terminalMode = isClaudeCodeChatMode && !readOnly && terminalPty;
   const allowCursor = useProjectsStore(
     (state) =>
       (selectedProjectId !== undefined && isBotProjectId(selectedProjectId)) ||
@@ -280,7 +287,9 @@ export const WorktreeChatSurface = memo(function WorktreeChatSurface({
       keepWhileAppRuns: true,
       // A cloud chat's MCP servers are its cloud account's, not this
       // computer's: it takes the cowork pool (CAN-6175 R5).
-      localInventory: !isWebCoreScope(selectedWorktree?.projectId ?? ''),
+      localInventory:
+        !isWebCoreScope(selectedWorktree?.projectId ?? '') &&
+        !isPairedComputerId(selectedWorktree?.projectId ?? ''),
       ...(coworkProjectId === null
         ? {}
         : {
@@ -472,7 +481,9 @@ export const WorktreeChatSurface = memo(function WorktreeChatSurface({
                     interfaceModeControl={interfaceModeControl}
                     // A projected published chat carries no queue; the required
                     // clear handler stays wired, every other turn action is off.
-                    onClearQueuedMessage={handleClearQueuedMessage}
+                    {...(readOnly || chatQueueCancel === false
+                      ? {}
+                      : { onClearQueuedMessage: handleClearQueuedMessage })}
                     {...(readOnly || chatQueueEdits !== true
                       ? {}
                       : {
@@ -530,6 +541,7 @@ export const WorktreeChatSurface = memo(function WorktreeChatSurface({
                       interfaceModeControl={interfaceModeControl}
                       targetOverride={targetOverride}
                       nativeSessionComposer
+                      disableTerminalMode={!terminalPty}
                       composerShortcutsEnabled={isActivePanel}
                       cancelShortcutOwnerDocument={cancelShortcutOwnerDocument}
                       cancelShortcutTargetRootRef={cancelShortcutTargetRootRef}

@@ -8,6 +8,17 @@ function hasOwn(source: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(source, key);
 }
 
+/** The values `value` holds for `keys`, as stored; absent keys stay absent. */
+export function pickStoredKeys(
+  value: object,
+  keys: readonly string[],
+): Record<string, unknown> {
+  const picked: Record<string, unknown> = {};
+  for (const key of keys)
+    if (hasOwn(value, key)) picked[key] = Reflect.get(value, key);
+  return picked;
+}
+
 /**
  * Wraps a document codec so that `keys` keep exactly the values the stored
  * document holds (CAN-4472). No read, recovery, migration or save can change

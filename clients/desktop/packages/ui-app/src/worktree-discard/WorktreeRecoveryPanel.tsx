@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type JSX,
+  type ReactNode,
 } from 'react';
 import {
   isUnsupportedOperation,
@@ -36,9 +37,10 @@ import {
   CopyButton,
   DialogModal,
   Disclosure,
+  Divider,
   ErrorBanner,
   Heading,
-  ListRowStatic,
+  Inline,
   Stack,
   type W5RecoveryNoticeProps,
 } from '@canopy/ui-shared/components';
@@ -127,10 +129,9 @@ function archiveReference(
 }
 
 function shortArchiveReference(
-  operationId: string | undefined,
+  operationId: string,
   references: readonly string[],
-): string | undefined {
-  if (!operationId) return undefined;
+): string {
   // Keep both ends and grow the suffix only when two attempts would look alike.
   let length = 8;
   while (
@@ -148,55 +149,140 @@ function shortArchiveReference(
     : operationId;
 }
 
-function recoveryCreatedAt(createdAt: string | null): string | undefined {
-  return createdAt && Number.isFinite(Date.parse(createdAt))
-    ? `Worktree created ${new Date(createdAt).toLocaleString(undefined, {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit',
-        timeZoneName: 'short',
-      })}`
-    : undefined;
+function recoveryCreatedLabel(createdAt: string | null): string | undefined {
+  if (!createdAt || !Number.isFinite(Date.parse(createdAt))) return undefined;
+  return new Date(createdAt).toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
 }
 
-function RecoveryReference({
-  operationId,
+function recoveryHeadingKey(text: string): string {
+  return text
+    .normalize('NFC')
+    .replace(/[ \t\r\n]+/g, ' ')
+    .replace(/^ | $/g, '');
+}
+
+function recoveryListReason(
+  recovery: WorktreeRecoveryListResult['entries'][number],
+  readOnly: boolean,
+): string {
+  if (recovery.check !== 'completed-turn-diff-cleanup')
+    return formatWorktreeRecoveryReason(recovery);
+  if (recovery.diagnosis?.check !== 'completed-turn-diff-cleanup')
+    return "The archive finished, but leftover saved change data couldn't be safely cleaned up.";
+  return readOnly
+    ? 'The archive finished and the worktree was removed. Leftover saved change data can be cleaned up in the app on the connected computer.'
+    : 'The archive finished and the worktree was removed. Finish cleanup to remove leftover saved change data.';
+}
+
+function RecoveryListEntry({
+  title,
+  createdAt,
+  created,
   reason,
+  operationId,
   details,
-  unfinished = true,
+  action,
+  worktreeId,
+  shortReference,
 }: {
-  readonly operationId?: string;
+  readonly title: string;
+  readonly createdAt: string | null;
+  readonly created: string | undefined;
   readonly reason: string;
+  readonly operationId?: string;
   readonly details: unknown;
-  readonly unfinished?: boolean;
+  readonly action?: ReactNode;
+  readonly worktreeId?: string;
+  readonly shortReference?: string;
 }): JSX.Element {
   return (
-    <Stack gap="tight">
-      <p className="text-pretty">{reason}</p>
-      {unfinished ? (
-        <p className="text-pretty">
-          If recovery cannot continue, keep the files in place. Copy the
-          recovery details, then use Send feedback in the account menu to share
-          them with support.
-        </p>
-      ) : null}
-      <CopyButton
-        label="Copy recovery details"
-        value={JSON.stringify(details, null, 2)}
-      />
-      <Disclosure label="Details">
-        {operationId ? (
-          <p className="text-pretty break-words">
+    <Stack
+      gap="item"
+      data-testid={
+        worktreeId === undefined ? undefined : 'worktree-live-recovery-entry'
+      }
+      data-worktree-id={worktreeId}
+    >
+      <Divider aria-hidden />
+      <Stack gap="tight">
+        <Inline gap="inline" align="start" wrap>
+          <Stack gap="tight" className="min-w-0 grow basis-48">
+            <Heading level={4} variant="title">
+              <span className={`break-words ${REPLAY_MASK_CLASS}`}>
+                {title}
+              </span>
+            </Heading>
+            {created ? (
+              <time
+                dateTime={createdAt ?? undefined}
+                className="text-xs fg-secondary"
+              >
+                Worktree created {created}
+              </time>
+            ) : null}
+            {shortReference ? (
+              <p className="break-words text-xs fg-secondary">
+                Archive reference:{' '}
+                <span className={REPLAY_MASK_CLASS}>{shortReference}</span>
+              </p>
+            ) : null}
+          </Stack>
+          {action}
+        </Inline>
+        <p className="text-pretty text-xs fg-secondary">{reason}</p>
+        <RecoveryDiagnostics operationId={operationId} details={details} />
+      </Stack>
+    </Stack>
+  );
+}
+
+function RecoveryDiagnostics({
+  operationId,
+  details,
+  label = 'Details',
+}: {
+  readonly operationId?: string;
+  readonly details: unknown;
+  readonly label?: string;
+}): JSX.Element {
+  return (
+    <Disclosure label={label}>
+      <RecoveryDiagnosticsContent operationId={operationId} details={details} />
+    </Disclosure>
+  );
+}
+
+function RecoveryDiagnosticsContent({
+  operationId,
+  details,
+}: {
+  readonly operationId?: string;
+  readonly details: unknown;
+}): JSX.Element {
+  const serialized = JSON.stringify(details, null, 2);
+  return (
+    <div className={REPLAY_MASK_CLASS}>
+      <Stack gap="inline">
+        {operationId && (
+          <p className="text-xs fg-secondary break-words">
             Archive reference: {operationId}
           </p>
-        ) : null}
+        )}
+        <div>
+          <CopyButton label="Copy recovery details" value={serialized} />
+        </div>
         <CodeBlock format="plain" variant="bare">
-          {JSON.stringify(details, null, 2)}
+          {serialized}
         </CodeBlock>
-      </Disclosure>
-    </Stack>
+      </Stack>
+    </div>
   );
 }
 
@@ -740,13 +826,70 @@ export function WorktreeRecoveryListDialog({
   /** CAN-5335's review, for a project whose records can't all be read (q-26 4a). */
   readonly onReviewJournal?: () => void;
 }): JSX.Element {
-  const count = projects.reduce(
-    (total, project) =>
-      total +
-      project.entries.length +
-      (project.resolutions?.filter(hasRecoveryMaterial).length ?? 0),
+  const referencesByRow = new Map<string, string[]>();
+  const holdReferencesByProjectName = new Map<string, string[]>();
+  const groups = projects.map((project) => {
+    const projectNameKey = recoveryHeadingKey(project.name);
+    const holds = project.resolutions?.filter(hasRecoveryMaterial) ?? [];
+    const holdReferences =
+      holdReferencesByProjectName.get(projectNameKey) ?? [];
+    for (const hold of holds) holdReferences.push(hold.operationId);
+    holdReferencesByProjectName.set(projectNameKey, holdReferences);
+
+    const rows = project.entries.map((recovery) => {
+      const title = recoveryName(project, recovery);
+      const created = recoveryCreatedLabel(recovery.subject.createdAt);
+      const operationId = archiveReference(recovery);
+      const finishCleanup =
+        recovery.diagnosis?.check === 'completed-turn-diff-cleanup' &&
+        worktreeRecoveryOfferedActions(recovery, {
+          canResolve: !readOnly,
+          canSetAside,
+        }).includes('finish');
+      const actionLabel = finishCleanup
+        ? 'Finish cleanup'
+        : recovery.check === 'completed-turn-diff-cleanup'
+          ? 'View cleanup details'
+          : 'Review recovery';
+      const reason = recoveryListReason(recovery, readOnly);
+      let matchingReferences: string[] | undefined;
+      if (operationId) {
+        const key = JSON.stringify([
+          projectNameKey,
+          recoveryHeadingKey(title),
+          created,
+          reason,
+          readOnly ? null : actionLabel,
+        ]);
+        matchingReferences = referencesByRow.get(key) ?? [];
+        matchingReferences.push(operationId);
+        referencesByRow.set(key, matchingReferences);
+      }
+      return {
+        recovery,
+        title,
+        created,
+        operationId,
+        finishCleanup,
+        actionLabel,
+        reason,
+        matchingReferences,
+      };
+    });
+    return { project, rows, holds, holdReferences };
+  });
+  const count = groups.reduce(
+    (total, { rows, holds }) => total + rows.length + holds.length,
     0,
   );
+  const deletingReference = deleting
+    ? shortArchiveReference(
+        deleting.operationId,
+        groups.find(
+          ({ project }) => project.workspaceId === deleting.workspaceId,
+        )?.holdReferences ?? [],
+      )
+    : undefined;
   return (
     <>
       {!deleting || readOnly ? (
@@ -761,7 +904,7 @@ export function WorktreeRecoveryListDialog({
           dataTestId="worktree-live-recovery-panel"
           footer={
             <Button
-              variant="primary"
+              variant="secondary"
               loading={checking}
               loadingLabel="Checking…"
               disabled={busy || checking}
@@ -771,48 +914,40 @@ export function WorktreeRecoveryListDialog({
             </Button>
           }
         >
-          {readOnly ? (
-            // Read only (CAN-7439): no action here, so name where the reader
-            // can act instead of promising one. Worded to stay true when the
-            // list is empty or holds only retained material.
-            <p className="text-pretty">
-              Archives that didn't finish on the connected computer are listed
-              here. To finish or discard them, open the app on that computer.
-              You can copy details here to share with support.
+          {count > 0 || error ? (
+            <p className="text-pretty text-s fg-secondary">
+              {readOnly
+                ? // Read only (CAN-7439): recovery actions run on the connected computer.
+                  'Open the app on the connected computer to continue recovery.'
+                : "If recovery can't continue, keep the files in place."}
+              {count > 0
+                ? ' Open Details to copy information for support.'
+                : null}
             </p>
-          ) : (
-            <p className="text-pretty">
-              Finish leftover cleanup, continue an unfinished archive, or copy
-              details to share with support. Saved recovery material can be
-              deleted separately.
-            </p>
-          )}
+          ) : null}
           {error ? (
-            <>
+            <Stack gap="tight">
               <ErrorBanner
                 errorSource="worktree-recovery-panel"
-                error="Couldn't check all recovery records. You can still review known records and copy their details to share with support."
+                error="Couldn't check all recovery records."
               />
-              <p className="text-pretty">
-                Copy the recovery details, then use Send feedback in the account
-                menu to share them with support.
+              <p className="text-pretty text-s fg-secondary">
+                Open Check failure details to copy information for support. Use
+                Send feedback beside your account in the desktop app to share
+                it.
               </p>
-              <CopyButton
-                label="Copy recovery details"
-                value={JSON.stringify(
-                  {
-                    check: 'recovery-list-unavailable',
-                    projects: projects.map((project) => ({
-                      workspaceId: project.workspaceId,
-                      check: project.check,
-                      unreadableEvidence: project.unreadableEvidence,
-                    })),
-                  },
-                  null,
-                  2,
-                )}
+              <RecoveryDiagnostics
+                label="Check failure details"
+                details={{
+                  check: 'recovery-list-unavailable',
+                  projects: projects.map((project) => ({
+                    workspaceId: project.workspaceId,
+                    check: project.check,
+                    unreadableEvidence: project.unreadableEvidence,
+                  })),
+                }}
               />
-            </>
+            </Stack>
           ) : null}
           {message ? (
             <p role="status" className="text-pretty">
@@ -822,22 +957,22 @@ export function WorktreeRecoveryListDialog({
           {!count && !checking && !error ? (
             <p>No unfinished archives or retained recovery material.</p>
           ) : null}
-          {projects.map((project) => {
-            const references = [
-              ...project.entries.flatMap(
-                (entry) => archiveReference(entry) ?? [],
-              ),
-              ...(project.resolutions?.map((hold) => hold.operationId) ?? []),
-            ];
+          {groups.map(({ project, rows, holds, holdReferences }) => {
+            const unavailable = recoveryEvidenceUnavailable(project);
+            if (
+              project.entries.length === 0 &&
+              holds.length === 0 &&
+              !unavailable
+            ) {
+              return null;
+            }
             return (
-              <Stack as="section" key={project.workspaceId} gap="inline">
-                {project.entries.length > 0 ||
-                project.resolutions?.some(hasRecoveryMaterial) ||
-                recoveryEvidenceUnavailable(project) ? (
-                  <Heading level={3} variant="label">
-                    <span className={REPLAY_MASK_CLASS}>{project.name}</span>
-                  </Heading>
-                ) : null}
+              <Stack as="section" key={project.workspaceId} gap="item">
+                <Heading level={3} variant="label">
+                  <span className={`break-words ${REPLAY_MASK_CLASS}`}>
+                    {project.name}
+                  </span>
+                </Heading>
                 {project.check === 'journal-evidence-unreadable' &&
                 !readOnly &&
                 onReviewJournal ? (
@@ -859,160 +994,138 @@ export function WorktreeRecoveryListDialog({
                       </Button>
                     </div>
                   </Stack>
-                ) : recoveryEvidenceUnavailable(project) ? (
-                  <RecoveryReference
-                    reason="Couldn't check this project. Keep its files in place. Check again later, or copy these details to share with support."
-                    details={{
-                      workspaceId: project.workspaceId,
-                      check: project.check,
-                      unreadableEvidence: project.unreadableEvidence,
-                    }}
-                  />
+                ) : unavailable ? (
+                  <Stack gap="tight">
+                    <p className="text-pretty text-s">
+                      Couldn't check this project. Keep its files in place and
+                      check again later.
+                    </p>
+                    <RecoveryDiagnostics
+                      details={{
+                        workspaceId: project.workspaceId,
+                        check: project.check,
+                        unreadableEvidence: project.unreadableEvidence,
+                      }}
+                    />
+                  </Stack>
                 ) : null}
-                {project.entries.map((recovery) => {
-                  const finishCleanup =
-                    recovery.diagnosis?.check ===
-                      'completed-turn-diff-cleanup' &&
-                    worktreeRecoveryOfferedActions(recovery, {
-                      canResolve: !readOnly,
-                      canSetAside,
-                    }).includes('finish');
+                {rows.map((row) => {
+                  const {
+                    recovery,
+                    title,
+                    created,
+                    operationId,
+                    finishCleanup,
+                    actionLabel,
+                    reason,
+                    matchingReferences,
+                  } = row;
                   return (
-                    <Stack
-                      data-testid="worktree-live-recovery-entry"
-                      data-worktree-id={recovery.subject.worktreeId}
-                      key={
-                        archiveReference(recovery) ??
-                        recovery.subject.worktreeId
+                    <RecoveryListEntry
+                      worktreeId={recovery.subject.worktreeId}
+                      key={operationId ?? recovery.subject.worktreeId}
+                      title={title}
+                      createdAt={recovery.subject.createdAt}
+                      created={created}
+                      shortReference={
+                        operationId &&
+                        matchingReferences &&
+                        matchingReferences.length > 1
+                          ? shortArchiveReference(
+                              operationId,
+                              matchingReferences,
+                            )
+                          : undefined
                       }
-                      gap="tight"
-                    >
-                      <ListRowStatic
-                        size="lg"
-                        description={recoveryCreatedAt(
-                          recovery.subject.createdAt,
-                        )}
-                        trailing={shortArchiveReference(
-                          archiveReference(recovery),
-                          references,
-                        )}
-                        actions={
-                          readOnly ? undefined : (
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              disabled={
-                                busy || checking || (error && finishCleanup)
-                              }
-                              onClick={() =>
-                                finishCleanup
-                                  ? onFinishCleanup(project, recovery)
-                                  : onReview(project, recovery)
-                              }
-                            >
-                              {finishCleanup
-                                ? 'Finish cleanup'
-                                : recovery.check ===
-                                    'completed-turn-diff-cleanup'
-                                  ? 'View cleanup details'
-                                  : 'Review archive'}
-                            </Button>
-                          )
-                        }
-                      >
-                        <span className={REPLAY_MASK_CLASS}>
-                          {recoveryName(project, recovery)}
-                        </span>
-                      </ListRowStatic>
-                      <RecoveryReference
-                        operationId={archiveReference(recovery)}
-                        reason={
-                          recovery.check === 'completed-turn-diff-cleanup'
-                            ? recovery.diagnosis?.check ===
-                              'completed-turn-diff-cleanup'
-                              ? readOnly
-                                ? 'The archive finished and the worktree was removed. Leftover saved change data can be cleaned up in the app on the connected computer.'
-                                : 'The archive finished and the worktree was removed. Finish cleanup to remove leftover saved change data.'
-                              : "The archive finished, but leftover saved change data couldn't be safely cleaned up. Copy the recovery details to share with support."
-                            : formatWorktreeRecoveryReason(recovery)
-                        }
-                        unfinished={
-                          recovery.diagnosis?.verdict !== 'cleanup-debt' &&
-                          (recovery.check !== 'completed-turn-diff-cleanup' ||
-                            recovery.diagnosis?.check !==
-                              'completed-turn-diff-cleanup')
-                        }
-                        details={recovery}
-                      />
-                    </Stack>
+                      action={
+                        readOnly ? undefined : (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            disabled={
+                              busy || checking || (error && finishCleanup)
+                            }
+                            onClick={() =>
+                              finishCleanup
+                                ? onFinishCleanup(project, recovery)
+                                : onReview(project, recovery)
+                            }
+                          >
+                            {actionLabel}
+                          </Button>
+                        )
+                      }
+                      operationId={operationId}
+                      reason={reason}
+                      details={recovery}
+                    />
                   );
                 })}
-                {project.resolutions
-                  ?.filter(hasRecoveryMaterial)
-                  .map((hold) => (
-                    <Stack key={hold.operationId} gap="tight">
-                      <ListRowStatic
-                        size="lg"
-                        description={recoveryCreatedAt(hold.createdAt)}
-                        trailing={shortArchiveReference(
-                          hold.operationId,
-                          references,
-                        )}
-                        actions={
-                          readOnly ? undefined : hold.stage === 'completed' ? (
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              disabled={busy || checking || error}
-                              onClick={() =>
-                                onDelete({
-                                  ...hold,
-                                  workspaceId: project.workspaceId,
-                                })
-                              }
-                            >
-                              Delete recovery material
-                            </Button>
-                          ) : (
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              loading={busy}
-                              loadingLabel="Continuing recovery…"
-                              disabled={busy || checking || error}
-                              onClick={() => {
-                                onResolve(
-                                  { ...hold, workspaceId: project.workspaceId },
-                                  hold.action,
-                                );
-                              }}
-                            >
-                              {hold.action === 'keep-worktree'
-                                ? 'Keep worktree'
-                                : 'Release'}
-                            </Button>
+                {holds.map((hold) => (
+                  <RecoveryListEntry
+                    key={hold.operationId}
+                    title={
+                      hold.stage === 'completed'
+                        ? 'Retained recovery material'
+                        : 'Unfinished recovery'
+                    }
+                    createdAt={hold.createdAt}
+                    created={recoveryCreatedLabel(hold.createdAt)}
+                    shortReference={
+                      holdReferences.length > 1
+                        ? shortArchiveReference(
+                            hold.operationId,
+                            holdReferences,
                           )
-                        }
-                      >
-                        {hold.stage === 'completed'
-                          ? 'Retained recovery material'
-                          : 'Unfinished recovery'}
-                      </ListRowStatic>
-                      <RecoveryReference
-                        operationId={hold.operationId}
-                        unfinished={hold.stage !== 'completed'}
-                        details={{ workspaceId: project.workspaceId, ...hold }}
-                        reason={
-                          hold.stage === 'completed'
-                            ? `${hold.retainedSnapshots} saved Git ${hold.retainedSnapshots === 1 ? 'snapshot' : 'snapshots'}. ${hold.retainedPayload ? 'A saved working-file copy is also retained.' : 'No working-file copy is retained.'}`
-                            : readOnly
-                              ? // Read only (CAN-7439): the choice resumes on the computer.
-                                'Recovery has not finished. Continue it in the app on the connected computer.'
-                              : 'Recovery has not finished. Continue the same choice to check and resume it.'
-                        }
-                      />
-                    </Stack>
-                  ))}
+                        : undefined
+                    }
+                    action={
+                      readOnly ? undefined : hold.stage === 'completed' ? (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={busy || checking || error}
+                          onClick={() =>
+                            onDelete({
+                              ...hold,
+                              workspaceId: project.workspaceId,
+                            })
+                          }
+                        >
+                          Delete recovery material
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          loading={busy}
+                          loadingLabel="Continuing recovery…"
+                          disabled={busy || checking || error}
+                          onClick={() => {
+                            onResolve(
+                              { ...hold, workspaceId: project.workspaceId },
+                              hold.action,
+                            );
+                          }}
+                        >
+                          {hold.action === 'keep-worktree'
+                            ? 'Keep worktree'
+                            : 'Release'}
+                        </Button>
+                      )
+                    }
+                    operationId={hold.operationId}
+                    details={{ workspaceId: project.workspaceId, ...hold }}
+                    reason={
+                      hold.stage === 'completed'
+                        ? `${hold.retainedSnapshots} saved Git ${hold.retainedSnapshots === 1 ? 'snapshot' : 'snapshots'}. ${hold.retainedPayload ? 'A saved working-file copy is also retained.' : 'No working-file copy is retained.'}`
+                        : readOnly
+                          ? // Read only (CAN-7439): the choice resumes on the computer.
+                            'Recovery has not finished. Continue it in the app on the connected computer.'
+                          : 'Recovery has not finished. Continue the same choice to check and resume it.'
+                    }
+                  />
+                ))}
               </Stack>
             );
           })}
@@ -1021,7 +1134,18 @@ export function WorktreeRecoveryListDialog({
       {deleting && !readOnly ? (
         <ConfirmDialog
           title="Delete retained recovery material?"
-          message="Permanently delete the saved Git snapshots and working-file copy for this archive attempt. This does not delete a live worktree."
+          message={
+            <Stack gap="inline">
+              <p className="text-pretty">
+                Permanently delete the saved Git snapshots and working-file copy
+                for this archive attempt. This does not delete a live worktree.
+              </p>
+              <p>
+                Archive reference:{' '}
+                <span className={REPLAY_MASK_CLASS}>{deletingReference}</span>
+              </p>
+            </Stack>
+          }
           confirmLabel="Delete recovery material"
           busyLabel="Deleting recovery material…"
           destructive

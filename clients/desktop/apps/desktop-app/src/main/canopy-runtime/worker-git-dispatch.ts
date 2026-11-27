@@ -89,7 +89,7 @@ import {
 } from './worker-git-adapter';
 import type { DaemonGitRoute, DaemonGitRouteRequest } from './daemon-git-route';
 
-interface GitReadRouteRequest extends DaemonGitRouteRequest {
+export interface GitReadRouteRequest extends DaemonGitRouteRequest {
   readonly route: DaemonGitRoute;
 }
 
@@ -442,13 +442,22 @@ async function changeSetOf(
   scope: { workspaceId: string; worktreeId: string },
   base: string,
   head: string,
+  routing: GitReadRouteRequest | undefined,
 ): Promise<GitChangeSetSample | null> {
-  const read = await queryChangeSetForLegacyIpc(
-    dispatcher,
-    { scope, repoId: target.repoId, base, head },
-    { caller: gitReadCaller(caller) },
-  );
-  return read?.repoPath === target.repoPath ? read.sample : null;
+  const params = { scope, repoId: target.repoId, base, head };
+  const options = { caller: gitReadCaller(caller) };
+  const direct = async (): Promise<GitChangeSetSample | null> => {
+    const read = await queryChangeSetForLegacyIpc(dispatcher, params, options);
+    return read?.repoPath === target.repoPath ? read.sample : null;
+  };
+  // A routed read keeps the daemon's typed failure (CAN-4729). A borrowed
+  // scope (code review, plan explore) stays in process, as the guard excludes it.
+  const borrowed =
+    scope.workspaceId !== target.projectId ||
+    scope.worktreeId !== target.worktreeId;
+  return routing && !borrowed
+    ? routing.route.changeSet(params, target.repoPath, options, routing, direct)
+    : direct();
 }
 
 /**
@@ -460,6 +469,7 @@ export async function listUncommittedChangedFiles(
   dispatcher: WorkerGitDispatcher,
   caller: CanopyCallerDescriptor,
   target: ChangedFilesTarget,
+  routing?: GitReadRouteRequest,
 ): Promise<ChangedFileInfo[]> {
   const scope = changedFilesScope(target);
   const sample =
@@ -472,6 +482,7 @@ export async function listUncommittedChangedFiles(
           scope,
           'HEAD',
           'WORKTREE',
+          routing,
         );
   return sample === null
     ? getChangedFilesList(target.repoPath)
@@ -488,6 +499,7 @@ export async function listCommittedChangedFiles(
   caller: CanopyCallerDescriptor,
   target: ChangedFilesTarget,
   baseBranch: string | undefined,
+  routing?: GitReadRouteRequest,
 ): Promise<ChangedFileInfo[]> {
   const scope = changedFilesScope(target);
   if (scope === null) return getCommittedFilesList(target.repoPath, baseBranch);
@@ -500,6 +512,7 @@ export async function listCommittedChangedFiles(
     scope,
     mergeBase,
     'HEAD',
+    routing,
   );
   return sample === null
     ? getCommittedFilesBetween(target.repoPath, mergeBase, 'HEAD')

@@ -140,6 +140,7 @@ import {
 import { restoreEntryCostArchive } from '../cost-index/lifecycle';
 import { createElectronExecutionRuntime } from '../pipelines/execution-runtime';
 import { relocateExecutionStateArtifactPaths } from '../pipelines/execution-state-relocation';
+import { notifyDurablePausedPipelinesChanged } from '../pipelines/paused-pipeline-cache-signal';
 import { getChatSearchService } from '../chat-search/service';
 import { startProjectWorktreePostCreateSetup } from './project-worktree-runtime';
 import { startWorkspaceWorktreePostCreateSetup } from './workspace-worktree-runtime';
@@ -1398,6 +1399,7 @@ async function restoreExecutions(args: {
   executionIds: string[];
 }): Promise<string[]> {
   const failed: string[] = [];
+  const installedIds: string[] = [];
   const archiveDir = getArchivedContainerExecutionsDir(
     args.manifest.projectId,
     args.manifest.id,
@@ -1407,6 +1409,8 @@ async function restoreExecutions(args: {
   for (const executionId of args.executionIds) {
     const sourceState = join(archiveDir, `${executionId}.json`);
     const sourceArtifacts = join(archiveDir, executionId);
+    const liveState = join(liveDir, `${executionId}.json`);
+    let stateInstalled = false;
     try {
       const parsed: unknown = JSON.parse(await readFile(sourceState, 'utf8'));
       const rewritten = rewriteExecutionState(
@@ -1421,15 +1425,33 @@ async function restoreExecutions(args: {
         liveDir,
         executionId,
       );
-      const installed = await installRestoredExecutionState(
-        executionId,
-        liveDir,
-        relocated,
-      );
-      if (installed === 'already_present') {
-        const live: unknown = JSON.parse(
-          await readFile(join(liveDir, `${executionId}.json`), 'utf8'),
+      let installed: 'installed' | 'already_present';
+      try {
+        installed = await installRestoredExecutionState(
+          executionId,
+          liveDir,
+          relocated,
         );
+      } catch (installError) {
+        // Durable atomic install may publish liveState before directory flush fails.
+        if (await pathExists(liveState)) {
+          try {
+            const live: unknown = JSON.parse(await readFile(liveState, 'utf8'));
+            if (
+              isRecord(live) &&
+              live.project_id === args.manifest.projectId &&
+              live.worktree_id === args.destinationId
+            ) {
+              stateInstalled = true;
+            }
+          } catch {
+            // Unreadable live state; leave stateInstalled false.
+          }
+        }
+        throw installError;
+      }
+      if (installed === 'already_present') {
+        const live: unknown = JSON.parse(await readFile(liveState, 'utf8'));
         if (
           !isRecord(live) ||
           live.project_id !== args.manifest.projectId ||
@@ -1446,6 +1468,7 @@ async function restoreExecutions(args: {
           );
         }
       }
+      stateInstalled = true;
       if (await pathExists(sourceArtifacts)) {
         await copyRestoredExecutionArtifacts(
           sourceArtifacts,
@@ -1460,7 +1483,14 @@ async function restoreExecutions(args: {
       ]);
     } catch {
       failed.push(executionId);
+    } finally {
+      if (stateInstalled) {
+        installedIds.push(executionId);
+      }
     }
+  }
+  if (installedIds.length > 0) {
+    notifyDurablePausedPipelinesChanged(installedIds);
   }
   return failed;
 }

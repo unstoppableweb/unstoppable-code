@@ -3,10 +3,10 @@ import { CreditCard } from '../icons/AppIcons';
 import { AI_CREDITS_LABEL } from './aiCreditsLabel';
 import { AI_CREDITS_PURCHASE_LABEL } from './creditsPromptCopy';
 import {
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuItemTrailing,
-} from '../primitives/DropdownMenu';
+  MenuItem,
+  MenuItemIcon,
+  MenuItemTrailing,
+} from '../primitives/MenuItem';
 
 export { AI_CREDITS_LABEL } from './aiCreditsLabel';
 
@@ -148,7 +148,7 @@ export function SidebarAiCreditsMenuItem({
   if (zero && otherBillingSourceReady) return null;
   const offerPurchase = zero && canPurchase;
   return (
-    <DropdownMenuItem
+    <MenuItem
       onClick={onSelect}
       selected={selected}
       aria-label={
@@ -158,14 +158,14 @@ export function SidebarAiCreditsMenuItem({
       }
       data-testid={dataTestId}
     >
-      <DropdownMenuItemIcon>
+      <MenuItemIcon>
         <CreditCard size="xl" aria-hidden="true" />
-      </DropdownMenuItemIcon>
+      </MenuItemIcon>
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {offerPurchase ? (
-        <DropdownMenuItemTrailing data-testid={`${dataTestId}-buy`}>
+        <MenuItemTrailing data-testid={`${dataTestId}-buy`}>
           {AI_CREDITS_PURCHASE_LABEL}
-        </DropdownMenuItemTrailing>
+        </MenuItemTrailing>
       ) : (
         balance !== null && (
           <AiCreditsBalancePill
@@ -174,6 +174,6 @@ export function SidebarAiCreditsMenuItem({
           />
         )
       )}
-    </DropdownMenuItem>
+    </MenuItem>
   );
 }

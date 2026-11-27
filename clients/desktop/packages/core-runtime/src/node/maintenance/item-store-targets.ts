@@ -1,9 +1,22 @@
 import { createHash } from 'node:crypto';
 import { isAbsolute, join, resolve } from 'node:path';
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/protocol/chat-targets';
+import { PREFERENCES_ENVELOPE_READ_VERSIONS } from '@canopy/protocol/preferences';
+import {
+  namespaceBackupRecordPath,
+  ownerFlipRecordPath,
+  parseOwnerFlipRecord,
+  type OwnerFlipRecordRead,
+} from '../../storage/owner-records';
 import type { StorageWriterPrincipal } from '../../storage/writer-authority';
 import { damagedCopyPath } from '../damaged-copies';
 import { COWORK_MANAGED_DIR_NAME_PATTERN } from '../filesystem/scope-reader';
+import {
+  PREFERENCES_BACKUPS_FOLDER,
+  PREFERENCES_FAMILY_FILES,
+  PREFERENCES_NAMESPACE_ID,
+} from '../preferences/family';
+import { documentGeneration } from '../preferences/generation';
 import { w5ManifestImagePath } from '../w5/record-image-repositories';
 import type {
   ExclusiveMaintenanceTarget,
@@ -19,7 +32,8 @@ export type ItemStoreRowId =
   | 'workspace_prompts'
   | 'workspace_claude_md'
   | 'workspace_repo_rules'
-  | 'cowork_managed_dir';
+  | 'cowork_managed_dir'
+  | 'preferences';
 
 /**
  * Inside the window `op` may set a store file aside but never delete it: it
@@ -28,7 +42,10 @@ export type ItemStoreRowId =
  */
 export interface ItemStoreSetAsideRule {
   readonly marker: '.damaged-';
-  /** The stores' own damaged-copy name: the next unused one, never a taken one. */
+  /**
+   * The stores' own damaged-copy name: the next unused one, never a taken
+   * one. Throws for a path the store does not let `op` set aside.
+   */
   copyPath(path: string, now?: number): string;
 }
 
@@ -58,6 +75,61 @@ export interface ItemStoreDiagnosis {
   readonly unreadable: readonly string[];
   /** A folder deeper than the walk bound, or files past the file bound, were left out. */
   readonly truncated: boolean;
+  /** The `preferences` row only. */
+  readonly preferences?: PreferencesStoreDiagnosis;
+}
+
+/** A generation, or why there is none. */
+export type PreferencesGenerationState = number | 'absent' | 'unreadable';
+
+/** A document's generation against the generation record's. */
+export type PreferencesGenerationRelation =
+  | 'current'
+  /** Stale: last-good is never restored from behind the record. */
+  | 'behind'
+  /** The record never trails a saved document; this one is ahead of it. */
+  | 'ahead'
+  | 'unknown';
+
+/** G's (CAN-7924) last verified backup record, `namespace-backup.json`. */
+export type PreferencesNamespaceBackupState =
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'unreadable'; readonly reason: string }
+  | {
+      readonly kind: 'record';
+      /** Data-root-relative, under `backups/preferences`. */
+      readonly backupPath: string;
+      /** The record's `verifiedBy` sha256; not checked against the copy. */
+      readonly digest: string;
+      readonly folder: 'present' | 'absent' | 'unreadable';
+    };
+
+/** What the flip still lacks (CAN-5722 r4): G's backup, R's owner-flip record. */
+export type PreferencesMissingRecord = 'namespace-backup' | 'owner-flip-record';
+
+export interface PreferencesStoreDiagnosis {
+  /**
+   * The top-level `version` of each JSON file in `files` (a document's
+   * envelope version), by path; null when it has none.
+   */
+  readonly versions: Readonly<Record<string, number | null>>;
+  readonly generation: {
+    /** `preferences.generation.json`. */
+    readonly record: PreferencesGenerationState;
+    /** `preferences.json`; 0 when it predates generations. */
+    readonly primary: PreferencesGenerationState;
+    /** `preferences.last-good.json`; 0 when it predates generations. */
+    readonly lastGood: PreferencesGenerationState;
+    readonly primaryVersusRecord: PreferencesGenerationRelation;
+    readonly lastGoodVersusRecord: PreferencesGenerationRelation;
+  };
+  /** `storage-records/preferences/owner-flip.json`; absent until the flip. */
+  readonly ownerFlip: OwnerFlipRecordRead;
+  readonly namespaceBackup: PreferencesNamespaceBackupState;
+  /** Backup folder names under `backups/preferences`, dotted ones left out. */
+  readonly namespaceBackups: readonly string[];
+  /** Absent only; an unreadable record shows in its own field. */
+  readonly missing: readonly PreferencesMissingRecord[];
 }
 
 /** One store's maintenance descriptor; the port stays separate (D13). */
@@ -93,18 +165,6 @@ export interface ItemStoreTargetOptions {
   /** The brand's Cowork folder names, primary first (`.canopy`). */
   readonly coworkDirNames: readonly string[];
 }
-
-/**
- * Stores with a descriptor later, listed as data only (D12). Their recovery
- * owners are unchanged.
- */
-export const ITEM_STORE_LATER_TARGETS = Object.freeze([
-  Object.freeze({
-    row: 'preferences',
-    placement: 'CAN-5722',
-    recoveryOwners: Object.freeze(['CAN-4407', 'CAN-4471']),
-  }),
-]);
 
 // Notes and prompts are flat. The port follows symlinks, so both bounds keep
 // a link out of the store (or a loop) from walking a whole tree.
@@ -143,6 +203,20 @@ function dataLayout(
   return layout;
 }
 
+/** `store` or a set-aside copy of it; a `{}` inside `store` is a nonempty part. */
+function isStoreName(store: string, name: string): boolean {
+  if (name === store || name.startsWith(`${store}${SET_ASIDE.marker}`))
+    return true;
+  const [prefix, suffix, ...rest] = store.split('{}');
+  return (
+    suffix !== undefined &&
+    rest.length === 0 &&
+    name.length > prefix.length + suffix.length &&
+    name.startsWith(prefix) &&
+    name.endsWith(suffix)
+  );
+}
+
 function isDamaged(path: string): boolean {
   return path.split('/').some((part) => part.includes(SET_ASIDE.marker));
 }
@@ -165,6 +239,12 @@ function isNewer(
   }
 }
 
+/** What the walk read, for a descriptor that reports more than its files. */
+interface DiagnosisObserver {
+  file(path: string, bytes: Uint8Array): void;
+  folder(path: string): void;
+}
+
 async function diagnoseRoot(
   read: OfflineReadPort,
   root: HeldTargetRoot,
@@ -172,6 +252,7 @@ async function diagnoseRoot(
   entries: readonly string[],
   schemaVersion: number | undefined,
   signal: AbortSignal | undefined,
+  observe?: DiagnosisObserver,
 ): Promise<ItemStoreDiagnosis> {
   const files: ItemStoreFileDiagnosis[] = [];
   const unreadable: string[] = [];
@@ -197,6 +278,7 @@ async function diagnoseRoot(
   async function collect(relative: string, depth: number): Promise<void> {
     const names = await list(relative);
     if (names) {
+      observe?.folder(relative);
       if (depth >= WALK_DEPTH) truncated = true;
       else
         for (const name of names)
@@ -211,7 +293,7 @@ async function diagnoseRoot(
     budget -= 1;
     try {
       const bytes = await read.readFile(at(relative));
-      if (bytes)
+      if (bytes) {
         files.push({
           path: relative,
           size: bytes.byteLength,
@@ -220,6 +302,8 @@ async function diagnoseRoot(
           newer:
             !isDamaged(relative) && isNewer(relative, bytes, schemaVersion),
         });
+        observe?.file(relative, bytes);
+      }
     } catch {
       unreadable.push(relative);
     }
@@ -259,7 +343,7 @@ async function diagnoseRoot(
     }
     for (const parent of parents)
       for (const name of (await list(parent)) ?? [])
-        if (name === store || name.startsWith(`${store}${SET_ASIDE.marker}`)) {
+        if (isStoreName(store, name)) {
           budget = WALK_FILES;
           await collect(child(parent, name), 0);
         }
@@ -285,6 +369,8 @@ function descriptor(options: {
     read: OfflineReadPort,
   ) => Promise<readonly ExclusiveMaintenanceTargetRoot[]>;
   readonly entries: (rootPath: string) => readonly string[];
+  readonly setAside?: ItemStoreSetAsideRule;
+  readonly diagnose?: ItemStoreMaintenanceTarget['diagnose'];
 }): ItemStoreMaintenanceTarget {
   const { row, schemaVersion, entries } = options;
   return Object.freeze({
@@ -299,21 +385,279 @@ function descriptor(options: {
     residualWriters: Object.freeze([...(options.residualWriters ?? [])]),
     roots: options.roots,
     entries,
-    setAside: SET_ASIDE,
-    diagnose: (
-      read: OfflineReadPort,
-      root: HeldTargetRoot,
-      signal?: AbortSignal,
-    ) =>
-      diagnoseRoot(
-        read,
-        root,
-        row,
-        entries(root.declaredPath),
-        schemaVersion,
-        signal,
-      ),
+    setAside: options.setAside ?? SET_ASIDE,
+    diagnose:
+      options.diagnose ??
+      ((read: OfflineReadPort, root: HeldTargetRoot, signal?: AbortSignal) =>
+        diagnoseRoot(
+          read,
+          root,
+          row,
+          entries(root.declaredPath),
+          schemaVersion,
+          signal,
+        )),
   });
+}
+
+// The row's manifest patterns: `<data>`'s own files, so `<data>` is the root.
+const PREFERENCES_PATTERNS = [
+  '<data>/preferences.json',
+  '<data>/preferences.backup-{}.json',
+  '<data>/preferences.generation.json',
+  '<data>/preferences.last-good.json',
+  '<data>/preferences.json.usage-data-denied.json',
+];
+const PREFERENCES_ENTRIES = PREFERENCES_PATTERNS.map((pattern) =>
+  pattern.slice('<data>/'.length),
+);
+const PREFERENCES_ROTATING_BACKUP = 'preferences.backup-{}.json';
+const OWNER_FLIP_RECORD = ownerFlipRecordPath(PREFERENCES_NAMESPACE_ID);
+const NAMESPACE_BACKUP_RECORD = namespaceBackupRecordPath(
+  PREFERENCES_NAMESPACE_ID,
+);
+const ENVELOPE_READ_VERSION = Math.max(...PREFERENCES_ENVELOPE_READ_VERSIONS);
+const GENERATION_RECORD_VERSION = 1;
+const SHA256 = /^[0-9a-f]{64}$/;
+
+/**
+ * Only the four live files, spelled exactly as `<data>/<file>`: a `.` or a
+ * `..` through a link may name another file. Never the store's own
+ * `preferences.backup-*` copies, which it prunes to the newest five, so a
+ * set-aside copy takes the `.damaged-` name instead.
+ */
+function preferencesSetAside(dataRoot: string): ItemStoreSetAsideRule {
+  const live = new Set<string>(
+    PREFERENCES_FAMILY_FILES.map((name) => join(dataRoot, name)),
+  );
+  return Object.freeze({
+    marker: SET_ASIDE.marker,
+    copyPath: (path: string, now?: number) => {
+      if (!live.has(path))
+        throw new Error('Only the live preferences files can be set aside.');
+      return damagedCopyPath(path, now);
+    },
+  });
+}
+
+/** The highest `version` a reader accepts at `path`, if it has one. */
+function readableVersion(path: string): number | undefined {
+  const name = path.slice(path.lastIndexOf('/') + 1);
+  if (
+    name === 'preferences.json' ||
+    name === 'preferences.last-good.json' ||
+    isStoreName(PREFERENCES_ROTATING_BACKUP, name)
+  )
+    return ENVELOPE_READ_VERSION;
+  return name === 'preferences.generation.json'
+    ? GENERATION_RECORD_VERSION
+    : undefined;
+}
+
+function relation(
+  document: PreferencesGenerationState,
+  record: PreferencesGenerationState,
+): PreferencesGenerationRelation {
+  if (typeof document !== 'number' || typeof record !== 'number')
+    return 'unknown';
+  return document === record
+    ? 'current'
+    : document < record
+      ? 'behind'
+      : 'ahead';
+}
+
+/**
+ * The generic walk over the row's files, G's backups and the row's owner
+ * records, plus what each says: envelope versions, the generation against
+ * its record, the owner-flip and backup records, and which of them is
+ * missing. Reads only through `read`.
+ */
+async function diagnosePreferences(
+  read: OfflineReadPort,
+  root: HeldTargetRoot,
+  signal: AbortSignal | undefined,
+): Promise<ItemStoreDiagnosis> {
+  const parsed = new Map<string, unknown>();
+  const versions = new Map<string, number | null>();
+  const folders = new Set<string>();
+  let ownerFlipText: string | undefined;
+  const base = await diagnoseRoot(
+    read,
+    root,
+    'preferences',
+    [
+      ...PREFERENCES_ENTRIES,
+      OWNER_FLIP_RECORD,
+      NAMESPACE_BACKUP_RECORD,
+      PREFERENCES_BACKUPS_FOLDER,
+    ],
+    undefined,
+    signal,
+    {
+      folder: (path) => folders.add(path),
+      file: (path, bytes) => {
+        const text = new TextDecoder().decode(bytes);
+        if (path === OWNER_FLIP_RECORD) ownerFlipText = text;
+        let value: unknown = null;
+        try {
+          value = JSON.parse(text);
+        } catch {
+          // Not JSON: no version, and no record or generation either.
+        }
+        parsed.set(path, value);
+        versions.set(
+          path,
+          isRecord(value) && typeof value.version === 'number'
+            ? value.version
+            : null,
+        );
+      },
+    },
+  );
+  const unreadable = [...base.unreadable];
+  // A folder where a file belongs, or a path below an unreadable folder.
+  const blocked = (path: string): boolean =>
+    folders.has(path) ||
+    unreadable.some(
+      (entry) => entry === '' || entry === path || path.startsWith(`${entry}/`),
+    );
+  const state = (path: string): 'present' | 'absent' | 'unreadable' =>
+    parsed.has(path) ? 'present' : blocked(path) ? 'unreadable' : 'absent';
+
+  const generationOf = (
+    path: string,
+    isRecordFile: boolean,
+  ): PreferencesGenerationState => {
+    const found = state(path);
+    if (found !== 'present') return found;
+    const value = parsed.get(path);
+    if (!isRecord(value)) return 'unreadable';
+    // The record needs its own version and a generation; a document
+    // without one predates generations (0).
+    if (
+      isRecordFile &&
+      (value.version !== GENERATION_RECORD_VERSION ||
+        value.generation === undefined)
+    )
+      return 'unreadable';
+    return documentGeneration(value) ?? 'unreadable';
+  };
+  const record = generationOf('preferences.generation.json', true);
+  const primary = generationOf('preferences.json', false);
+  const lastGood = generationOf('preferences.last-good.json', false);
+
+  const flipState = state(OWNER_FLIP_RECORD);
+  const ownerFlip: OwnerFlipRecordRead =
+    flipState === 'absent'
+      ? { kind: 'absent' }
+      : flipState === 'unreadable' || ownerFlipText === undefined
+        ? { kind: 'unreadable', reason: 'The owner record could not be read.' }
+        : parseOwnerFlipRecord(ownerFlipText, PREFERENCES_NAMESPACE_ID);
+
+  let namespaceBackups: readonly string[] = [];
+  let backupsFolder: 'listed' | 'unreadable' =
+    base.status === 'unreadable' ? 'unreadable' : 'listed';
+  if (base.status === 'present')
+    try {
+      const names = await read.readDirectory(
+        join(root.path, ...PREFERENCES_BACKUPS_FOLDER.split('/')),
+      );
+      // G's backup names have no dot; what sits beside a backup does.
+      namespaceBackups = [...(names ?? [])]
+        .filter((name) => !name.includes('.'))
+        .sort();
+    } catch {
+      backupsFolder = 'unreadable';
+      unreadable.push(PREFERENCES_BACKUPS_FOLDER);
+    }
+
+  const backupState = state(NAMESPACE_BACKUP_RECORD);
+  const backupValue = parsed.get(NAMESPACE_BACKUP_RECORD);
+  const backupName =
+    isRecord(backupValue) && typeof backupValue.backupPath === 'string'
+      ? backupValue.backupPath.slice(PREFERENCES_BACKUPS_FOLDER.length + 1)
+      : '';
+  let namespaceBackup: PreferencesNamespaceBackupState;
+  if (backupState === 'absent') namespaceBackup = { kind: 'absent' };
+  else if (
+    backupState === 'present' &&
+    isRecord(backupValue) &&
+    backupValue.namespaceId === PREFERENCES_NAMESPACE_ID &&
+    typeof backupValue.backupPath === 'string' &&
+    backupValue.backupPath === `${PREFERENCES_BACKUPS_FOLDER}/${backupName}` &&
+    isPathComponent(backupName) &&
+    isRecord(backupValue.verifiedBy) &&
+    typeof backupValue.verifiedBy.digest === 'string' &&
+    SHA256.test(backupValue.verifiedBy.digest)
+  )
+    namespaceBackup = {
+      kind: 'record',
+      backupPath: backupValue.backupPath,
+      digest: backupValue.verifiedBy.digest,
+      folder:
+        backupsFolder === 'unreadable'
+          ? 'unreadable'
+          : namespaceBackups.includes(backupName)
+            ? 'present'
+            : 'absent',
+    };
+  else
+    namespaceBackup = {
+      kind: 'unreadable',
+      reason:
+        backupState === 'unreadable'
+          ? 'The backup record could not be read.'
+          : 'The backup record does not name a preferences backup.',
+    };
+
+  const missing: PreferencesMissingRecord[] = [];
+  if (
+    namespaceBackup.kind === 'absent' ||
+    (namespaceBackup.kind === 'record' && namespaceBackup.folder === 'absent')
+  )
+    missing.push('namespace-backup');
+  if (ownerFlip.kind === 'absent') missing.push('owner-flip-record');
+
+  return {
+    ...base,
+    files: base.files.map((file) => {
+      const limit = readableVersion(file.path);
+      const version = versions.get(file.path) ?? null;
+      // The store's copies of a damaged document, and the live files a
+      // restore set aside beside its backup (`<backup>.pre-restore-*`).
+      const damaged =
+        file.damaged ||
+        (!file.path.includes('/') &&
+          isStoreName(PREFERENCES_ROTATING_BACKUP, file.path)) ||
+        (file.path.startsWith(`${PREFERENCES_BACKUPS_FOLDER}/`) &&
+          file.path.split('/')[2].includes('.pre-restore-'));
+      return {
+        ...file,
+        damaged,
+        newer:
+          !damaged &&
+          limit !== undefined &&
+          version !== null &&
+          version > limit,
+      };
+    }),
+    unreadable: [...new Set(unreadable)],
+    preferences: {
+      versions: Object.fromEntries(versions),
+      generation: {
+        record,
+        primary,
+        lastGood,
+        primaryVersusRecord: relation(primary, record),
+        lastGoodVersusRecord: relation(lastGood, record),
+      },
+      ownerFlip,
+      namespaceBackup,
+      namespaceBackups,
+      missing,
+    },
+  };
 }
 
 function dataDescriptor(
@@ -373,8 +717,9 @@ async function coworkRoots(
 }
 
 /**
- * CAN-4498: the six item-store descriptors for one data root. Adding a store
- * adds a descriptor and a golden case; the window does not change.
+ * CAN-4498: the item-store descriptors for one data root, and the
+ * preferences one (CAN-7995). Adding a store adds a descriptor and a golden
+ * case; the window does not change.
  */
 export function createItemStoreMaintenanceTargets(
   options: ItemStoreTargetOptions,
@@ -437,6 +782,18 @@ export function createItemStoreMaintenanceTargets(
       schemaVersion: 1,
       roots: (read) => coworkRoots(dataRoot, read),
       entries: () => coworkEntries,
+    }),
+    // Restore before the flip and diagnosis only; not the flip backup (D22).
+    // The client_preferences row stays with the client.
+    descriptor({
+      row: 'preferences',
+      patterns: PREFERENCES_PATTERNS,
+      // daemon: the admitted daemon document (CAN-7956).
+      principals: ['electron_main', 'daemon'],
+      roots: () => Promise.resolve([{ path: dataRoot, placement: 'data' }]),
+      entries: () => PREFERENCES_ENTRIES,
+      setAside: preferencesSetAside(dataRoot),
+      diagnose: diagnosePreferences,
     }),
   ]);
 }

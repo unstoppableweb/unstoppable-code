@@ -964,6 +964,103 @@ describe('the catalog summary of a plugin not added yet (CAN-7545)', () => {
     ).not.toBeNull();
   });
 
+  it('keeps a partial preview while Try again reads it and after that read fails (CAN-7857)', async () => {
+    const load = jest
+      .fn<Promise<PluginManifestPreviewResult | null>, []>()
+      .mockResolvedValueOnce(
+        parsed(
+          wirePreview({
+            commands: ['check'],
+            partial: true,
+            readme: { body: '# Review README', truncated: false },
+          }),
+        ),
+      )
+      .mockRejectedValueOnce(new Error('offline'));
+    render(
+      <CustomizeDiscoveryProvider enabled>
+        <CustomizeManifestPreview entry={LISTING} load={load}>
+          {(_shown, _checking, preview, contents) => (
+            <PluginCatalogDetail
+              entry={{
+                name: LISTING.name,
+                categories: [],
+                components: LISTING.components,
+                items: customizeCatalogContents(LISTING, preview, undefined),
+                ...(preview?.readme ? { readme: preview.readme } : {}),
+              }}
+              layout
+              contentsRead={contents}
+            />
+          )}
+        </CustomizeManifestPreview>
+      </CustomizeDiscoveryProvider>,
+    );
+    await settle();
+    expect(rowTexts()).toEqual([expect.stringMatching(/^check/)]);
+    click(byTestId('plugin-catalog-detail-contents-retry'));
+    // The rows stay while the read runs, and after it fails, beside the
+    // failure and Try again: a retry never shows less than it started with.
+    expect(rowTexts()).toEqual([expect.stringMatching(/^check/)]);
+    await settle();
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(rowTexts()).toEqual([expect.stringMatching(/^check/)]);
+    expect(container.textContent).toMatch(
+      /Couldn.t load this plugin.s contents/,
+    );
+    expect(byTestId('plugin-catalog-detail-contents-retry')).not.toBeNull();
+    click(byTestId('plugin-detail-tab-readme'));
+    expect(byTestId('plugin-detail-readme')?.textContent).toContain(
+      'Review README',
+    );
+  });
+
+  it('says a Try again is running beside a partial preview that named only its README (CAN-7857)', async () => {
+    const load = jest
+      .fn<Promise<PluginManifestPreviewResult | null>, []>()
+      .mockResolvedValueOnce(
+        parsed(
+          wirePreview({
+            partial: true,
+            readme: { body: '# Review README', truncated: false },
+          }),
+        ),
+      )
+      .mockImplementationOnce(() => new Promise(() => undefined));
+    render(
+      <CustomizeDiscoveryProvider enabled>
+        <CustomizeManifestPreview entry={LISTING} load={load}>
+          {(_shown, _checking, preview, contents) => (
+            <PluginCatalogDetail
+              entry={{
+                name: LISTING.name,
+                categories: [],
+                components: LISTING.components,
+                items: customizeCatalogContents(LISTING, preview, undefined),
+                ...(preview?.readme ? { readme: preview.readme } : {}),
+              }}
+              layout
+              contentsRead={contents}
+            />
+          )}
+        </CustomizeManifestPreview>
+      </CustomizeDiscoveryProvider>,
+    );
+    await settle();
+    expect(byTestId('plugin-catalog-detail-contents-checking')).toBeNull();
+    click(byTestId('plugin-catalog-detail-contents-retry'));
+    await settle();
+    expect(load).toHaveBeenCalledTimes(2);
+    // Nothing is counted, so the README stands alone while the read runs,
+    // and says the read is running instead of looking settled.
+    expect(byTestId('plugin-detail-readme')?.textContent).toContain(
+      'Review README',
+    );
+    expect(
+      byTestId('plugin-catalog-detail-contents-checking')?.getAttribute('role'),
+    ).toBe('status');
+  });
+
   it('names what the listing scan found, apps, Mods and LSP servers included, with MCP endpoints', async () => {
     render(
       catalogPage({

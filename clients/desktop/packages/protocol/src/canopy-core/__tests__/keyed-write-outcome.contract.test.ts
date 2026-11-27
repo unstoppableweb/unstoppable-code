@@ -55,4 +55,15 @@ describe('keyed write outcomes (CAN-7196)', () => {
       expect(isUnknownKeyedWriteOutcome(other)).toBe(true);
     }
   });
+
+  it('reads the operation ledger’s unavailable answer as nothing applied (CAN-6986 L3b G10)', () => {
+    expect(NOT_APPLIED_MARKS.map((mark) => mark.code)).toContain(
+      'core.operationLedger.unavailable',
+    );
+    expect(
+      isUnknownKeyedWriteOutcome(
+        sameKey({ code: 'core.operationLedger.unavailable' }),
+      ),
+    ).toBe(false);
+  });
 });

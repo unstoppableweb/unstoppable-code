@@ -9,10 +9,10 @@ import {
 } from 'react';
 import { derivePlanTitle } from '@canopy/protocol/plans';
 import {
-  PickListField,
-  PickerMenuList,
-  PickerMenuOption,
-  usePickListKeys,
+  PickerSearchField,
+  PickerList,
+  PickerOption,
+  usePickerSearchKeys,
   Badge,
   Button,
   DelayedLoadingPlaceholder,
@@ -421,7 +421,7 @@ export function ImportPlanPicker({
     onEscape: onClose,
     clampEdges: true,
   };
-  const handlePickListKeys = usePickListKeys(keyboard);
+  const handlePickListKeys = usePickerSearchKeys(keyboard);
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
     // Composition owns Escape even if the outer dialog also listens for it.
@@ -452,7 +452,7 @@ export function ImportPlanPicker({
       // focused row keeps focus and Escape still reaches the dialog. The
       // selected row is the combobox's active descendant, its keyboard focus,
       // so it keeps DESIGN.md's focus highlight rather than a checkmark.
-      <PickerMenuOption
+      <PickerOption
         role="option"
         active={selected}
         activeTone="accent"
@@ -478,7 +478,7 @@ export function ImportPlanPicker({
             Tracked
           </Badge>
         ) : null}
-      </PickerMenuOption>
+      </PickerOption>
     );
   }
 
@@ -540,7 +540,7 @@ export function ImportPlanPicker({
       <div className="flex min-h-0 flex-1 flex-col" onKeyDown={handleKeyDown}>
         <Surface variant="section" boundary="bottom">
           <div className="px-6 py-3">
-            <PickListField
+            <PickerSearchField
               ref={inputRef}
               size="lg"
               clearOnEscape={false}
@@ -567,7 +567,7 @@ export function ImportPlanPicker({
         >
           <div className="max-h-104 min-w-0 flex-1 overflow-y-auto">
             {hasRows && (
-              <PickerMenuList
+              <PickerList
                 presentation="grouped-files"
                 id={listboxId}
                 aria-label="Plan files"
@@ -655,7 +655,7 @@ export function ImportPlanPicker({
                     ))}
                   </div>
                 )}
-              </PickerMenuList>
+              </PickerList>
             )}
             {showFilesLoading && (
               <DelayedLoadingPlaceholder slowNote="Still loading files…">

@@ -566,15 +566,18 @@ export function AuxPanelWindow({
     [callbacks],
   );
   const readOnly = useWorkspaceIsReadOnly();
+  const scopeCapabilities = useScopeCapabilities({
+    projectId: ownerSelection?.projectId ?? '',
+  });
   const chatReadState = useMemo(
     () =>
-      ownerSelection
+      ownerSelection && scopeCapabilities.chatReadState !== false
         ? chatReadStateServices(
             ownerSelection.projectId,
             ownerSelection.worktreeId,
           )
         : undefined,
-    [ownerSelection],
+    [ownerSelection, scopeCapabilities.chatReadState],
   );
   const chatTabRename = useChatTabRename();
   const openChatTabRename = chatTabRename.open;
@@ -596,9 +599,7 @@ export function AuxPanelWindow({
     ownerSelection?.worktreeId ?? '',
   );
   const tabTitles = usePanelTabTitleResolvers();
-  const terminalRenameAllowed =
-    useScopeCapabilities({ projectId: ownerSelection?.projectId ?? '' })
-      .terminalRename === true;
+  const terminalRenameAllowed = scopeCapabilities.terminalRename === true;
 
   if (container === null || viewModel === null || controller === null) {
     return null;
@@ -706,6 +707,7 @@ export function AuxPanelWindow({
             onOpenFileInFileManager={
               !readOnly &&
               ownerSelection &&
+              scopeCapabilities.fileSystemAccess !== 'none' &&
               isLocalFileActionAvailable('showInFinder')
                 ? openFileInFileManager
                 : undefined
@@ -714,7 +716,11 @@ export function AuxPanelWindow({
             fileActionsFirst={fileActionsFirst}
             onFullScreen={handleFullScreen}
             onRenameChat={
-              ownerSelection && !readOnly ? handleRenameChat : undefined
+              ownerSelection &&
+              !readOnly &&
+              scopeCapabilities.chatTabCreation !== false
+                ? handleRenameChat
+                : undefined
             }
             onRenameTerminal={
               ownerSelection && !readOnly && terminalRenameAllowed

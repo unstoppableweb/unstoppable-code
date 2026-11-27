@@ -2,10 +2,10 @@ import { useCallback, useRef, useState, type JSX, type ReactNode } from 'react';
 import {
   ActionMenuRowStyle,
   Button,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuItemTrailing,
-  FloatingMenu,
+  MenuItem,
+  MenuItemIcon,
+  MenuItemTrailing,
+  Menu,
   PipelineDispatchedTime,
   PlanReviewStatusBadge,
   PlanStatusNote,
@@ -95,7 +95,7 @@ function LinkedExecutionsMenu({
           className={`transition-transform ${open ? 'rotate-180' : ''}`}
         />
       </Button>
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={onOpenChange}
         anchorRef={triggerRef}
@@ -107,27 +107,27 @@ function LinkedExecutionsMenu({
           {/* Every row opens a linked run, so the rows share one icon and
               only the first shows it. */}
           {executions.map((execution, index) => (
-            <DropdownMenuItem
+            <MenuItem
               key={execution.id}
               onClick={(): void => onOpenExecution(execution.id)}
             >
-              <DropdownMenuItemIcon>
+              <MenuItemIcon>
                 {index === 0 ? <PipelineIcon /> : null}
-              </DropdownMenuItemIcon>
+              </MenuItemIcon>
               <span className="min-w-0 truncate">{execution.label}</span>
               {/* One trailing slot keeps the status beside the dispatched
                   time instead of splitting the row's free space. */}
-              <DropdownMenuItemTrailing className="flex items-center">
+              <MenuItemTrailing className="flex items-center">
                 {execution.status}
                 <PipelineDispatchedTime
                   startedAt={execution.startedAt}
                   variant="menu"
                 />
-              </DropdownMenuItemTrailing>
-            </DropdownMenuItem>
+              </MenuItemTrailing>
+            </MenuItem>
           ))}
         </ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { useEffect, type JSX } from 'react';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { WorkflowRunView } from '@/components/activity/WorkflowRunView';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { useWorkflowRun } from '@/hooks/useWorkflowRun';
@@ -30,7 +31,12 @@ export function WorkflowRunDialog({
   target,
   onClose,
 }: WorkflowRunDialogProps): JSX.Element {
-  const workflow = useWorkflowRun(target?.transcriptDir, target?.runId, false);
+  const paired = isPairedComputerId(scope.projectId);
+  const workflow = useWorkflowRun(
+    paired ? undefined : target?.transcriptDir,
+    paired ? undefined : target?.runId,
+    false,
+  );
   const taskId = target?.taskId;
 
   useEffect(() => {
@@ -60,7 +66,7 @@ export function WorkflowRunDialog({
       <div className="flex min-h-0 flex-1 flex-col overflow-auto">
         <WorkflowRunView
           run={workflow.run}
-          transcriptDir={target.transcriptDir}
+          transcriptDir={paired ? undefined : target.transcriptDir}
           loading={workflow.loading}
         />
       </div>

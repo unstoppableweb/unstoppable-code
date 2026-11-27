@@ -10,7 +10,9 @@ import {
   type ClaudePluginManifest,
   type CompatibilityFacetEvidence,
   type CompatibilityInventory,
+  type PluginLspServerMember,
   type PluginMcpServerMember,
+  type PluginModMember,
   type PublisherPluginManifest,
 } from '@canopy/plugin-interop';
 import {
@@ -36,8 +38,13 @@ interface PreviewFacetEvidence extends Omit<
   CompatibilityFacetEvidence,
   'inventory'
 > {
-  inventory: Omit<CompatibilityInventory, 'mcpServers'> & {
+  inventory: Omit<
+    CompatibilityInventory,
+    'mods' | 'mcpServers' | 'lspServers'
+  > & {
+    mods: readonly PluginModMember[];
     mcpServers: readonly PluginMcpServerMember[];
+    lspServers: readonly PluginLspServerMember[];
   };
   /**
    * Every server the facet's merged config defines, in merge order, with the
@@ -51,6 +58,18 @@ interface PreviewFacetEvidence extends Omit<
    * a name a lower one defines.
    */
   mcpConfigUnread: boolean;
+  /**
+   * Whether an app member the facet's manifest declares is unresolved, or
+   * one's installed name is unknown: its head went unread.
+   */
+  appsUnknown: boolean;
+  /** The app member files and their installed names, for Contents rows. */
+  appNames: readonly { readonly file: string; readonly name: string }[];
+  /**
+   * Whether a hooks or LSP config the facet names, or the usual hooks file
+   * that declares Mods, may exist but was not read: it may hold any.
+   */
+  configUnread: boolean;
   /**
    * Hooks the installed scan finds in the configs the facet read: zero when
    * none was read, or the ones read hold only Mods.
@@ -104,6 +123,9 @@ interface MemberLayout {
 function markdownMemberName(file: string): string {
   return posix.basename(file, posix.extname(file));
 }
+
+/** An app file directly in the usual apps folder. */
+const APP_FILE_PATTERN = /^apps\/[^/]*\.md$/;
 
 const SKILL_MEMBER: MemberLayout = {
   pattern: /^skills\/([^/]+)\/SKILL\.md$/,
@@ -198,6 +220,11 @@ interface CacheEntry {
   readonly result: Promise<PluginManifestPreviewResult>;
   /** Set once the read settles; no timer holds an entry past its eviction. */
   expiresAt: number;
+  /**
+   * Set once the read settles without a preview or with a partial one, so a
+   * retry reads it again.
+   */
+  failed?: true;
 }
 
 const cache = new Map<string, CacheEntry>();
@@ -781,7 +808,9 @@ function declaredEntries(value: unknown): ConfigEntry[] | null {
 /**
  * A manifest's app members from the file listing, as the installed scan finds
  * them: Markdown files directly in each declared folder (`apps` by default),
- * or a declared Markdown file. Null when the declaration is malformed.
+ * or a declared Markdown file. Null when the declaration is neither a path
+ * nor a list; incomplete when a root or file it names is unknown, past the
+ * ones it lists.
  */
 function previewAppMembers(
   value: unknown,
@@ -790,40 +819,50 @@ function previewAppMembers(
   emptyFiles: ReadonlySet<string>,
   /** A file or folder the listing does not positively show. */
   unseen: (path: string) => boolean,
-): { name: string }[] | null {
-  const declared =
-    value === undefined || value === ''
-      ? []
-      : typeof value === 'string'
-        ? [value]
-        : value;
-  if (!Array.isArray(declared)) return null;
+): {
+  members: { name: string; file: string }[];
+  complete: boolean;
+} | null {
+  if (value !== undefined && typeof value !== 'string' && !Array.isArray(value))
+    return null;
+  // Like the scanner, a list's other entries are skipped; with no path left
+  // it reads the usual folder.
+  const declared = configuredMemberPaths(value);
   const roots = new Set<string>();
+  let complete = true;
   for (const entry of declared.length > 0 ? declared : ['apps']) {
-    if (typeof entry !== 'string') return null;
     // Classified as the scanner's containment check reads it: a path it
     // refuses is skipped, one some hosts resolve differently is unknown.
     // The plugin folder itself is a folder of app files.
     const root = pluginPathEntry(entry);
     if ('unresolved' in root) {
-      if (root.unresolved === 'unread') return null;
+      if (root.unresolved === 'unread') complete = false;
       continue;
     }
     roots.add(root.path);
   }
   const members = new Set<string>();
   for (const root of roots) {
-    if (unseen(root)) return null;
+    if (unseen(root)) {
+      complete = false;
+      continue;
+    }
     const files = listed.has(root)
       ? [root]
       : (markdownByParent.get(root) ?? []);
     for (const file of files) {
       if (!file.endsWith('.md')) continue;
-      if (unseen(file)) return null;
-      if (!emptyFiles.has(file)) members.add(file);
+      if (unseen(file)) complete = false;
+      else if (!emptyFiles.has(file)) members.add(file);
     }
   }
-  return [...members].map((file) => ({ name: markdownMemberName(file) }));
+  return {
+    members: [...members].map((file) => ({
+      name: markdownMemberName(file),
+      file,
+    })),
+    complete,
+  };
 }
 
 /** One facet's effective config, matching the member inventory's precedence. */
@@ -1222,6 +1261,36 @@ async function buildPreviewFromTree(
       sources: nativePaths.map((path) => records.get(path)).filter(isRecord),
     };
   };
+  // A native manifest unseen, or listed but not read as a record (the
+  // installed scanner parses its raw text, byte order mark and all), may
+  // still be read by the installed scan: it is unread, not absent.
+  const unreadNativeManifests = (): string[] =>
+    NATIVE_MANIFEST_PATHS.filter(
+      (path) => unseen(path) || (listed.has(path) && !records.has(path)),
+    );
+  // Contents list a kind's members from its usual folder only when some
+  // manifest's readers look there: a read native manifest that keeps the
+  // folder, or, with no Claude or Codex manifest, the provider's defaults.
+  // Those defaults are no evidence when a Claude or Codex manifest went
+  // unread, since it may move the folder or override the usual configs. A
+  // folder every reader looks past lists no members, and its descriptions
+  // are dropped. MCP server names, and whether hooks or servers are present,
+  // come from the same readers.
+  const contentReaders = ({
+    claude,
+    codex,
+    sources,
+    fallback,
+  }: ReturnType<typeof nativeSources>): Record<string, unknown>[] => {
+    const providerManifestUnread = unreadNativeManifests().some(
+      (path) =>
+        path === '.claude-plugin/plugin.json' ||
+        path === '.codex-plugin/plugin.json',
+    );
+    return claude || codex || providerManifestUnread
+      ? sources
+      : [...sources, fallback];
+  };
   // The installed inventory and the runtime resolvers skip a zero-byte skill,
   // command or agent file, so one is no member and no compatibility evidence.
   // The preview does not resolve a symlink's target, so a symlinked member,
@@ -1271,25 +1340,26 @@ async function buildPreviewFromTree(
   const configRecords = new Map<string, Record<string, unknown>>();
   // Configs that start with a byte order mark, read here without it.
   const bomConfigs = new Set<string>();
+  const readManifests = Promise.all(
+    nativePaths.map(async (path): Promise<void> => {
+      if (deadline.aborted) return;
+      try {
+        // The installed scanner and resolver parse a manifest's raw text, so
+        // one with a byte order mark is unread for them, and for the preview.
+        const manifest = parseJson(
+          await fetchText(rawFileUrl(source, path), MAX_MANIFEST_BYTES, {
+            deadline,
+            keepBom: true,
+          }),
+        );
+        if (isRecord(manifest)) records.set(path, manifest);
+      } catch (error) {
+        onReadFailure(error);
+      }
+    }),
+  );
   const readConfigs = async (): Promise<void> => {
-    await Promise.all(
-      nativePaths.map(async (path): Promise<void> => {
-        if (deadline.aborted) return;
-        try {
-          // The installed scanner and resolver parse a manifest's raw text, so
-          // one with a byte order mark is unread for them, and for the preview.
-          const manifest = parseJson(
-            await fetchText(rawFileUrl(source, path), MAX_MANIFEST_BYTES, {
-              deadline,
-              keepBom: true,
-            }),
-          );
-          if (isRecord(manifest)) records.set(path, manifest);
-        } catch (error) {
-          onReadFailure(error);
-        }
-      }),
-    );
+    await readManifests;
 
     const wanted = new Set<string>();
     // Mods use the usual hooks file even when the manifest moves or inlines
@@ -1360,19 +1430,82 @@ async function buildPreviewFromTree(
           a.fallback.localeCompare(b.fallback) || a.path.localeCompare(b.path),
       ),
   }));
+  // App files in the usual folder that a manifest's readers declare, read
+  // for their installed names like the members above once the manifests are
+  // read. One elsewhere (a folder a manifest configures) is not read, so its
+  // name is unknown.
+  const appTargets = (): { path: string; fallback: string }[] => {
+    const declared = new Set(
+      contentReaders(nativeSources()).flatMap(
+        (reader) =>
+          previewAppMembers(
+            reader.apps,
+            listed,
+            markdownByParent,
+            emptyFiles,
+            unseen,
+          )?.members.map(({ file }) => file) ?? [],
+      ),
+    );
+    return paths
+      .filter(
+        (path) =>
+          declared.has(path) &&
+          APP_FILE_PATTERN.test(path) &&
+          readable(path) &&
+          !symlinks.has(path),
+      )
+      .map((path) => ({ path, fallback: markdownMemberName(path) }));
+  };
+  // The installed skill scan stats each child of each skill folder it reads
+  // with no catch of its own, so one child whose target the listing cannot
+  // prove (a link that may dangle) fails it, and the scan lists no skill at
+  // all, whatever the other folders hold. Command, agent and app files are
+  // each read under their own catch, so no one file empties those kinds. A
+  // manifest whose skill folders may hold such a child, or whose folder is
+  // unknown, is no evidence of any skill row.
+  const linkParents = new Set(
+    [...symlinks].map((link) =>
+      link.slice(0, Math.max(0, link.lastIndexOf('/'))).toLowerCase(),
+    ),
+  );
+  const skillScanMayFail = (value: unknown): boolean => {
+    const configured = configuredMemberPaths(value);
+    return (configured.length > 0 ? configured : ['skills']).some((entry) => {
+      const root = pluginPathEntry(entry);
+      // The scanner skips a folder its containment check refuses.
+      if ('unresolved' in root) return root.unresolved === 'unread';
+      return (
+        truncated ||
+        (root.path !== '' && unseen(root.path)) ||
+        linkParents.has(root.path.toLowerCase())
+      );
+    });
+  };
+  // The kinds whose usual folder some member reader reads, so Contents lists
+  // their members there.
+  const shownKindsOf = (
+    readers: readonly Record<string, unknown>[],
+  ): Set<string> =>
+    new Set(
+      MEMBER_KINDS.filter(({ type, root }) =>
+        readers.some(
+          (reader) =>
+            readsDefaultMemberRoot(reader[root], root) &&
+            !(type === 'skill' && skillScanMayFail(reader[root])),
+        ),
+      ).map(({ type }) => type),
+    );
   /** By member file: its installed name and description; null for no member. */
   const memberHeads = new Map<
     string,
     { readonly name: string; readonly description: string } | null
   >();
-  const readMemberHeads = async (): Promise<void> => {
-    // An unseen member is never read, so it takes no read and has no known
-    // name; its file or folder name still counts against a name it shares.
-    const targets = memberFiles
-      .flatMap(({ files }) => files)
-      .filter(({ readable }) => readable);
-    await Promise.all(
-      targets.slice(0, MAX_DESCRIPTION_FILES).map((target) =>
+  const readHeads = (
+    targets: readonly { path: string; fallback: string }[],
+  ): Promise<void[]> =>
+    Promise.all(
+      targets.map((target) =>
         limit(READ_PRIORITY.description, async (): Promise<void> => {
           const response = await fetchResponse(
             rawFileUrl(source, target.path),
@@ -1405,6 +1538,23 @@ async function buildPreviewFromTree(
         }),
       ),
     );
+  const readMemberHeads = async (): Promise<void> => {
+    // Heads are read once the manifests show which usual folders a reader
+    // keeps, so a folder every reader looks past spends none of the budget.
+    // An unseen member is never read, so it takes no read and has no known
+    // name; its file or folder name still counts against a name it shares.
+    await readManifests;
+    const shown = shownKindsOf(contentReaders(nativeSources()));
+    const targets = [
+      ...memberFiles
+        .filter(({ type }) => shown.has(type))
+        .flatMap(({ files }) => files)
+        .filter(({ readable }) => readable),
+      ...appTargets(),
+    ];
+    // Files past the cap go unread and name no member.
+    if (targets.length > MAX_DESCRIPTION_FILES) partial = true;
+    await readHeads(targets.slice(0, MAX_DESCRIPTION_FILES));
   };
 
   let readme: PluginManifestPreview['readme'];
@@ -1427,17 +1577,12 @@ async function buildPreviewFromTree(
     });
   };
 
-  // The README and descriptions can arrive even if a native manifest stalls.
-  // A waiting config, then the README, takes the next free slot before any
-  // queued description, so descriptions cannot spend the deadline alone.
+  // The README can arrive even if a native manifest stalls. A waiting
+  // config, then the README, takes the next free slot before any queued
+  // description, so descriptions cannot spend the deadline alone.
   await Promise.all([readReadme(), readMemberHeads(), readConfigs()]);
   if (limited.error) throw limited.error;
-  // A native manifest unseen, or listed but not read as a record (the
-  // installed scanner parses its raw text, byte order mark and all), may
-  // still be read by the installed scan: it is unread, not absent.
-  const unreadPublisherManifests = NATIVE_MANIFEST_PATHS.filter(
-    (path) => unseen(path) || (listed.has(path) && !records.has(path)),
-  );
+  const unreadPublisherManifests = unreadNativeManifests();
   /**
    * A config file as one installed reader gets it, under the same rule:
    * unseen or listed but unread is unread, unlisted is absent. The desktop
@@ -1489,10 +1634,13 @@ async function buildPreviewFromTree(
       !unresolvedMembers &&
       unreadPublisherManifests.length === 0 &&
       !CUSTOM_ROOT_KEYS.some((key) => overridesMemberRoot(source[key]));
+    // Config kinds with a declaration or file that may hold members unread.
+    const unreadKeys = new Set<ConfigKey>();
     const configs = (key: ConfigKey): Record<string, unknown>[] => {
       const config = configSource(key, source[key]);
       if (!config) {
         complete = false;
+        unreadKeys.add(key);
         // A malformed explicit MCP declaration is not a root default.
         if (key === 'mcpServers') manifest.mcpServers = {};
         return [];
@@ -1506,9 +1654,16 @@ async function buildPreviewFromTree(
       // unknown, while the readable entries still supply their contents.
       if (config.entries.some((entry) => 'unresolved' in entry))
         complete = false;
+      if (
+        config.entries.some(
+          (entry) => 'unresolved' in entry && entry.unresolved === 'unread',
+        )
+      )
+        unreadKeys.add(key);
       return config.paths.flatMap((path) => {
         const read = readConfig(key, path);
         if (read.state === 'read') return [read.record];
+        if (read.state === 'unread') unreadKeys.add(key);
         // A declared file must be there; an unread one may hold anything.
         if (config.required || read.state === 'unread') complete = false;
         return [];
@@ -1570,8 +1725,27 @@ async function buildPreviewFromTree(
         if (index < lastUnread) unsettledMcpEndpoints.add(name);
       mcpConfigUnread = lastUnread >= 0;
     }
-    const lspDefinitions = configs('lspServers').flatMap((config) =>
-      Object.values(config),
+    const lspEntries = configs('lspServers').flatMap((config) =>
+      Object.entries(config),
+    );
+    // The inventory counts any string command; a blank one cannot start.
+    const lspStartable = (definition: unknown): boolean =>
+      isRecord(definition) &&
+      typeof definition.command === 'string' &&
+      definition.command.trim().length > 0;
+    // The installed scan keeps a server's string arguments and drops the
+    // rest; the inventory drops the whole list, so the definition the
+    // installed list keys by its command line is not known.
+    const lspArgsKnown = (definition: unknown): boolean =>
+      !isRecord(definition) ||
+      !Array.isArray(definition.args) ||
+      definition.args.every((arg) => typeof arg === 'string');
+    // The inventory reads every listed config; only servers the installer
+    // accepts and can start are named.
+    const lspNames = new Set(
+      lspEntries.flatMap(([name, definition]) =>
+        lspStartable(definition) ? [name] : [],
+      ),
     );
     // App members are listed, not read; an unresolved app leaves the facet unknown.
     const apps = previewAppMembers(
@@ -1581,7 +1755,18 @@ async function buildPreviewFromTree(
       emptyFiles,
       unseen,
     );
-    if (!apps) complete = false;
+    if (!apps?.complete) complete = false;
+    // An app's installed name is its front matter's `name`, known only from
+    // a head that was read; an empty file is no app.
+    let appsUnknown = !apps?.complete;
+    const appNames = (apps?.members ?? []).flatMap(({ file }) => {
+      const head = memberHeads.get(file);
+      if (head === undefined) {
+        appsUnknown = true;
+        return [];
+      }
+      return head ? [{ file, name: head.name }] : [];
+    });
     const inventory = buildPluginMemberInventory({
       files: configFiles,
       // MCP members below come from the merged map, not the per-file inventory.
@@ -1622,24 +1807,20 @@ async function buildPreviewFromTree(
         mcpListed.every(isRecord) &&
         mcp.length === mcpDefinitions.length &&
         mcpDefinitionsOk(mcpDefinitions.map(([, definition]) => definition)) &&
-        lspDefinitions.length === inventory.lspServers.length &&
-        // The inventory counts any string command; a blank one cannot start.
-        lspDefinitions.every(
-          (definition) =>
-            isRecord(definition) &&
-            typeof definition.command === 'string' &&
-            definition.command.trim().length > 0,
-        ),
+        lspEntries.length === inventory.lspServers.length &&
+        lspEntries.every(([, definition]) => lspStartable(definition)),
       rootApp: listed.has('.app.json'),
       inventory: {
         skills: skillMembers.map((name) => ({ name })),
         commands: commandMembers.map((name) => ({ name })),
         agents: agentMembers.map((name) => ({ name })),
-        apps: apps ?? [],
+        apps: apps?.members ?? [],
         hooks: inventory.hooks,
-        mods: inventory.mods,
+        mods: inventory.mods ?? [],
         mcpServers: mcp.map(({ member }) => member),
-        lspServers: inventory.lspServers,
+        lspServers: inventory.lspServers.filter(({ name }) =>
+          lspNames.has(name),
+        ),
       },
       cursorSkillCount: skillMembers.length,
       cursorMissingSkills: false,
@@ -1647,6 +1828,13 @@ async function buildPreviewFromTree(
       mcpHarnesses: mcp.map(({ harnesses }) => harnesses),
       mcpEndpoints,
       mcpConfigUnread,
+      appsUnknown,
+      appNames,
+      configUnread:
+        unreadKeys.has('hooks') ||
+        unreadKeys.has('lspServers') ||
+        mods.state === 'unread' ||
+        !lspEntries.every(([, definition]) => lspArgsKnown(definition)),
       hookCount: hookConfigs.reduce(
         (count, config) => count + scannedHookCount(config),
         0,
@@ -1668,61 +1856,21 @@ async function buildPreviewFromTree(
           ...(codex ? { codex: evidence(codex) } : {}),
         }
       : { [provider]: evidence(fallback) };
-  // Contents list a kind's members from its usual folder only when some
-  // manifest's readers look there: a read native manifest that keeps the
-  // folder, or, with no Claude or Codex manifest, the provider's defaults.
-  // Those defaults are no evidence when a Claude or Codex manifest went
-  // unread, since it may move the folder or override the usual configs. A
-  // folder every reader looks past lists no members, and its descriptions
-  // are dropped. MCP server names, and whether hooks or servers are present,
-  // come from the same readers.
-  const providerManifestUnread = unreadPublisherManifests.some(
-    (path) =>
-      path === '.claude-plugin/plugin.json' ||
-      path === '.codex-plugin/plugin.json',
-  );
-  const memberReaders =
-    claude || codex || providerManifestUnread
-      ? sources
-      : [...sources, fallback];
+  const memberReaders = contentReaders({ claude, codex, sources, fallback });
   // Every native manifest that was read (Cursor's too, though the classifier
   // reads only `facets`), then the provider's default files when they are
   // evidence; for MCP servers, the first to define a name wins.
   const readerEvidence = [...new Set(memberReaders.map(evidence))];
-  // The installed skill scan stats each child of each skill folder it reads
-  // with no catch of its own, so one child whose target the listing cannot
-  // prove (a link that may dangle) fails it, and the scan lists no skill at
-  // all, whatever the other folders hold. Command, agent and app files are
-  // each read under their own catch, so no one file empties those kinds. A
-  // manifest whose skill folders may hold such a child, or whose folder is
-  // unknown, is no evidence of any skill row.
-  const linkParents = new Set(
-    [...symlinks].map((link) =>
-      link.slice(0, Math.max(0, link.lastIndexOf('/'))).toLowerCase(),
-    ),
-  );
-  const skillScanMayFail = (value: unknown): boolean => {
-    const configured = configuredMemberPaths(value);
-    return (configured.length > 0 ? configured : ['skills']).some((entry) => {
-      const root = pluginPathEntry(entry);
-      // The scanner skips a folder its containment check refuses.
-      if ('unresolved' in root) return root.unresolved === 'unread';
-      return (
-        truncated ||
-        (root.path !== '' && unseen(root.path)) ||
-        linkParents.has(root.path.toLowerCase())
-      );
-    });
-  };
-  const shownKinds = new Set(
-    MEMBER_KINDS.filter(({ type, root }) =>
-      memberReaders.some(
-        (reader) =>
-          readsDefaultMemberRoot(reader[root], root) &&
-          !(type === 'skill' && skillScanMayFail(reader[root])),
-      ),
-    ).map(({ type }) => type),
-  );
+  // A config or app declaration a reader names but the preview could not
+  // read may hold hooks, servers, Mods or apps it does not list.
+  if (
+    readerEvidence.some(
+      ({ mcpConfigUnread, appsUnknown, configUnread }) =>
+        mcpConfigUnread || appsUnknown || configUnread,
+    )
+  )
+    partial = true;
+  const shownKinds = shownKindsOf(memberReaders);
   // Listed paths by their folder, without regard to case, so each member
   // folder a manifest configures is looked up once, however many it lists:
   // every file directly in it, and every skill folder's SKILL.md below it.
@@ -1793,6 +1941,26 @@ async function buildPreviewFromTree(
       ({ path }) => memberUnseen(path) || !emptyFiles.has(path),
     );
   };
+  // Contents shows only names the page can show, at most so many; a name it
+  // leaves out is a member left unshown, so the read is partial.
+  const listedNames = (values: readonly string[]): string[] => {
+    const shown = capped(values);
+    if (new Set(values).size > shown.length) partial = true;
+    return shown;
+  };
+  // The installed list has a row per definition (an app file, an LSP
+  // server's command line) and Contents one per name, so a name two
+  // definitions share leaves a row unshown. One definition two readers
+  // reach is one row.
+  const listedDefinitions = (
+    definitions: readonly { readonly key: string; readonly name: string }[],
+  ): string[] => {
+    const nameByKey = new Map(
+      definitions.map(({ key, name }) => [key, name] as const),
+    );
+    if (new Set(nameByKey.values()).size < nameByKey.size) partial = true;
+    return listedNames([...nameByKey.values()]);
+  };
   // Each shown kind's members whose installed name is known. A name two
   // member files of a kind share gets no description, as the page cannot
   // tell which file it means: two read files the scanner names alike, or a
@@ -1806,11 +1974,58 @@ async function buildPreviewFromTree(
   // front-matter name is not known either; the first 40 files' descriptions
   // are shown regardless (AC3), so one that names itself like a shown row
   // is the accepted residue.
+  // The files in the folders the member readers configure for a kind, other
+  // than its usual one, and whether one of those folders cannot be seen into.
+  const configuredFolders = (
+    type: 'skill' | 'command' | 'agent',
+    root: string,
+  ): {
+    readonly unknown: boolean;
+    readonly members: { readonly path: string; readonly fallback: string }[];
+  } => {
+    let unknown = false;
+    const members: { readonly path: string; readonly fallback: string }[] = [];
+    const counted = new Set<string>();
+    for (const reader of memberReaders)
+      for (const entry of configuredMemberPaths(reader[root])) {
+        const folder = pluginPathEntry(entry);
+        if ('unresolved' in folder) {
+          // The scanner skips a folder its containment check refuses.
+          if (folder.unresolved === 'unread') unknown = true;
+          continue;
+        }
+        if (folder.path === root || counted.has(folder.path)) continue;
+        counted.add(folder.path);
+        if (folder.path !== '' && unseen(folder.path)) {
+          unknown = true;
+          continue;
+        }
+        members.push(...configuredRootMembers(folder.path, type));
+      }
+    return { unknown, members };
+  };
   const memberNames: Record<string, string[]> = {};
   const descriptions: Record<string, string> = {};
   for (const { type, root, files } of memberFiles) {
+    const configured = configuredFolders(type, root);
     if (!shownKinds.has(type)) {
       memberNames[type] = [];
+      // Members the kind may have, in its usual folder or one a manifest
+      // configures, go unnamed, so the read is partial; a configured folder
+      // the listing shows holds none of them leaves it complete. The usual
+      // folder counts only while some reader reads it; skills a scan may not
+      // list (behind a symlink, say) may be there too.
+      if (
+        (files.length > 0 &&
+          memberReaders.some((reader) =>
+            readsDefaultMemberRoot(reader[root], root),
+          )) ||
+        configured.unknown ||
+        configured.members.length > 0 ||
+        (type === 'skill' &&
+          memberReaders.some((reader) => skillScanMayFail(reader[root])))
+      )
+        partial = true;
       continue;
     }
     const holders = new Map<string, number>();
@@ -1826,35 +2041,25 @@ async function buildPreviewFromTree(
       if (head) heads.push(head);
     }
     // Some member reader reads the usual folder, or the kind is not shown.
-    let unknownFolder = unseen(root);
+    const unknownFolder = unseen(root) || configured.unknown;
     const usual = new Set(files.map(({ path }) => path));
-    const counted = new Set<string>();
-    for (const reader of memberReaders)
-      for (const entry of configuredMemberPaths(reader[root])) {
-        const folder = pluginPathEntry(entry);
-        if ('unresolved' in folder) {
-          // The scanner skips a folder its containment check refuses.
-          if (folder.unresolved === 'unread') unknownFolder = true;
-          continue;
-        }
-        if (folder.path === root || counted.has(folder.path)) continue;
-        counted.add(folder.path);
-        if (folder.path !== '' && unseen(folder.path)) {
-          unknownFolder = true;
-          continue;
-        }
-        for (const { path, fallback } of configuredRootMembers(
-          folder.path,
-          type,
-        ))
-          if (!usual.has(path)) {
-            // A file two configured folders reach is one holder.
-            usual.add(path);
-            hold(fallback);
-          }
+    for (const { path, fallback } of configured.members)
+      if (!usual.has(path)) {
+        // A file two configured folders reach is one holder.
+        usual.add(path);
+        hold(fallback);
       }
-    const shown = capped(heads.map(({ name }) => name));
+    const shown = listedNames(heads.map(({ name }) => name));
     memberNames[type] = shown;
+    // A member whose installed name is not known (unread, a custom folder's,
+    // or front matter the prefix cannot settle) is left out of the list, and
+    // a folder the preview cannot see into may hold more: the read is partial.
+    let held = 0;
+    for (const count of holders.values()) held += count;
+    if (unknownFolder || held > heads.length) partial = true;
+    // Two read files sharing a name are two installed members but one row.
+    if (new Set(heads.map(({ name }) => name)).size < heads.length)
+      partial = true;
     if (unknownFolder) continue;
     const shownNames = new Set(shown);
     for (const { name, description } of heads)
@@ -1864,9 +2069,39 @@ async function buildPreviewFromTree(
   // Hooks and MCP servers are present only on positive evidence: a config
   // that was read and holds at least one, as the installed scan counts them.
   const hooks = readerEvidence.some(({ hookCount }) => hookCount > 0);
+  // App, Mod and LSP server names from the same readers.
+  const apps = listedDefinitions(
+    readerEvidence.flatMap(({ appNames }) =>
+      appNames.map(({ file, name }) => ({ key: file, name })),
+    ),
+  );
+  // A root app config is content the installed scan lists no name for; one
+  // the preview cannot see may be there too.
+  const rootApp = listed.has('.app.json');
+  if (unseen('.app.json')) partial = true;
+  // A Mod is a module in a hooks file, so a module two hooks files load is
+  // two installed rows under one name. Grouped by module as it is read, with
+  // no key built per declaration of a publisher's hooks file.
+  const modFiles = new Map<string, Set<string>>();
+  for (const { inventory } of readerEvidence)
+    for (const { hooksFile, module } of inventory.mods) {
+      const files = modFiles.get(module) ?? new Set<string>();
+      files.add(hooksFile);
+      modFiles.set(module, files);
+    }
+  if ([...modFiles.values()].some((files) => files.size > 1)) partial = true;
+  const mods = listedNames([...modFiles.keys()]);
+  const lspServers = listedDefinitions(
+    readerEvidence.flatMap(({ inventory }) =>
+      inventory.lspServers.map(({ name, command, args }) => ({
+        key: JSON.stringify([name, command, args ?? []]),
+        name,
+      })),
+    ),
+  );
   // Names come from the merged definitions, as the runtime lists its servers,
   // so one with no URL or command still gets its row.
-  const mcpServerNames = capped(
+  const mcpServerNames = listedNames(
     readerEvidence.flatMap(({ mcpEndpoints }) => [...mcpEndpoints.keys()]),
   );
   const mcpServers = readerEvidence.some(
@@ -1910,9 +2145,14 @@ async function buildPreviewFromTree(
     partial,
     preview: {
       ...(compatibility ? { compatibility } : {}),
+      ...(partial ? { partial: true } : {}),
       skills: memberNames.skill ?? [],
       commands: memberNames.command ?? [],
       agents: memberNames.agent ?? [],
+      ...(apps.length > 0 ? { apps } : {}),
+      ...(rootApp ? { rootApp } : {}),
+      ...(mods.length > 0 ? { mods } : {}),
+      ...(lspServers.length > 0 ? { lspServers } : {}),
       hooks,
       mcpServers,
       mcpServerNames,
@@ -1956,8 +2196,9 @@ function remember(
   // Unsettled reads never expire; a settled one lasts its lifetime.
   const entry: CacheEntry = { result, expiresAt: Infinity };
   cache.set(key, entry);
-  void settled.then(({ ttl }) => {
+  void settled.then(({ result: value, ttl }) => {
     entry.expiresAt = Date.now() + ttl;
+    if (!value.ok || value.preview.partial === true) entry.failed = true;
   });
   return result;
 }
@@ -2018,10 +2259,16 @@ async function previewCheckoutReadme(
   }
 }
 
-/** The preview of one catalog plugin, read from its cached listing. */
+/**
+ * The preview of one catalog plugin, read from its cached listing. `retry` is
+ * the user asking again after a failed read: a settled failure is dropped and
+ * read afresh, while a read still out is shared and a host's rate limit is
+ * still waited out.
+ */
 export async function previewPluginManifest(
   marketplaceId: string,
   pluginName: string,
+  { retry = false }: { readonly retry?: boolean } = {},
 ): Promise<PluginManifestPreviewResult> {
   const catalog = await loadMarketplacesCacheOnly();
   if (!catalog.success || !catalog.data)
@@ -2055,6 +2302,7 @@ export async function previewPluginManifest(
       ? 'codex'
       : 'claude';
   const key = `${source.repo}@${source.ref}:${provider}`;
+  if (retry && cache.get(key)?.failed) cache.delete(key);
   return (
     cached(key) ??
     remember(

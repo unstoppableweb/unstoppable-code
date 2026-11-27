@@ -263,8 +263,29 @@ export const DESKTOP_OPERATIONS = {
     kind: 'product',
     posthogEvent: 'billing:credits_recovery_click',
     // `recovery_provider` is the provider-choice row a click acted on: one of
-    // the fixed `ProviderSourceId` strings (`@canopy/app-state/provider-choice`).
+    // the fixed `ProviderSourceId` strings (`@canopy/app-state/provider-choice`),
+    // `ollama` included.
     contextKeys: ['recovery_surface', 'recovery_action', 'recovery_provider'],
+  },
+  // Billing setup gate (2026-11-25): the provider list that replaces a
+  // new-chat composer while nothing can run a model. The web uses the same
+  // event names but reports to Datadog RUM, not PostHog, so each platform has
+  // its own funnel. `gate_source` is one of the fixed
+  // `BillingReadinessSourceId` strings (`@canopy/app-state/provider-choice`).
+  'canopy.billing_setup_gate': {
+    kind: 'product',
+    posthogEvent: 'billing:setup_gate_view',
+    contextKeys: ['gate_surface'],
+  },
+  'canopy.billing_setup_gate_action': {
+    kind: 'product',
+    posthogEvent: 'billing:setup_gate_click',
+    contextKeys: ['gate_surface', 'gate_action', 'gate_source'],
+  },
+  'canopy.billing_setup_gate_end': {
+    kind: 'product',
+    posthogEvent: 'billing:setup_gate_end',
+    contextKeys: ['gate_surface', 'gate_source'],
   },
   'canopy.share_dialog': {
     kind: 'product',

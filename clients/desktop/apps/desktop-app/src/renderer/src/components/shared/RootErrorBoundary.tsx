@@ -37,6 +37,7 @@ export function RootErrorBoundary({
       layout="window"
       message="Couldn't show this window."
       recoveryLabel="Reload window"
+      recoveringLabel="Reloading window…"
       testId="root-error-fallback"
       host={rootErrorBoundaryHost}
       onRecover={reloadWindow}

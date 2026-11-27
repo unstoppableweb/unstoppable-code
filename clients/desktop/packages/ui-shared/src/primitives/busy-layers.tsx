@@ -73,6 +73,7 @@ export function ReservedLabel({
 export function BusyLayers({
   busy,
   busyLabel,
+  spinnerOnly = false,
   leading,
   spinnerTestId,
   presentation = 'app',
@@ -81,6 +82,8 @@ export function BusyLayers({
   readonly busy: boolean;
   /** Label while busy. Defaults to the resting label. */
   readonly busyLabel?: ReactNode;
+  /** The busy layer is the spinner alone; its label is screen-reader only. */
+  readonly spinnerOnly?: boolean;
   /** A glyph before the resting label; the spinner takes its place. */
   readonly leading?: ReactNode;
   readonly spinnerTestId?: string;
@@ -112,7 +115,11 @@ export function BusyLayers({
         ) : (
           <span className={SPINNER_SPACER_CLASS_NAME} />
         )}
-        {busy ? (
+        {spinnerOnly ? (
+          busy ? (
+            <span className="sr-only">{busyLabel ?? children}</span>
+          ) : null
+        ) : busy ? (
           (busyLabel ?? children)
         ) : (
           <ReservedLabel label={busyLabel ?? children} />

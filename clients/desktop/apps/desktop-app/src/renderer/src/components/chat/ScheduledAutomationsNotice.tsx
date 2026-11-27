@@ -2,7 +2,7 @@ import { useCallback, useMemo, useRef, useState, type JSX } from 'react';
 import {
   Tooltip,
   ConfirmDialog,
-  FloatingMenu,
+  Menu,
   Notice,
   NoticeButton,
 } from '@canopy/ui-shared';
@@ -321,7 +321,7 @@ export function ScheduledAutomationsNoticeView({
             >
               <MoreHorizontalIcon size="sm" />
             </NoticeButton>
-            <FloatingMenu
+            <Menu
               open={menuOpen}
               onOpenChange={setMenuOpen}
               anchorRef={moreButtonRef}
@@ -341,7 +341,7 @@ export function ScheduledAutomationsNoticeView({
                   }}
                 />
               </ActionMenuRowStyle>
-            </FloatingMenu>
+            </Menu>
           </>
         }
       >

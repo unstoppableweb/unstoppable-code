@@ -130,6 +130,10 @@ import { ImportSessionModalHost } from './components/worktree/ImportSessionModal
 import { APP_BOTTOM_STATUS_HOST_ID } from './hooks/useAppBottomStatusHost';
 import { useAutoArchiveNotifications } from './hooks/useAutoArchiveNotifications';
 import { useBillingLaneRuntimeSync } from './hooks/useBillingLaneRuntimeSync';
+import {
+  useDesktopBillingGate,
+  useDesktopBillingReadinessSync,
+} from './hooks/useDesktopBillingReadiness';
 import { useChatEventSubscriptions } from './hooks/useChatEventSubscriptions';
 import { useDetectedPlansSubscription } from './hooks/useDetectedPlansSubscription';
 import { useGlobalShortcuts } from './hooks/useGlobalShortcuts';
@@ -447,6 +451,29 @@ function preferencesWithoutNavigation(preferences: object): string {
       ([key]) => !NAVIGATION_PREFERENCE_KEYS.has(key),
     ),
   );
+}
+
+/**
+ * Publishes billing readiness from a leaf, so its account, Ollama, provider
+ * and lane fact subscriptions re-render only this, not the whole `App`.
+ */
+function DesktopBillingReadinessSync(): null {
+  useDesktopBillingReadinessSync();
+  return null;
+}
+
+/**
+ * Release highlights wait while the billing setup gate is up: the provider
+ * list is the one thing a user with no way to run a model should see. Reads
+ * the gate here, not in `App`, so a gate change re-renders only this host.
+ */
+function BillingGatedReleaseHighlightsHost({
+  ready,
+}: {
+  ready: boolean;
+}): JSX.Element {
+  const billingGateShown = useDesktopBillingGate().gate.shown;
+  return <ReleaseHighlightsHost ready={ready && !billingGateShown} />;
 }
 
 function App(): JSX.Element {
@@ -1943,7 +1970,8 @@ function App(): JSX.Element {
       <BaseBranchChangeConfirmationModalHost />
       <CommitMessageReviewModalHost />
       <GitHubConnectOfferHost />
-      <ReleaseHighlightsHost ready={startupUnlockReady} />
+      <DesktopBillingReadinessSync />
+      <BillingGatedReleaseHighlightsHost ready={startupUnlockReady} />
       <RemoteAccessHost />
       {/* `electron-no-drag` is load-bearing: a top corner overlaps the drag
           strip a page without a top bar draws at its top edge, and app-region

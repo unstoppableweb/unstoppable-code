@@ -138,6 +138,9 @@ function buildWebCoreScopeCapabilities(
     },
     automations: false,
     chatApprovalMode: false,
+    chatApprovalRespond: true,
+    chatModelChange: true,
+    chatTabCreation: true,
     chatThinkingLevel: true,
     chatFastMode: true,
     chatTabFork: false,
@@ -146,6 +149,7 @@ function buildWebCoreScopeCapabilities(
     chatPluginSelections: true,
     // Edit and Run now on a queued prompt reach Core with its revision (CAN-6651).
     chatQueueEdits: true,
+    chatQueueCancel: true,
     chatResetToPoint: false,
     chatAttachments: true,
     chatFileMentions: false,

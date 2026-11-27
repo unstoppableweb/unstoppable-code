@@ -359,6 +359,8 @@ export interface UseWorkflowSchedulesOptions {
   readonly name: string;
   /** The pipeline as edited, for its inputs and the ones its steps read. */
   readonly pipeline: Pipeline | null;
+  /** The Save candidate's input defaults, used only to check Send as. */
+  readonly sendAsPipeline: Pipeline | null;
   readonly automations: AutomationsPageBodyApi;
   readonly pipelines: PipelinesPageListApi;
   /** The page's Duplicate (phase 04), which opens the copy. */
@@ -379,6 +381,7 @@ export function useWorkflowSchedules({
   workflowPage,
   name,
   pipeline,
+  sendAsPipeline,
   automations,
   pipelines,
   onDuplicateWorkflow,
@@ -1208,10 +1211,12 @@ export function useWorkflowSchedules({
   const declaredDefaults = useMemo(
     () =>
       initializeInputValues(
-        resolvePipelineTriggerInputs(pipeline, scheduleInputTrigger(pipeline))
-          .inputDefs,
+        resolvePipelineTriggerInputs(
+          sendAsPipeline,
+          scheduleInputTrigger(sendAsPipeline),
+        ).inputDefs,
       ),
-    [pipeline],
+    [sendAsPipeline],
   );
   const editedFirstScheduleInputs = useMemo(() => {
     const first = edited.states[0];

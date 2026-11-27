@@ -1,4 +1,5 @@
 import type { TranscriptTurnFile } from '@canopy/agent-transcript/transcript-storage';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { reconcileTurnFileRecords } from '@canopy/protocol/turn-files';
 import type {
   FileTreeRoot,
@@ -56,6 +57,7 @@ function pruneExpired(
 function rootsFor(
   target: ShowFilesWorkspaceTarget,
 ): Promise<readonly FileTreeRoot[]> {
+  if (isPairedComputerId(target.projectId)) return Promise.resolve([]);
   const key = `${target.projectId}/${target.worktreeId}`;
   const now = Date.now();
   const cached = rootsCache.get(key);
@@ -89,6 +91,7 @@ function existsAsFile(
   target: ShowFilesWorkspaceTarget,
   absolutePath: string,
 ): Promise<boolean> {
+  if (isPairedComputerId(target.projectId)) return Promise.resolve(false);
   const key = `${target.projectId}/${target.worktreeId}|${absolutePath}`;
   const now = Date.now();
   const cached = existenceCache.get(key);

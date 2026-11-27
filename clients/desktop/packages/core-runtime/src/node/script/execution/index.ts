@@ -70,6 +70,7 @@ export {
 } from './terminal-runner';
 export {
   createWorkerScriptHandlers,
+  idempotencyKeyReusedError,
   ScriptExecutionWorker,
   scriptContextUnavailableError,
   type ScriptExecuteOptions,

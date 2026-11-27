@@ -5,7 +5,7 @@ import type { SubagentRecipient } from '@canopy/agent-transcript';
 import {
   PickerTrigger,
   PickerTriggerChevron,
-} from '../../../../primitives/PickerMenu';
+} from '../../../../primitives/PickerParts';
 import { ChatIcon } from '../../../../icons/AppIcons';
 import { SubagentIcon } from '../../../../icons/SubagentIcon';
 import {

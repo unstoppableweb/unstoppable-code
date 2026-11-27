@@ -25,16 +25,16 @@ import {
   LEDGER_ENTRY_TYPE_LABELS,
   LEDGER_STATUS_LABELS,
 } from '../../lib/ledger-display';
+import { Picker } from '../../primitives/Picker';
 import {
-  FloatingPickerMenu,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-  PickerMenuOptionLeading,
-  PickerMenuSection,
-  PickerMenuSectionLabel,
-} from '../../primitives/PickerMenu';
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
+  PickerOptionLeading,
+  PickerSection,
+  PickerSectionLabel,
+} from '../../primitives/PickerParts';
 import { FilterMenuButton, pageFilter } from '../PageSearchRow';
 import { RailIconButton } from '../RailIconButton';
 import { LedgerEntryTypeIcon } from '../../icons/LedgerEntryTypeIcon';
@@ -123,7 +123,7 @@ export function LedgerFilterMenu<Filters extends LedgerViewFilters>({
           className="pointer-events-none absolute right-0.5 top-0.5"
         />
       )}
-      <FloatingPickerMenu
+      <Picker
         open={open}
         onOpenChange={setOpen}
         anchorRef={triggerRef}
@@ -134,11 +134,11 @@ export function LedgerFilterMenu<Filters extends LedgerViewFilters>({
         initialFocusRef={firstOptionRef}
         data-testid="ledger-filter-menu"
       >
-        <PickerMenuSectionLabel>Type</PickerMenuSectionLabel>
+        <PickerSectionLabel>Type</PickerSectionLabel>
         {TYPE_OPTIONS.map((type, index) => {
           const checked = filters.types.includes(type);
           return (
-            <PickerMenuOption
+            <PickerOption
               key={type}
               ref={index === 0 ? firstOptionRef : undefined}
               role="menuitemcheckbox"
@@ -149,24 +149,24 @@ export function LedgerFilterMenu<Filters extends LedgerViewFilters>({
                 onChange({ ...filters, types: toggled(filters.types, type) })
               }
             >
-              <PickerMenuOptionCheck selected={checked} reserveSpace />
-              <PickerMenuOptionLeading tone="secondary">
+              <PickerOptionCheck selected={checked} reserveSpace />
+              <PickerOptionLeading tone="secondary">
                 <LedgerEntryTypeIcon type={type} />
-              </PickerMenuOptionLeading>
-              <PickerMenuOptionContent>
-                <PickerMenuOptionLabel>
+              </PickerOptionLeading>
+              <PickerOptionContent>
+                <PickerOptionLabel>
                   {LEDGER_ENTRY_TYPE_LABELS[type]}
-                </PickerMenuOptionLabel>
-              </PickerMenuOptionContent>
-            </PickerMenuOption>
+                </PickerOptionLabel>
+              </PickerOptionContent>
+            </PickerOption>
           );
         })}
-        <PickerMenuSection>
-          <PickerMenuSectionLabel>Status</PickerMenuSectionLabel>
+        <PickerSection>
+          <PickerSectionLabel>Status</PickerSectionLabel>
           {STATUS_OPTIONS.map((status) => {
             const checked = filters.statuses.includes(status);
             return (
-              <PickerMenuOption
+              <PickerOption
                 key={status}
                 role="menuitemcheckbox"
                 aria-checked={checked}
@@ -179,22 +179,22 @@ export function LedgerFilterMenu<Filters extends LedgerViewFilters>({
                   })
                 }
               >
-                <PickerMenuOptionCheck selected={checked} reserveSpace />
-                <PickerMenuOptionContent>
-                  <PickerMenuOptionLabel>
+                <PickerOptionCheck selected={checked} reserveSpace />
+                <PickerOptionContent>
+                  <PickerOptionLabel>
                     {LEDGER_STATUS_LABELS[status]}
-                  </PickerMenuOptionLabel>
-                </PickerMenuOptionContent>
-              </PickerMenuOption>
+                  </PickerOptionLabel>
+                </PickerOptionContent>
+              </PickerOption>
             );
           })}
-        </PickerMenuSection>
-        <PickerMenuSection>
-          <PickerMenuSectionLabel>Owner</PickerMenuSectionLabel>
+        </PickerSection>
+        <PickerSection>
+          <PickerSectionLabel>Owner</PickerSectionLabel>
           {(['anyone', 'you'] as const).map((owner) => {
             const checked = filters.owner === owner;
             return (
-              <PickerMenuOption
+              <PickerOption
                 key={owner}
                 role="menuitemradio"
                 aria-checked={checked}
@@ -202,18 +202,18 @@ export function LedgerFilterMenu<Filters extends LedgerViewFilters>({
                 data-testid={`ledger-filter-owner-${owner}`}
                 onClick={() => onChange({ ...filters, owner })}
               >
-                <PickerMenuOptionCheck selected={checked} reserveSpace />
-                <PickerMenuOptionContent>
-                  <PickerMenuOptionLabel>
+                <PickerOptionCheck selected={checked} reserveSpace />
+                <PickerOptionContent>
+                  <PickerOptionLabel>
                     {owner === 'anyone' ? 'Anyone' : 'You'}
-                  </PickerMenuOptionLabel>
-                </PickerMenuOptionContent>
-              </PickerMenuOption>
+                  </PickerOptionLabel>
+                </PickerOptionContent>
+              </PickerOption>
             );
           })}
-        </PickerMenuSection>
+        </PickerSection>
         {children}
-      </FloatingPickerMenu>
+      </Picker>
     </div>
   );
 }
@@ -279,12 +279,12 @@ export function LedgerFeedFilterMenu({
         isLedgerFeedFiltered(filters) || (onlyThisDevice?.checked ?? false)
       }
     >
-      <PickerMenuSection>
-        <PickerMenuSectionLabel>Added by</PickerMenuSectionLabel>
+      <PickerSection>
+        <PickerSectionLabel>Added by</PickerSectionLabel>
         {(['anyone', 'you'] as const).map((author) => {
           const checked = filters.author === author;
           return (
-            <PickerMenuOption
+            <PickerOption
               key={author}
               role="menuitemradio"
               aria-checked={checked}
@@ -292,22 +292,22 @@ export function LedgerFeedFilterMenu({
               data-testid={`ledger-filter-author-${author}`}
               onClick={() => onChange({ ...filters, author })}
             >
-              <PickerMenuOptionCheck selected={checked} reserveSpace />
-              <PickerMenuOptionContent>
-                <PickerMenuOptionLabel>
+              <PickerOptionCheck selected={checked} reserveSpace />
+              <PickerOptionContent>
+                <PickerOptionLabel>
                   {author === 'anyone' ? 'Anyone' : 'You'}
-                </PickerMenuOptionLabel>
-              </PickerMenuOptionContent>
-            </PickerMenuOption>
+                </PickerOptionLabel>
+              </PickerOptionContent>
+            </PickerOption>
           );
         })}
-      </PickerMenuSection>
-      <PickerMenuSection>
-        <PickerMenuSectionLabel>Last changed</PickerMenuSectionLabel>
+      </PickerSection>
+      <PickerSection>
+        <PickerSectionLabel>Last changed</PickerSectionLabel>
         {PERIOD_OPTIONS.map(({ period, label }) => {
           const checked = filters.period === period;
           return (
-            <PickerMenuOption
+            <PickerOption
               key={period}
               role="menuitemradio"
               aria-checked={checked}
@@ -315,16 +315,16 @@ export function LedgerFeedFilterMenu({
               data-testid={`ledger-filter-period-${period}`}
               onClick={() => onChange({ ...filters, period })}
             >
-              <PickerMenuOptionCheck selected={checked} reserveSpace />
-              <PickerMenuOptionContent>
-                <PickerMenuOptionLabel>{label}</PickerMenuOptionLabel>
-              </PickerMenuOptionContent>
-            </PickerMenuOption>
+              <PickerOptionCheck selected={checked} reserveSpace />
+              <PickerOptionContent>
+                <PickerOptionLabel>{label}</PickerOptionLabel>
+              </PickerOptionContent>
+            </PickerOption>
           );
         })}
-      </PickerMenuSection>
-      <PickerMenuSection>
-        <PickerMenuOption
+      </PickerSection>
+      <PickerSection>
+        <PickerOption
           role="menuitemcheckbox"
           aria-checked={filters.includeArchived}
           selected={filters.includeArchived}
@@ -333,33 +333,27 @@ export function LedgerFeedFilterMenu({
             onChange({ ...filters, includeArchived: !filters.includeArchived })
           }
         >
-          <PickerMenuOptionCheck
-            selected={filters.includeArchived}
-            reserveSpace
-          />
-          <PickerMenuOptionContent>
-            <PickerMenuOptionLabel>Show archived work</PickerMenuOptionLabel>
-          </PickerMenuOptionContent>
-        </PickerMenuOption>
-      </PickerMenuSection>
+          <PickerOptionCheck selected={filters.includeArchived} reserveSpace />
+          <PickerOptionContent>
+            <PickerOptionLabel>Show archived work</PickerOptionLabel>
+          </PickerOptionContent>
+        </PickerOption>
+      </PickerSection>
       {onlyThisDevice !== undefined && (
-        <PickerMenuSection>
-          <PickerMenuOption
+        <PickerSection>
+          <PickerOption
             role="menuitemcheckbox"
             aria-checked={onlyThisDevice.checked}
             selected={onlyThisDevice.checked}
             data-testid="feed-only-this-device"
             onClick={() => onlyThisDevice.onChange(!onlyThisDevice.checked)}
           >
-            <PickerMenuOptionCheck
-              selected={onlyThisDevice.checked}
-              reserveSpace
-            />
-            <PickerMenuOptionContent>
-              <PickerMenuOptionLabel>Only this device</PickerMenuOptionLabel>
-            </PickerMenuOptionContent>
-          </PickerMenuOption>
-        </PickerMenuSection>
+            <PickerOptionCheck selected={onlyThisDevice.checked} reserveSpace />
+            <PickerOptionContent>
+              <PickerOptionLabel>Only this device</PickerOptionLabel>
+            </PickerOptionContent>
+          </PickerOption>
+        </PickerSection>
       )}
     </LedgerFilterMenu>
   );

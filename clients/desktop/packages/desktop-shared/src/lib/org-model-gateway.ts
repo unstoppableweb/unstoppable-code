@@ -3,12 +3,16 @@ import { orderGatewayModelsForDefault } from '@canopy/protocol/model-gateway/pre
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import type { ModelGatewayModel } from '@canopy/protocol/canopy-server';
 import type { PersonalAiGatewayConfig } from '@canopy/protocol/model-gateway';
-import type { CanopyCloudAccountPublicState } from '../types';
+import {
+  getExecutionHarnessForModel,
+  type CanopyCloudAccountPublicState,
+} from '../types';
 import {
   resolveGatewayModelEntry,
   resolveOrgGatewayOrganizationId,
 } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
+import { findEquivalentModel, modelIdentityKey } from './model-identity';
 
 export interface OrganizationModelGateway {
   organizationName: string;
@@ -326,5 +330,70 @@ export function listOrgGatewayModelsForOrganization(
     (model) =>
       normalizeUuid(resolveOrgGatewayOrganizationId(model)) ===
       normalizedOrganizationId,
+  );
+}
+
+/**
+ * A model's tier without its version: `anthropic/claude-haiku-4.5` and
+ * `anthropic/claude-haiku-5.5` share `anthropic/claude-haiku`, and
+ * `openai/gpt-6.1-sol` becomes `openai/gpt-sol`. Every numeric segment goes,
+ * so ids that differ only by a number share a tier (`o1` and `o3`). That is
+ * fine for a helper's fallback pick, which only wants a model of similar
+ * size, and is never used to match a chat's model.
+ */
+function modelTierKey(model: string): string | undefined {
+  const key = modelIdentityKey(model, { stripVariant: true });
+  return key?.replace(/[-.]?\d+(?:\.\d+)*/g, '');
+}
+
+/**
+ * The Personal gateway model a background helper runs on when its configured
+ * model has no way to pay (signed out, no AI Credits). `candidates` are the
+ * gateway's models in default order (see `listPersonalGatewayDefaultModels`).
+ *
+ * Unlike a chat default this picks a different model when it must: a helper's
+ * job matters more than its exact model. Only models on the requested
+ * model's harness qualify. Closest first: the same model under the gateway's
+ * id, then the same tier at another version (a Haiku title model stays a
+ * Haiku), then the first on that harness in default order.
+ */
+export function pickPersonalGatewayHelperModel(
+  model: string,
+  gatewayModels: readonly string[],
+): string | undefined {
+  // Callers choose the Claude or Codex generator from the requested model, so
+  // the pick stays on that harness; with none there, the helper is refused
+  // (and its pre-check skips it) rather than handed to the wrong generator.
+  const harness = helperHarness(model);
+  const candidates = gatewayModels.filter((candidate) => {
+    const candidateHarness = helperHarness(candidate);
+    return harness === 'claude' || harness === 'codex'
+      ? candidateHarness === harness
+      : candidateHarness === 'claude' || candidateHarness === 'codex';
+  });
+  if (candidates.length === 0) return undefined;
+  if (candidates.includes(model)) return model;
+  const same = findEquivalentModel(
+    model,
+    candidates.map((id) => ({ id })),
+  )?.id;
+  if (same) return same;
+  // The newest version of the tier, as the Claude side models choose it.
+  const tier = modelTierKey(model);
+  const sameTier = tier
+    ? candidates
+        .filter((candidate) => modelTierKey(candidate) === tier)
+        .sort((left, right) =>
+          right.localeCompare(left, undefined, { numeric: true }),
+        )
+    : [];
+  return sameTier[0] ?? candidates[0];
+}
+
+/** The registry's harness, else the gateway route's own. */
+function helperHarness(model: string): string | undefined {
+  return (
+    getExecutionHarnessForModel(model) ??
+    resolveGatewayModelEntry(model)?.recommendedHarness
   );
 }

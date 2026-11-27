@@ -8,18 +8,18 @@ import {
   LEDGER_OPEN_STATUS_OPTIONS,
   LEDGER_STATUS_LABELS,
 } from '../../lib/ledger-display';
+import { Picker } from '../../primitives/Picker';
 import {
-  FloatingPickerMenu,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-  PickerMenuSection,
-  PickerMenuSectionLabel,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
+  PickerSection,
+  PickerSectionLabel,
   PickerTrigger,
   PickerTriggerChevron,
   type PickerTriggerVariant,
-} from '../../primitives/PickerMenu';
+} from '../../primitives/PickerParts';
 import { ChevronDownIcon } from '../../icons/AppIcons';
 import { LedgerStatusLabel } from './LedgerStatusLabel';
 import { LedgerStatusGlyph } from './LedgerStatusPill';
@@ -74,7 +74,7 @@ export function LedgerStatusControl({
   const option = (value: LedgerStatus): JSX.Element => {
     const selected = value === status;
     return (
-      <PickerMenuOption
+      <PickerOption
         key={value}
         role="menuitemradio"
         aria-checked={selected}
@@ -84,13 +84,11 @@ export function LedgerStatusControl({
           if (!selected) onChange(value);
         }}
       >
-        <PickerMenuOptionContent>
-          <PickerMenuOptionLabel>
-            {LEDGER_STATUS_LABELS[value]}
-          </PickerMenuOptionLabel>
-        </PickerMenuOptionContent>
-        <PickerMenuOptionCheck selected={selected} />
-      </PickerMenuOption>
+        <PickerOptionContent>
+          <PickerOptionLabel>{LEDGER_STATUS_LABELS[value]}</PickerOptionLabel>
+        </PickerOptionContent>
+        <PickerOptionCheck selected={selected} />
+      </PickerOption>
     );
   };
   return (
@@ -149,7 +147,7 @@ export function LedgerStatusControl({
           <PickerTriggerChevron open={open} variant={variant} />
         </PickerTrigger>
       )}
-      <FloatingPickerMenu
+      <Picker
         open={open}
         openOnArrowKeys={!saving}
         onOpenChange={setOpen}
@@ -159,11 +157,11 @@ export function LedgerStatusControl({
         data-testid="ledger-status-menu"
       >
         {LEDGER_OPEN_STATUS_OPTIONS.map(option)}
-        <PickerMenuSection>
-          <PickerMenuSectionLabel>Closes the entry</PickerMenuSectionLabel>
+        <PickerSection>
+          <PickerSectionLabel>Closes the entry</PickerSectionLabel>
           {LEDGER_CLOSING_STATUS_OPTIONS.map(option)}
-        </PickerMenuSection>
-      </FloatingPickerMenu>
+        </PickerSection>
+      </Picker>
     </div>
   );
 }

@@ -38,6 +38,8 @@ import { ChatBlockRenderer } from './ChatBlockRenderer';
 import { CollapsibleUserMessageContent } from './CollapsibleUserMessageContent';
 import { MemoryUsedButton } from './MemoryUsedDialog';
 import { MessageImages } from './MessageImages';
+import { CloudMessageMedia } from './CloudMessageMedia';
+import { hasCloudAttachments } from '@/cloud-chats/cloud-message-attachments';
 import { MutedUserBubblesContext } from './muted-user-bubbles-context';
 import { ResetToPointDialog } from './ResetToPointDialog';
 import type { DisplayMessage } from './types';
@@ -84,8 +86,12 @@ export const UserBubble = memo(function UserBubble({
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
   const mutedBubble = useContext(MutedUserBubblesContext);
   const legacySearch = useContext(LegacyTranscriptSearchContext);
-  // Everything sent with the message is a tile inside the bubble.
-  const attachments = useSentAttachments(message.attachmentPaths);
+  // Everything sent with the message is a tile inside the bubble. A cloud
+  // chat's attachments are the shared message media's (CAN-6775).
+  const cloudAttachments = hasCloudAttachments(message.attachmentPaths);
+  const attachments = useSentAttachments(
+    cloudAttachments ? undefined : message.attachmentPaths,
+  );
   const hasBody = message.blocks.some(
     (block) => block.type !== 'text' || block.text.trim() !== '',
   );
@@ -291,7 +297,12 @@ export const UserBubble = memo(function UserBubble({
           )
         }
         media={
-          attachments.length > 0 ? (
+          cloudAttachments && message.attachmentPaths !== undefined ? (
+            <CloudMessageMedia
+              attachmentPaths={message.attachmentPaths}
+              alone={!hasBody}
+            />
+          ) : attachments.length > 0 ? (
             <MessageImages attachments={attachments} alone={!hasBody} />
           ) : null
         }

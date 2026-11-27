@@ -6,6 +6,7 @@ import type {
 
 declare const __CANOPY_E2E__: boolean;
 declare const __CANOPY_LOCAL_ONLY__: boolean;
+declare const __CANOPY_SELF_HOST__: boolean;
 declare const __CANOPY_BRAND_ID__: string;
 
 export interface PostHogInstrumentationConfig {
@@ -114,10 +115,29 @@ function isLocalOnlyInstrumentationBuild(): boolean {
   );
 }
 
+/**
+ * The self-host build profile for PostHog, the same rule as
+ * `isSelfHostBuild()` in @canopy/execution-engine. Either profile turns
+ * PostHog off, so the local-only exclusivity rule is not needed here.
+ */
+function isSelfHostInstrumentationBuild(): boolean {
+  if (typeof __CANOPY_SELF_HOST__ === 'boolean' && __CANOPY_SELF_HOST__) {
+    return true;
+  }
+  return (
+    typeof __CANOPY_E2E__ === 'boolean' &&
+    __CANOPY_E2E__ &&
+    typeof process !== 'undefined' &&
+    process.env.CANOPY_E2E_SELF_HOST === '1'
+  );
+}
+
 export function getDesktopInstrumentationConfig(): DesktopInstrumentationConfig {
-  // Local-only chokepoint: PostHog stays uninitialized in main and renderer.
+  // Local-only and self-host chokepoint: PostHog stays uninitialized in main
+  // and renderer.
   const posthogRequestedEnabled =
     !isLocalOnlyInstrumentationBuild() &&
+    !isSelfHostInstrumentationBuild() &&
     (typeof __CANOPY_POSTHOG_ENABLED__ !== 'undefined'
       ? readBuildBoolean(__CANOPY_POSTHOG_ENABLED__, false)
       : false);

@@ -2,7 +2,7 @@
 import '../../../cloud-chats/__tests__/jsdom-globals';
 // eslint-disable-next-line no-restricted-imports
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { act as reactAct } from 'react';
+import { act as reactAct, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { CanopyCapabilities } from '@canopy/app-core';
 import type * as OpenBillingPageModule from '@/lib/openBillingPage';
@@ -41,7 +41,6 @@ import { dispatchAppAction } from '@/lib/app-actions/dispatcher';
 import type { AppAdvisorActionResponse } from '@/lib/app-actions/types';
 import { desktopCostNavigatorFor } from '@/lib/cost/cost-navigator';
 import { createRelayCoreCoworkInvoker } from '@/cloud-chats/relay-invoker';
-import { CloudChatFileTargetContext } from '@/cloud-chats/cloud-chat-file-target';
 import {
   createCloudSidebarTask,
   retryCloudTask,
@@ -131,6 +130,9 @@ import { setRendererBillingLaneAvailability } from '@/stores/billingLaneRuntime'
 import { ChatQuestionPlayground } from '../ChatQuestionPlayground';
 import { useCurrentUiStateStore } from '@/stores/currentUiStateStore';
 import { MessageImages } from '../../chat/MessageImages';
+import { useCloudChatAttachmentInteraction } from '@/cloud-chats/cloud-message-attachments';
+import { CloudMessageMedia } from '../../chat/CloudMessageMedia';
+import { ChatMessageAttachmentInteractionProvider } from '@canopy/ui-app';
 import { useChatEventSubscriptions } from '@/hooks/useChatEventSubscriptions';
 import {
   endChatIntent,
@@ -3230,33 +3232,43 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     );
   });
 
-  it("saves a sent cloud attachment through its chat's own web core read when the transcript names the chat (CAN-6771)", () => {
+  it("saves a sent cloud attachment through its chat's own web core read when the transcript names the chat, as a Download tile with the web's failure notice (CAN-6771, CAN-6775)", async () => {
     const target = {
       key: 'web-core:chat-1',
       workspaceId: 'ws-1',
       worktreeId: 'wt-1',
     };
-    act(() => {
-      root.render(
-        <CloudChatFileTargetContext.Provider value={target}>
-          <MessageImages
-            attachments={[
-              {
-                kind: 'file',
-                absolutePath: cloudAttachmentPath('att-1', 'brief.md'),
-              },
-            ]}
+    // A cloud chat's chips are the shared message media's, under the
+    // desktop's cloud attachment interaction (CAN-6775).
+    function CloudChips(): JSX.Element {
+      const interaction = useCloudChatAttachmentInteraction(target);
+      return (
+        <ChatMessageAttachmentInteractionProvider value={interaction}>
+          <CloudMessageMedia
+            attachmentPaths={[cloudAttachmentPath('att-1', 'brief.md')]}
           />
-        </CloudChatFileTargetContext.Provider>,
+        </ChatMessageAttachmentInteractionProvider>
       );
-    });
-    const [tile] = Array.from(
-      container.querySelectorAll('[data-testid="message-file-attachment"]'),
-    );
-    expect(tile?.getAttribute('aria-label')).toBe('Open file');
+    }
     act(() => {
-      tile?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      root.render(<CloudChips />);
     });
+    const tile = (): Element | undefined =>
+      container.querySelectorAll('[data-testid="message-file-attachment"]')[0];
+    const failureShown = (): boolean =>
+      (container.textContent ?? '').includes('download brief.md');
+    // Desktop has no in-app viewer for a cloud attachment: the tile downloads.
+    expect(tile()?.getAttribute('aria-label')).toBe('Download file');
+    const save = async (answer: unknown): Promise<void> => {
+      caseReplies.set('api.cloudChats.downloadFile', () =>
+        Promise.resolve(answer),
+      );
+      act(() => {
+        tile()?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+      await settle();
+    };
+    await save({ ok: true });
     expect(
       calls
         .filter((call) => call.path === 'api.cloudChats.downloadFile')
@@ -3267,6 +3279,13 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     expect(calls.some((call) => call.path === 'api.openExternalFile')).toBe(
       false,
     );
+    expect(failureShown()).toBe(false);
+    // A cancelled save dialog is no failure.
+    await save({ ok: false, reason: 'canceled' });
+    expect(failureShown()).toBe(false);
+    // A failed save says so on the tile, as on the web, never as a toast.
+    await save({ ok: false, reason: 'failed' });
+    expect(failureShown()).toBe(true);
   });
 
   it("offers an empty cloud chat the cowork starters without reading this computer's MCP servers", async () => {

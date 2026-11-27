@@ -21,6 +21,7 @@ import {
   screenCloudAttachmentFiles,
 } from '@/cloud-chats/cloud-chat-attachments';
 import { isCoworkChatTarget } from '@/lib/cowork';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { useChatStore } from '@/stores/chatStore';
 import { uploadWebCoreChatAttachment } from '@/stores/chat/web-core';
@@ -128,6 +129,14 @@ export async function importChatAttachments(
   // (`importWebCoreChatFiles`); no local IPC may carry its ids.
   if (isWebCoreScope(target.projectId) || isWebCoreScope(target.worktreeId))
     throw new Error("A cloud chat's files can't be staged on this computer.");
+  if (
+    isPairedComputerId(target.projectId) ||
+    isPairedComputerId(target.worktreeId)
+  ) {
+    throw new Error(
+      "A paired computer chat's files can't be staged on this computer.",
+    );
+  }
   // Cowork chats key as (workspaceId, 'home'); route their attachments through
   // the workspace-items attachment IPC, which stores them under the
   // workspace's managed `.{brand}/attachments` dir. `target.projectId` is the

@@ -101,6 +101,22 @@ describe('connectCanopyHttp', () => {
     });
   });
 
+  it('refuses for good when the deployment serves no web core, and keeps another 5xx retryable (CAN-7958)', async () => {
+    const refusal = (status: number): Promise<unknown> =>
+      connectCanopyHttp({
+        endpoint: ENDPOINT,
+        fetch: fakeFetch(() =>
+          Response.json({ error: 'capability_unavailable' }, { status }),
+        ).fetch,
+      }).catch((error: unknown) => error);
+    await expect(refusal(501)).resolves.toMatchObject({
+      payload: { kind: 'unavailable', retry: { kind: 'never' } },
+    });
+    await expect(refusal(503)).resolves.toMatchObject({
+      payload: { kind: 'unavailable', retry: { kind: 'same_request' } },
+    });
+  });
+
   it('closes with unauthenticated when the session is gone', async () => {
     const http = fakeFetch((path) =>
       path === ENDPOINT

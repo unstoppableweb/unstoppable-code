@@ -503,6 +503,8 @@ export function ErrorState({
   message,
   onRetry,
   retryLabel = TRY_AGAIN_LABEL,
+  retryVariant = 'secondary',
+  retryingLabel,
   retrying = false,
   space = 'page',
   testId,
@@ -510,6 +512,7 @@ export function ErrorState({
   details,
   secondaryAction,
   footer,
+  subtitle,
 }: {
   /**
    * One sentence: `Couldn't load workflows.` A string is blocked from session
@@ -525,10 +528,19 @@ export function ErrorState({
   secondaryAction?: ReactNode;
   /** Quiet content under the actions, such as a closed `Details`. */
   footer?: ReactNode;
+  /** Between the message and the actions, such as a reference row. */
+  subtitle?: ReactNode;
   /** Shows `Try again`. Omit when trying again can't fix it. */
   onRetry?: () => void;
   /** A recovery that names its scope (`Reload panel`) in place of `Try again`. */
   retryLabel?: string;
+  /** `primary` when the recovery is the place's one main action. */
+  retryVariant?: 'primary' | 'secondary';
+  /**
+   * The progress verb a named recovery announces while busy (`Reloading
+   * panel…`). `Try again` always announces `Trying again…`.
+   */
+  retryingLabel?: string;
   retrying?: boolean;
   space?: ErrorStateSpace;
   testId?: string;
@@ -540,11 +552,16 @@ export function ErrorState({
         {details ? <CopyDetailsButton details={details} /> : null}
         {onRetry ? (
           <Button
-            variant="secondary"
+            variant={retryVariant}
             size="sm"
             loading={retrying}
+            // The spinner alone shows progress, so the capsule keeps the
+            // width of its label instead of reserving one for the busy text.
+            loadingSpinnerOnly
             loadingLabel={
-              retryLabel === TRY_AGAIN_LABEL ? TRYING_AGAIN_LABEL : undefined
+              retryLabel === TRY_AGAIN_LABEL
+                ? TRYING_AGAIN_LABEL
+                : retryingLabel
             }
             onClick={onRetry}
             data-testid={retryTestId}
@@ -586,6 +603,7 @@ export function ErrorState({
               : message}
           </span>
         }
+        subtitle={subtitle}
         action={
           footer ? (
             <div className="flex min-w-0 max-w-full flex-col items-center gap-3">
@@ -754,8 +772,11 @@ export function EmptyState({
   artSize?: EmptyStateArtSize;
   /** A node, so a caller can block one value in it from session replay. */
   title: ReactNode;
-  /** How to fill the empty state. Omit when the title already says enough. */
-  subtitle?: string;
+  /**
+   * How to fill the empty state. Omit when the title already says enough. A
+   * node (a failure's reference row) renders in the same caption ink.
+   */
+  subtitle?: ReactNode;
   action?: ReactNode;
   /** Quiet placeholders use supporting ink for the title and icon. */
   tone?: 'default' | 'quiet';
@@ -786,8 +807,12 @@ export function EmptyState({
             >
               {title}
             </h3>
-            {subtitle ? (
-              <p className="text-xs fg-secondary">{subtitle}</p>
+            {typeof subtitle === 'string' ? (
+              subtitle ? (
+                <p className="text-xs fg-secondary">{subtitle}</p>
+              ) : null
+            ) : subtitle ? (
+              <div className="text-xs fg-secondary">{subtitle}</div>
             ) : null}
           </Stack>
         </Stack>

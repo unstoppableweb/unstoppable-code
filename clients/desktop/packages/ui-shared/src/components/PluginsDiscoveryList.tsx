@@ -363,36 +363,38 @@ function PluginsDiscoverySectionView({
         </p>
       )}
       {entries.length > 0 && (
-        <ul
-          data-testid={`plugins-section-body-${section.id}`}
-          className={`${nested ? 'pt-1' : 'pt-3'} ${CUSTOMIZE_ROW_GRID_CLASS}`}
-        >
-          {entries.map((entry) =>
-            renderEntry ? (
-              <BoundEntry
-                key={entry.id}
-                entry={entry}
-                renderEntry={renderEntry}
-              />
-            ) : (
-              <PluginsEntryCard
-                key={entry.id}
-                entry={entry}
-                selected={entry.id === selectedEntryId}
-                onSelect={onSelectEntry}
-                onAdd={onAddEntry}
-                entryShareStates={entryShareStates}
-                onShare={onShareEntry}
-                onConnect={onConnectEntry}
-                onOpenEntryId={onOpenEntryId}
-                McpServerLogoComponent={McpServerLogoComponent}
-                showEntryType={section.showEntryTypes === true}
-                hrefForEntry={hrefForEntry}
-                entryStatus={entryStatus}
-              />
-            ),
-          )}
-        </ul>
+        <div className="@container">
+          <ul
+            data-testid={`plugins-section-body-${section.id}`}
+            className={`${nested ? 'pt-1' : 'pt-3'} ${CUSTOMIZE_ROW_GRID_CLASS}`}
+          >
+            {entries.map((entry) =>
+              renderEntry ? (
+                <BoundEntry
+                  key={entry.id}
+                  entry={entry}
+                  renderEntry={renderEntry}
+                />
+              ) : (
+                <PluginsEntryCard
+                  key={entry.id}
+                  entry={entry}
+                  selected={entry.id === selectedEntryId}
+                  onSelect={onSelectEntry}
+                  onAdd={onAddEntry}
+                  entryShareStates={entryShareStates}
+                  onShare={onShareEntry}
+                  onConnect={onConnectEntry}
+                  onOpenEntryId={onOpenEntryId}
+                  McpServerLogoComponent={McpServerLogoComponent}
+                  showEntryType={section.showEntryTypes === true}
+                  hrefForEntry={hrefForEntry}
+                  entryStatus={entryStatus}
+                />
+              ),
+            )}
+          </ul>
+        </div>
       )}
     </section>
   );

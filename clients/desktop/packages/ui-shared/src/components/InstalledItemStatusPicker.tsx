@@ -14,11 +14,8 @@ import {
   INSTALLED_ITEM_STATUS_ORDER,
   installedItemStatusDescription,
 } from '../lib/installed-item-status';
-import {
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-} from '../primitives/DropdownMenu';
-import { FloatingMenu } from '../primitives/FloatingMenu';
+import { MenuItem, MenuItemIcon } from '../primitives/MenuItem';
+import { Menu } from '../primitives/Menu';
 import { LoadingSpinner } from '../primitives/LoadingSpinner';
 import { Tooltip } from '../primitives/Tooltip';
 
@@ -240,7 +237,7 @@ export function InstalledItemStatusPicker({
         {copy.label}
         <ChevronDownIcon size="sm" aria-hidden className="fg-tertiary" />
       </Button>
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={setOpen}
         anchorRef={triggerRef}
@@ -253,7 +250,7 @@ export function InstalledItemStatusPicker({
           const optionCopy = INSTALLED_ITEM_STATUS_COPY[option];
           const selected = option === status;
           return (
-            <DropdownMenuItem
+            <MenuItem
               key={option}
               role="menuitemradio"
               aria-checked={selected}
@@ -264,9 +261,9 @@ export function InstalledItemStatusPicker({
                 if (!selected || retryCurrent) onChange(option);
               }}
             >
-              <DropdownMenuItemIcon>
+              <MenuItemIcon>
                 <InstalledItemStatusIndicator status={option} />
-              </DropdownMenuItemIcon>
+              </MenuItemIcon>
               <span className="min-w-0 flex-1">
                 <span className="block font-medium fg-primary">
                   {optionCopy.label}
@@ -275,13 +272,13 @@ export function InstalledItemStatusPicker({
                   {installedItemStatusDescription(option, targetKind)}
                 </span>
               </span>
-              <DropdownMenuItemIcon>
+              <MenuItemIcon>
                 {selected && <CheckIcon size="sm" aria-hidden />}
-              </DropdownMenuItemIcon>
-            </DropdownMenuItem>
+              </MenuItemIcon>
+            </MenuItem>
           );
         })}
-      </FloatingMenu>
+      </Menu>
     </>
   );
 }

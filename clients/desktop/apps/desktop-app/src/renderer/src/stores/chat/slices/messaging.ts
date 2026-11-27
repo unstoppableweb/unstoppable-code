@@ -170,6 +170,7 @@ import {
 } from '../backend';
 import { selectionSaveSettled } from '../web-core/selection-saves';
 import { taskCreationSettled } from '../web-core/task-creations';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { CoreCoworkRequestError } from '@canopy/app-state/core-cowork';
 import {
@@ -1196,7 +1197,8 @@ export const createMessagingSlice: StateCreator<
     // A cloud send is never parked in the renderer: the web core queues it,
     // so it keeps its place in its chat's order (CAN-6828). Only local chats
     // take the hook placeholder and terminal queues below.
-    const parksInRenderer = !isWebCoreScope(sel.projectId);
+    const parksInRenderer =
+      !isWebCoreScope(sel.projectId) && !isPairedComputerId(sel.projectId);
     if (parksInRenderer && tab.queuedHookPlaceholder === true) {
       if (options?.terminalPlanImplementation) {
         options.onPreDispatchRejected?.();
@@ -3030,7 +3032,11 @@ export const createMessagingSlice: StateCreator<
         .getStateForChat(sel.projectId, sel.worktreeId, chatId);
       const knownClaudeTerminalId =
         claudeTerminalSnapshot?.terminalId ?? tab?.claudeTerminal?.terminalId;
-      if (providerTypeForSend === 'claude' && knownClaudeTerminalId) {
+      if (
+        parksInRenderer &&
+        providerTypeForSend === 'claude' &&
+        knownClaudeTerminalId
+      ) {
         const latestClaudeTerminalState =
           await window.api.claudeTerminal.getState(
             sel.projectId,
@@ -3886,7 +3892,12 @@ export const createMessagingSlice: StateCreator<
     const sel = target
       ? { projectId: target.projectId, worktreeId: target.worktreeId }
       : get().selectedWorktree;
-    if (!sel) return;
+    if (
+      !sel ||
+      isPairedComputerId(sel.projectId) ||
+      isWebCoreScope(sel.projectId)
+    )
+      return;
     const claudeTerminalState = useClaudeTerminalStore
       .getState()
       .getStateForChat(sel.projectId, sel.worktreeId, tabId);

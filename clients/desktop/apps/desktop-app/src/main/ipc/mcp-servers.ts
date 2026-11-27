@@ -15,6 +15,7 @@ import {
   isMcpServerCommandAllowed,
   mcpServerCommandRefusal,
   parseMcpExtraHeaders,
+  providerConnectorSettingsUrl,
 } from '@canopy/protocol/mcp-servers';
 import { normalizeInstalledAt } from '@canopy/protocol/installed-items';
 import {
@@ -161,10 +162,7 @@ import {
   resolvePluginInfoPath,
 } from '../plugins/plugin-resolver';
 import { openExternalGuarded } from '../lib/open-external';
-import {
-  PROVIDER_CONNECTOR_MANAGE_URLS,
-  listAdvertisedProviderConnectors,
-} from '../mcp/provider-connectors';
+import { listAdvertisedProviderConnectors } from '../mcp/provider-connectors';
 import { registerIpcHandler } from './register';
 import { notifyDesktopInventoryChanged } from '../services/desktop-inventory-sync-signals';
 import {
@@ -2709,29 +2707,12 @@ export function registerMcpServerHandlers(
   >(
     MCP_SERVER_CHANNELS.OPEN_PROVIDER_CONNECTOR_SETTINGS,
     async (_event, request) => {
-      // Neither CLI can create a connector, so linking always ends in the
-      // browser. Codex publishes a page per app; when one is missing, fall
-      // back to that provider's own directory — a single fallback sent every
-      // Codex connect to Claude's connectors page.
-      //
-      // Both inputs are validated before they reach the shell.
-      // `openExternalGuarded` performs no scheme check of its own, and neither
-      // input is trustworthy: `provider` and `installUrl` arrive over IPC, and
-      // `installUrl` originates in `~/.codex/cache/codex_app_directory`, a file
-      // Canopy neither writes nor validates. An unexpected `provider` would
-      // also make the fallback `undefined` and throw inside the handler. Every
-      // legitimate target here is an https page on the provider's own site.
-      if (request.provider !== 'claude' && request.provider !== 'codex') return;
-      const target =
-        request.installUrl ?? PROVIDER_CONNECTOR_MANAGE_URLS[request.provider];
-      let parsed: URL;
-      try {
-        parsed = new URL(target);
-      } catch {
-        return;
-      }
-      if (parsed.protocol !== 'https:') return;
-      await openExternalGuarded(parsed.toString());
+      // Both inputs arrive over IPC and are validated before they reach the
+      // shell: `openExternalGuarded` performs no scheme check of its own.
+      // `installUrl` originates in `~/.codex/cache/codex_app_directory`, a
+      // file Canopy neither writes nor validates.
+      const target = providerConnectorSettingsUrl(request);
+      if (target !== null) await openExternalGuarded(target);
     },
   );
 

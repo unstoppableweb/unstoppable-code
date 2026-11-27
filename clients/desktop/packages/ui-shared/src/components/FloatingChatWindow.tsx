@@ -13,9 +13,9 @@ import {
   ExternalIcon,
   MinusIcon,
 } from '../icons/AppIcons';
-import { DropdownMenuItem } from '../primitives/DropdownMenu';
-import { FloatingMenu } from '../primitives/FloatingMenu';
-import { PickerTriggerChevron } from '../primitives/PickerMenu';
+import { MenuItem } from '../primitives/MenuItem';
+import { Menu } from '../primitives/Menu';
+import { PickerTriggerChevron } from '../primitives/PickerParts';
 import { TitlebarIconButton } from './TitlebarIconButton';
 import { Heading } from '../primitives/Heading';
 import { ListRow } from '../primitives/ListRow';
@@ -358,7 +358,7 @@ function FloatingChatTitleMenu({
           <PickerTriggerChevron open={open} />
         </ControlButton>
       </Heading>
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={setOpen}
         anchorRef={triggerRef}
@@ -371,7 +371,7 @@ function FloatingChatTitleMenu({
         {switcher.items.map((item) => {
           const active = item.id === switcher.activeId;
           return (
-            <DropdownMenuItem
+            <MenuItem
               key={item.id}
               role="menuitemradio"
               aria-checked={active}
@@ -386,10 +386,10 @@ function FloatingChatTitleMenu({
                   {item.timeLabel}
                 </span>
               )}
-            </DropdownMenuItem>
+            </MenuItem>
           );
         })}
-      </FloatingMenu>
+      </Menu>
     </>
   );
 }

@@ -1,6 +1,6 @@
 /**
  * Body-level "a menu is open" flag, reference-counted across every open menu
- * surface (FloatingMenu, bespoke dropdown portals). While set,
+ * surface (Menu, bespoke dropdown portals). While set,
  * the app suppresses hover feedback on inert background surfaces (see the
  * `data-sidebar-menu-open` rules in the desktop globals.css). One shared
  * counter per document keeps overlapping menus from clearing each other's

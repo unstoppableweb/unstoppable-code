@@ -1021,3 +1021,47 @@ describe('the bounded pre-handoff pass (CAN-7178 PR 3)', () => {
     await target.drainAll();
   });
 });
+
+describe('a legacy scope no reader can recover, in the pre-handoff pass (CAN-7851)', () => {
+  async function seedLegacyTabs(text: string): Promise<void> {
+    const { tabs } = pathsFor(SCOPE);
+    await mkdir(join(tabs, '..'), { recursive: true });
+    await writeFile(tabs, text);
+  }
+
+  async function ensure(): Promise<Awaited<ReturnType<typeof ensureFormat4>>> {
+    const target = repository();
+    try {
+      return await ensureFormat4(
+        SCOPE,
+        { deadlineAt: Date.now() + 20_000 },
+        { repository: target, resolveStore: storeFor },
+      );
+    } finally {
+      await target.drainAll();
+    }
+  }
+
+  it('reports a tabs file that parses but is not a valid chats file as unreadable, not a retryable migration, and changes no byte', async () => {
+    const text = `${JSON.stringify({ version: 1, activeTabId: 'x', tabs: [{ id: 5 }] })}\n`;
+    await seedLegacyTabs(text);
+    expect(await ensure()).toEqual({
+      kind: 'failed',
+      reason: 'unreadable',
+      retryable: false,
+    });
+    expect(await readFile(pathsFor(SCOPE).tabs, 'utf8')).toBe(text);
+    expect(await storeFor().format()).toBe('v1');
+  });
+
+  it('reports a tabs file that does not parse as unreadable, not a retryable migration, and changes no byte', async () => {
+    const text = '{ "version": 1, "tabs": [';
+    await seedLegacyTabs(text);
+    expect(await ensure()).toEqual({
+      kind: 'failed',
+      reason: 'unreadable',
+      retryable: false,
+    });
+    expect(await readFile(pathsFor(SCOPE).tabs, 'utf8')).toBe(text);
+  });
+});

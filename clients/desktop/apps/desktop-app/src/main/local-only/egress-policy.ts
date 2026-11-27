@@ -1,6 +1,6 @@
 /**
- * Which hosts a local-only build (docs/local-only-build.md) lets Electron
- * main and its sessions reach. The egress guard asks this module per
+ * Which hosts a local-only or self-host build (docs/local-only-build.md)
+ * lets Electron main and its sessions reach. The egress guard asks this module per
  * request; nothing here is snapshotted at install, because providers, MCP
  * servers and the gateway change while the app runs.
  *
@@ -12,7 +12,13 @@
  *   the GitHub hosts while GitHub is connected);
  * - the exact hostnames in `localOnly.allowedHosts`, stored as
  *   `allowedHosts` in `local-only.json` in the app data directory. No UI
- *   writes it.
+ *   writes it;
+ * - in a self-host build, every origin a registered origin source reports:
+ *   the configured server (a static source, allowed from guard install) and
+ *   the relay origin the server handed out in its last accepted relay token.
+ *   An origin matches host and port; the URL layer also matches the scheme
+ *   family (`https`/`wss` versus `http`/`ws`). A socket connect carries no
+ *   scheme, so the Node layer matches host and port only.
  *
  * The guard asks synchronously, so `local-only.json` is read off the main
  * thread: `loadEgressPolicySettings()` reads it before the fail-closed window
@@ -27,10 +33,32 @@
 import { readFile, stat } from 'node:fs/promises';
 import { getLocalOnlySettingsFilePath } from '../lib/paths';
 import { isLoopbackHost, normalizeEgressHost } from './loopback';
-import { isLocalOnlyBuild } from './profile';
+import { isEgressGuardedBuild } from './profile';
 
 /** Returns the hosts a source allows at the moment it is called. */
 export type EgressAllowedHostSource = () => Iterable<string>;
+
+/**
+ * One allowed origin. `secure` is true for `https:` and `wss:`; `host` is
+ * normalized with `normalizeEgressHost`; `port` is the effective port.
+ */
+export interface EgressAllowedOrigin {
+  readonly secure: boolean;
+  readonly host: string;
+  readonly port: number;
+}
+
+/** Returns the origins a source allows at the moment it is called. */
+export type EgressAllowedOriginSource = () => Iterable<EgressAllowedOrigin>;
+
+export interface EgressAllowedOriginSourceOptions {
+  /**
+   * A static source reads no state (a build constant, like loopback), so it
+   * is checked before `markEgressPolicyReady()` too. Every other source is
+   * checked only after.
+   */
+  readonly static?: boolean;
+}
 
 /**
  * The GitHub hosts user-started GitHub flows use (REST and GraphQL API,
@@ -75,7 +103,74 @@ const NETWORK_SCHEMES: ReadonlySet<string> = new Set([
 ]);
 
 const sources = new Map<string, EgressAllowedHostSource>();
+const originSources = new Map<
+  string,
+  { readonly source: EgressAllowedOriginSource; readonly static: boolean }
+>();
 let ready = false;
+
+const SECURE_SCHEMES: ReadonlySet<string> = new Set(['https:', 'wss:']);
+
+/**
+ * The origin of an `http`, `https`, `ws` or `wss` URL, or null for anything
+ * else (another scheme, an unparseable value, no host).
+ */
+export function egressOriginFromUrl(value: string): EgressAllowedOrigin | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (!NETWORK_SCHEMES.has(url.protocol)) return null;
+  const host = normalizeEgressHost(url.hostname);
+  if (!host) return null;
+  const secure = SECURE_SCHEMES.has(url.protocol);
+  const port = url.port ? Number(url.port) : secure ? 443 : 80;
+  return { secure, host, port };
+}
+
+/**
+ * Registers a named source of allowed origins and returns its unregister
+ * function, with the same rules as host sources: a later registration under
+ * the same name replaces the earlier one, and a source that throws allows
+ * nothing.
+ */
+export function registerEgressAllowedOriginSource(
+  name: string,
+  source: EgressAllowedOriginSource,
+  options: EgressAllowedOriginSourceOptions = {},
+): () => void {
+  const entry = { source, static: options.static === true };
+  originSources.set(name, entry);
+  return () => {
+    if (originSources.get(name) === entry) originSources.delete(name);
+  };
+}
+
+/**
+ * Whether an origin source allows `host` on `port`, and, when `secure` is
+ * given, with the same scheme family. Before ready only static sources count.
+ */
+function originAllows(host: string, port: number, secure?: boolean): boolean {
+  for (const entry of originSources.values()) {
+    if (!ready && !entry.static) continue;
+    try {
+      for (const origin of entry.source()) {
+        if (
+          normalizeEgressHost(origin.host) === host &&
+          origin.port === port &&
+          (secure === undefined || origin.secure === secure)
+        ) {
+          return true;
+        }
+      }
+    } catch {
+      // A failing source allows nothing.
+    }
+  }
+  return false;
+}
 
 /**
  * Registers a named source of allowed hosts and returns its unregister
@@ -210,10 +305,18 @@ function sourceAllows(source: EgressAllowedHostSource, host: string): boolean {
   return false;
 }
 
-/** Whether the guard lets a connection to `host` through. */
-export function isEgressHostAllowed(rawHost: string): boolean {
+/**
+ * Whether the guard lets a connection to `host` through. With a `port`, an
+ * origin source that reports the same host and port also allows it; without
+ * one, only the host rules apply, exactly as before origins existed.
+ */
+export function isEgressHostAllowed(
+  rawHost: string,
+  port?: number | null,
+): boolean {
   const host = normalizeEgressHost(rawHost);
   if (!host || isLoopbackHost(host)) return true;
+  if (typeof port === 'number' && originAllows(host, port)) return true;
   if (!ready) return false;
   if (readConfiguredAllowedHosts().has(host)) return true;
   if (customBaseUrlHosts().some((h) => normalizeEgressHost(h) === host)) {
@@ -245,14 +348,18 @@ export function evaluateEgressUrl(value: string): EgressUrlDecision {
   }
   if (!NETWORK_SCHEMES.has(url.protocol)) return { allowed: true };
   const host = normalizeEgressHost(url.hostname);
+  const origin = egressOriginFromUrl(value);
+  if (origin && originAllows(origin.host, origin.port, origin.secure)) {
+    return { allowed: true };
+  }
   return isEgressHostAllowed(host)
     ? { allowed: true }
     : { allowed: false, host };
 }
 
 /**
- * The host a local-only build would refuse for `url`, or null when the
- * request may go (always null in a normal build). Unlike the guard's own
+ * The host a local-only or self-host build would refuse for `url`, or null
+ * when the request may go (always null in a normal build). Unlike the guard's own
  * check, it reads `local-only.json` again first, so a host just added to
  * `allowedHosts` counts on the next attempt. For user-started downloads that
  * explain a refusal before sending anything (CAN-7341).
@@ -260,7 +367,7 @@ export function evaluateEgressUrl(value: string): EgressUrlDecision {
 export async function localOnlyBlockedHost(
   url: string,
 ): Promise<string | null> {
-  if (!isLocalOnlyBuild()) return null;
+  if (!isEgressGuardedBuild()) return null;
   await refreshSettings();
   const decision = evaluateEgressUrl(url);
   return decision.allowed ? null : decision.host;
@@ -268,6 +375,7 @@ export async function localOnlyBlockedHost(
 
 export function resetEgressPolicyForTests(): void {
   sources.clear();
+  originSources.clear();
   ready = false;
   settingsCache = undefined;
   settingsRefresh = null;

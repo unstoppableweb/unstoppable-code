@@ -7,9 +7,9 @@ import {
   ShareIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  FloatingMenu,
+  MenuItem,
+  MenuItemIcon,
+  Menu,
   RailIconButton,
   SidebarFadePresence,
   SidebarSectionToggle,
@@ -208,7 +208,7 @@ export function SidebarChatsSection(): JSX.Element | null {
             hoverSurface
             revealOnItemHover
           />
-          <FloatingMenu
+          <Menu
             open={!chatsWorkspaceState.pending && menuOpen}
             onOpenChange={setMenuOpen}
             anchorRef={menuButtonRef}
@@ -217,7 +217,7 @@ export function SidebarChatsSection(): JSX.Element | null {
             aria-label={`${sectionLabel} actions`}
             data-testid="workspace-session-context-menu"
           >
-            <DropdownMenuItem
+            <MenuItem
               data-testid="workspace-share-template-menu-item"
               onClick={(): void => {
                 setMenuOpen(false);
@@ -227,12 +227,12 @@ export function SidebarChatsSection(): JSX.Element | null {
                 });
               }}
             >
-              <DropdownMenuItemIcon>
+              <MenuItemIcon>
                 <ShareIcon />
-              </DropdownMenuItemIcon>
+              </MenuItemIcon>
               <span className="truncate">Share template</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
+            </MenuItem>
+            <MenuItem
               data-testid="workspace-import-session-menu-item"
               onClick={(): void => {
                 setMenuOpen(false);
@@ -241,11 +241,11 @@ export function SidebarChatsSection(): JSX.Element | null {
                 });
               }}
             >
-              <DropdownMenuItemIcon>
+              <MenuItemIcon>
                 <DownloadIcon />
-              </DropdownMenuItemIcon>
+              </MenuItemIcon>
               <span className="truncate">Import session…</span>
-            </DropdownMenuItem>
+            </MenuItem>
             <SidebarSortMenuItems
               mode={defaultCowork.itemSortMode}
               testIdPrefix="workspace-item-sort"
@@ -255,7 +255,7 @@ export function SidebarChatsSection(): JSX.Element | null {
                 void setWorkspaceItemSortMode(defaultCowork.id, mode);
               }}
             />
-          </FloatingMenu>
+          </Menu>
         </div>
       </div>
 

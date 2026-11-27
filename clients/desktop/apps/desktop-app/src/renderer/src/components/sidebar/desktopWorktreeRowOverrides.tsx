@@ -200,10 +200,31 @@ export function deriveDesktopRowAttention(
   key: string,
   hasUnreadPlanChat: boolean,
   snapshotDone: boolean,
+  snapshotPipelineStatus?: WorktreeRowOverrides['pipelineStatus'],
 ): DesktopRowAttention | null {
   const liveUiStatus = keys.statusByKey.get(key);
   if (liveUiStatus === undefined) return null;
   const uiStatus = snapshotDone ? 'done' : liveUiStatus;
+  const livePipelineStatus = resolvePipelineStatus({
+    worktreeKey: key,
+    pipelineRunningWorktreeKeys: keys.pipelineRunning,
+    pipelineUnseenWorktreeKeys: keys.pipelineUnseen,
+    pipelineUnseenFailedWorktreeKeys: keys.pipelineUnseenFailed,
+    pipelinePausedWorktreeKeys: keys.pipelinePaused,
+  });
+  // Merge snapshot and renderer pipeline statuses using resolvePipelineStatus
+  // precedence (running > unseen-failure > paused > unseen) so a renderer-only
+  // unseen completion never masks a durable pause present in the snapshot.
+  let pipelineStatus = livePipelineStatus;
+  if (snapshotPipelineStatus === 'running') {
+    pipelineStatus = 'running';
+  } else if (
+    snapshotPipelineStatus === 'paused' &&
+    livePipelineStatus !== 'running' &&
+    livePipelineStatus !== 'unseen-failure'
+  ) {
+    pipelineStatus = 'paused';
+  }
   return {
     uiStatus,
     runtimeState: uiStatus === 'done' ? 'done' : undefined,
@@ -213,13 +234,7 @@ export function deriveDesktopRowAttention(
     hasPendingQuestion: keys.pendingQuestion.has(key),
     hasPendingToolApproval: keys.toolApproval.has(key),
     hasUnread: keys.unread.has(key) || hasUnreadPlanChat,
-    pipelineStatus: resolvePipelineStatus({
-      worktreeKey: key,
-      pipelineRunningWorktreeKeys: keys.pipelineRunning,
-      pipelineUnseenWorktreeKeys: keys.pipelineUnseen,
-      pipelineUnseenFailedWorktreeKeys: keys.pipelineUnseenFailed,
-      pipelinePausedWorktreeKeys: keys.pipelinePaused,
-    }),
+    ...(pipelineStatus !== undefined ? { pipelineStatus } : {}),
   };
 }
 
@@ -525,6 +540,7 @@ function useLocalWorktreeRowOverrides(
   // Once the snapshot has called a worktree done, that must stick even after
   // live keys publish — see `deriveDesktopRowAttention`'s docstring.
   const snapshotDone = isWorktreeDone(context.worktree);
+  const snapshotPipelineStatus = context.worktree.pipelineStatus;
   // Live attention state, read through a per-row selector with a field-level
   // equality check (`desktopRowAttentionEqual`) so a status change on another
   // worktree does not re-render this row; see `useDesktopRowLiveKeysStore`.
@@ -536,6 +552,7 @@ function useLocalWorktreeRowOverrides(
             key,
             hasUnreadPlanChat,
             snapshotDone,
+            snapshotPipelineStatus,
           )
         : null,
     desktopRowAttentionEqual,

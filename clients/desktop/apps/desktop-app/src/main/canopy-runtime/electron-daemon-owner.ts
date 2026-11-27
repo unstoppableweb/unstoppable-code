@@ -2,6 +2,7 @@ import { app } from 'electron';
 import { CanopyClientError, type CanopyClient } from '@canopy/core-client';
 import { probeCanopyDaemon } from '@canopy/core-client/node';
 import {
+  CORE_CONFIG_DOCUMENT_INSTRUCTION_DEFINITIONS,
   CORE_MUTATION_FENCE_INSTRUCTION_DEFINITIONS,
   CORE_MUTATION_FENCE_STREAM_DEFINITIONS,
   CORE_OPERATION_LEDGER_INSTRUCTION_DEFINITIONS,
@@ -61,6 +62,17 @@ export const ELECTRON_DAEMON_OWNER_DEFINITIONS = {
     'core.pipeline.definition.import':
       PIPELINE_DEFINITION_INSTRUCTION_DEFINITIONS[
         'core.pipeline.definition.import'
+      ],
+    // CAN-7991: typing only. The preferences document's owner writes
+    // (`core.config.document.own`); no daemon serves them until the
+    // CAN-5722 flip, so the manifest refuses each call.
+    'core.config.document.ownerUpdate':
+      CORE_CONFIG_DOCUMENT_INSTRUCTION_DEFINITIONS[
+        'core.config.document.ownerUpdate'
+      ],
+    'core.config.loadError.acknowledge':
+      CORE_CONFIG_DOCUMENT_INSTRUCTION_DEFINITIONS[
+        'core.config.loadError.acknowledge'
       ],
   },
   streams: {

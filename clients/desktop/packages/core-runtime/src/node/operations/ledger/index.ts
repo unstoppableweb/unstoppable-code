@@ -26,6 +26,7 @@ export {
 } from './database';
 export {
   OperationLedgerError,
+  OperationLedgerOutcomeUnknownError,
   OperationLedgerRefusedError,
   type OperationLedgerErrorCode,
   type OperationLedgerRefusal,
@@ -34,6 +35,9 @@ export {
   OPERATION_LEDGER_NAMESPACE,
   OPERATION_LEDGER_ROLLBACK_MIGRATION,
   backupOperationLedger,
+  discardUncitedOperationLedgerCopy,
   restoreOperationLedgerBackup,
+  returnOperationLedger,
   type OperationLedgerBackupOptions,
+  type OperationLedgerReturnOptions,
 } from './backup';

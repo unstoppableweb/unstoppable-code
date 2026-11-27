@@ -19,12 +19,12 @@ import {
   Surface,
   Button,
   Count,
-  FloatingPickerMenu,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-  PickerMenuOptionTrailing,
+  Picker,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
+  PickerOptionTrailing,
   StatusGlyph,
 } from '@canopy/ui-shared/components';
 import { pipelineStatusGlyphState } from '../utils';
@@ -461,7 +461,7 @@ function PipelineStatusFilter({
           aria-hidden="true"
         />
       </Button>
-      <FloatingPickerMenu
+      <Picker
         open={open}
         onOpenChange={setOpen}
         anchorRef={buttonRef}
@@ -474,7 +474,7 @@ function PipelineStatusFilter({
         {options.map((option) => {
           const selected = option.status === value;
           return (
-            <PickerMenuOption
+            <PickerOption
               key={option.status}
               role="menuitemradio"
               aria-checked={selected}
@@ -484,17 +484,17 @@ function PipelineStatusFilter({
                 setOpen(false);
               }}
             >
-              <PickerMenuOptionContent>
-                <PickerMenuOptionLabel>{option.label}</PickerMenuOptionLabel>
-              </PickerMenuOptionContent>
-              <PickerMenuOptionTrailing tone="tertiary">
+              <PickerOptionContent>
+                <PickerOptionLabel>{option.label}</PickerOptionLabel>
+              </PickerOptionContent>
+              <PickerOptionTrailing tone="tertiary">
                 {option.count}
-              </PickerMenuOptionTrailing>
-              <PickerMenuOptionCheck selected={selected} reserveSpace />
-            </PickerMenuOption>
+              </PickerOptionTrailing>
+              <PickerOptionCheck selected={selected} reserveSpace />
+            </PickerOption>
           );
         })}
-      </FloatingPickerMenu>
+      </Picker>
     </div>
   );
 }

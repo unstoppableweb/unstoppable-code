@@ -142,6 +142,7 @@ function normalizeServer(server: CuratedMcpServerEntry): CuratedMcpServerEntry {
       : {}),
     categories: [...server.categories],
     popular: server.popular,
+    ...(server.recommended === true ? { recommended: true } : {}),
     sortOrder: server.sortOrder,
     updatedAt: server.updatedAt,
   };
@@ -272,6 +273,18 @@ export async function readCachedCuratedMcpDesktopOnlyKeys(): Promise<
       .filter((server): boolean => curatedMcpDesktopOnly(server))
       .map((server): string => server.key),
   );
+}
+
+/**
+ * The cached catalog's servers, whatever the cache's age. Like the
+ * desktop-only keys, plugin binding reads these on the session-start path and
+ * never waits on the cloud. Null when there is no readable cache, which
+ * binding treats as unknown rather than as a catalog with no servers.
+ */
+export async function readCachedCuratedMcpServerEntries(): Promise<
+  readonly CuratedMcpServerEntry[] | null
+> {
+  return (await readCache())?.servers ?? null;
 }
 
 /** Read-only recommendation lookup; absence never triggers a refresh. */

@@ -2,6 +2,7 @@ import type { WorktreeDiscardDescription } from '@canopy/protocol/remote-control
 import {
   WORKTREE_DISCARD_DISCONNECTED_WARNING,
   worktreeDiscardCopy,
+  worktreeDiscardOnlyCopyWarning,
   worktreeDiscardRefusalCopy,
   type WorktreeDiscardPathRow,
 } from './worktree-discard-copy';
@@ -111,9 +112,9 @@ export function projectDeletionDiscardCopy(input: {
           copy.targets.length === 0 ? 'Its folders are already gone.' : null,
       };
     }),
-    onlyCopyWarning:
-      worktreeCopies.find((copy) => copy.onlyCopyWarning)?.onlyCopyWarning ??
-      null,
+    onlyCopyWarning: worktreeDiscardOnlyCopyWarning(
+      input.items.map((item) => item.description),
+    ),
     alsoDeleted:
       deleted.size > 0
         ? `Their ${joinList(

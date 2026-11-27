@@ -3,7 +3,9 @@
  * reports back. Shared by the hosted controller (CAN-5985), agent messaging
  * and Portal's create while Portal still runs.
  */
+import { listPersonalGatewayDefaultModels } from '@canopy/desktop-shared/lib/org-model-gateway';
 import {
+  AI_GATEWAY_MODELS,
   getExecutionHarnessForModel,
   getProviderForModel,
   resolveProviderModelConfig,
@@ -18,7 +20,13 @@ import {
   assertAgentModelAdmission,
   pinInheritingAgentToDestination,
 } from '../../agents/agent-default-model';
-import { resolveAiCreditsScopeOwner } from '../../agents/work-owner';
+import { getAiCreditsRoutingContextWithStatus } from '../../agents/ai-credits-routing';
+import {
+  resolveAiCreditsScopeOwner,
+  resolveInvocationWorkOwner,
+} from '../../agents/work-owner';
+import { getCurrentModelGatewayIndex } from '../../lib/model-gateway-state';
+import { raceWithTimeout } from '../../memory/memory-context';
 import { isCopilotRuntimeAvailable } from '../../copilot/runtime-availability';
 import { isCursorRuntimeAvailable } from '../../cursor/runtime-availability';
 import { resolveLaneAwareDefaultSelection } from '../../lib/default-model-lane-resolver';
@@ -100,6 +108,57 @@ function remoteCreateTabBillingSeed(
 }
 
 /**
+ * Bound on the one credits read the remembered seed waits for. Creating a tab
+ * must never hang on the cloud: past this, the remembered choice is kept and
+ * the session's typed `no_billing_source` refusal is the backstop.
+ */
+const REMEMBERED_CREDITS_SEED_READ_BOUND_MS = 1_500;
+
+/**
+ * The remembered billing choice a remotely created tab is seeded with: the
+ * stored `lastChatBillingFramework`, except a remembered `'ai-credits'` when
+ * the credits read for this workspace's owner has SETTLED as ineligible
+ * (billing setup gate, 2026-11-25). Mirrors the renderer's
+ * `rememberedBillingSeed`: a Personal gateway stands in for AI Credits on the
+ * same lane and keeps the seed; an unknown, degraded, failed or slow read
+ * keeps it. The stored preference is never rewritten, so the choice seeds
+ * again once credits are eligible.
+ *
+ * One divergence: the renderer counts a Personal gateway only for Personal
+ * work (`isOrgGatewayExcluded`), while this keeps the seed whenever one is
+ * listed, so it never pays the owner and credits reads for that user. An
+ * organization chat created this way at a settled zero balance keeps the
+ * credits seed, and main's typed No billing source refusal answers its first
+ * turn.
+ */
+async function rememberedRemoteBillingFramework(
+  projectId: string,
+  remembered: string | undefined,
+): Promise<string | undefined> {
+  if (remembered !== 'ai-credits') return remembered;
+  if (
+    listPersonalGatewayDefaultModels(
+      getCurrentModelGatewayIndex(),
+      AI_GATEWAY_MODELS,
+    ).length > 0
+  )
+    return remembered;
+  // `null` on a failed or slow read, which keeps the remembered choice.
+  const answer = await raceWithTimeout(
+    resolveInvocationWorkOwner({ projectId }).then((owner) =>
+      getAiCreditsRoutingContextWithStatus({ owner }),
+    ),
+    REMEMBERED_CREDITS_SEED_READ_BOUND_MS,
+  );
+  const context = answer?.context ?? null;
+  return context !== null &&
+    context.creditsEligibilityKnown &&
+    !context.creditsEligible
+    ? undefined
+    : remembered;
+}
+
+/**
  * The defaults a remotely created tab is born with. Mirrors what the desktop
  * renderer's own `+` button seeds (`appendNewTab`): the scoped default model
  * and the deferred-tools default. Project default plugins are not copied in;
@@ -140,7 +199,10 @@ export async function resolveRemoteCreateTabSeed(
       deferredToolsAllowed,
       ...remoteCreateTabBillingSeed(
         providerType,
-        preferences.lastChatBillingFramework,
+        await rememberedRemoteBillingFramework(
+          projectId,
+          preferences.lastChatBillingFramework,
+        ),
       ),
     };
   }
@@ -175,9 +237,14 @@ export async function resolveRemoteCreateTabSeed(
   const providerType = getProviderForModel(model);
   const billingSeed = remoteCreateTabBillingSeed(
     providerType,
+    // A resolved credits lane force-seeds credits, as before; only the
+    // remembered choice is judged against a settled ineligible balance.
     resolution.lane === 'ai-credits' && !resolution.provisional
       ? 'ai-credits'
-      : preferences.lastChatBillingFramework,
+      : await rememberedRemoteBillingFramework(
+          projectId,
+          preferences.lastChatBillingFramework,
+        ),
   );
   return {
     model,

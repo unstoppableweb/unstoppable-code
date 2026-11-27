@@ -103,6 +103,7 @@ import {
   keptDeletedChatTabs,
 } from '../web-core/task-deletions';
 import { isWindowLocalCommand } from '../web-core/translate';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { pendingApprovalModeTransitions } from './approvals';
 import { useIngestionLagStore } from '@/stores/ingestionLagStore';
@@ -539,6 +540,7 @@ function publishScopeStatus(
     flushPendingUnread(projectId, worktreeId);
     const api = chatStoreApi();
     if (
+      !isPairedComputerId(projectId) &&
       api.getState().worktreeChats[key]?.tabs.length === 0 &&
       !speculativeHydrationKeys.has(key)
     ) {
@@ -724,6 +726,19 @@ function installSnapshotIntoStore(
     chatState.tabs.some((tab) => tab.id === entry.explicitTabId)
   ) {
     chatState.activeTabId = entry.explicitTabId;
+  }
+  // Active tab selection on a paired computer is window-local: a reconnect or
+  // gap refresh preserves this window's selected tab while it still exists.
+  if (reason === 'refresh' && previous && isPairedComputerId(projectId)) {
+    if (chatState.tabs.some((tab) => tab.id === previous.activeTabId)) {
+      chatState.activeTabId = previous.activeTabId;
+    }
+    if (
+      previous.lastActiveEditableChatId !== undefined &&
+      chatState.tabs.some((tab) => tab.id === previous.lastActiveEditableChatId)
+    ) {
+      chatState.lastActiveEditableChatId = previous.lastActiveEditableChatId;
+    }
   }
 
   const queuedByChatId = new Map(
@@ -1098,6 +1113,16 @@ export const createRevisionedSlice: StateCreator<
     })();
     initialHydrations.set(key, hydration);
     return hydration;
+  },
+
+  recoverChatScopeAfterReconnect: (projectId, worktreeId): void => {
+    if (isCloudTaskDeleted({ projectId, worktreeId })) return;
+    const sync = getController();
+    if (sync.isTracking(projectId, worktreeId)) {
+      sync.reconnectRefresh(projectId, worktreeId);
+      return;
+    }
+    get().retryChatStateRefresh(projectId, worktreeId);
   },
 
   retryChatStateRefresh: (projectId, worktreeId): void => {

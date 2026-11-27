@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connectCanopyClient } from '@canopy/core-client/node';
 import {
+  createCanopyDesktopPeerProof,
   createCanopyFramedConnection,
   createCanopyOwnerProof,
 } from '@canopy/core-transport';
@@ -277,5 +278,163 @@ posix('daemon owner proof (CAN-5771)', () => {
     const raw = await rawConnection(daemon.path);
     expect(await initializeWith(raw, 42)).toMatchObject(REFUSED);
     expect(await closed(raw)).toBe(true);
+  });
+});
+
+/** Initializes with these extra `client` fields; the response's result or error. */
+async function initializeWithClient(
+  connection: CanopyFramedConnection,
+  extra: Record<string, unknown>,
+): Promise<{ result?: unknown; error?: unknown }> {
+  await connection.send({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'core.runtime.initialize',
+    params: {
+      client: {
+        name: 'raw',
+        version: '0',
+        protocolVersions: [1],
+        capabilities: [],
+        ...extra,
+      },
+    },
+  });
+  const response = await connection.receive();
+  if (!('id' in response) || 'method' in response)
+    throw new Error('Expected a response.');
+  return 'error' in response
+    ? { error: decodeCanopyError(response.error) }
+    : { result: response.result };
+}
+
+posix('desktop peer proof (CAN-7201)', () => {
+  const secret = randomBytes(32);
+  const verifier = (): CanopyOwnerProofVerifier =>
+    createCanopyOwnerProofVerifier({
+      secret,
+      dataRootHash: AUTH.dataRootHash,
+    });
+  const provePeer = (connectionId: string): string =>
+    createCanopyDesktopPeerProof(secret, connectionId, AUTH.dataRootHash);
+  const identitiesOf = (
+    daemon: { identities: CanopyControlConnectionIdentity[] },
+    connectionId: string,
+  ): CanopyControlConnectionIdentity[] =>
+    daemon.identities.filter(
+      (identity) => identity.connectionId === connectionId,
+    );
+
+  it('a connection that proves it is the launching desktop is a peer, not an owner', async () => {
+    const daemon = await controlPlane(verifier());
+    let peerConnection = '';
+    const peer = await connectCanopyClient({
+      endpoint: { kind: 'socket', path: daemon.path, auth: AUTH },
+      clientName: 'peer-test',
+      clientVersion: '0',
+      definitions: DEFINITIONS,
+      desktopPeerProof: (id) => {
+        peerConnection = id;
+        return provePeer(id);
+      },
+    });
+    teardown.push(() => peer.close());
+    await peer.query('core.runtime.health.get', {});
+    const seen = identitiesOf(daemon, peerConnection);
+    expect(seen.length).toBeGreaterThanOrEqual(2);
+    expect(seen.every((identity) => identity.peer && !identity.owner)).toBe(
+      true,
+    );
+  });
+
+  it('every failed peer proof leaves an ordinary connection, exactly as no proof', async () => {
+    const daemon = await controlPlane(verifier());
+    const plain = await rawConnection(daemon.path);
+    const baseline = await initializeWithClient(plain, {});
+    expect(baseline.error).toBeUndefined();
+
+    const other = await rawConnection(daemon.path);
+    const elsewhere = provePeer(other.connectionId);
+    const otherSecret = randomBytes(32);
+    const claims: ((connectionId: string) => unknown)[] = [
+      // S1: an owner proof is never a peer proof.
+      (id) => createCanopyOwnerProof(secret, id, AUTH.dataRootHash),
+      // S2: another connection's proof, and another data root's.
+      () => elsewhere,
+      (id) => createCanopyDesktopPeerProof(secret, id, 'c'.repeat(64)),
+      // S5: the wrong secret, malformed, empty and non-string proofs.
+      (id) => createCanopyDesktopPeerProof(otherSecret, id, AUTH.dataRootHash),
+      () => 'not-a-proof',
+      () => '',
+      () => 42,
+      () => null,
+    ];
+    for (const claim of claims) {
+      const raw = await rawConnection(daemon.path);
+      const outcome = await initializeWithClient(raw, {
+        desktopPeerProof: claim(raw.connectionId),
+      });
+      expect(outcome).toEqual(baseline);
+      expect(raw.signal.aborted).toBe(false);
+      expect(
+        identitiesOf(daemon, raw.connectionId).some(
+          (identity) => identity.peer || identity.owner,
+        ),
+      ).toBe(false);
+    }
+  });
+
+  it('a peer proof sent as an owner proof is refused as one', async () => {
+    const daemon = await controlPlane(verifier());
+    const raw = await rawConnection(daemon.path);
+    expect(
+      await initializeWith(raw, provePeer(raw.connectionId)),
+    ).toMatchObject(REFUSED);
+    expect(await closed(raw)).toBe(true);
+  });
+
+  it('an owner proof decides when both are sent', async () => {
+    const daemon = await controlPlane(verifier());
+    const raw = await rawConnection(daemon.path);
+    const outcome = await initializeWithClient(raw, {
+      ownerProof: createCanopyOwnerProof(
+        secret,
+        raw.connectionId,
+        AUTH.dataRootHash,
+      ),
+      desktopPeerProof: provePeer(raw.connectionId),
+    });
+    expect(outcome.error).toBeUndefined();
+    const seen = identitiesOf(daemon, raw.connectionId);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((identity) => identity.owner && !identity.peer)).toBe(
+      true,
+    );
+  });
+
+  it('a daemon without an owner secret treats every peer proof as absent', async () => {
+    const daemon = await controlPlane();
+    const raw = await rawConnection(daemon.path);
+    const outcome = await initializeWithClient(raw, {
+      desktopPeerProof: provePeer(raw.connectionId),
+    });
+    expect(outcome.error).toBeUndefined();
+    expect(
+      identitiesOf(daemon, raw.connectionId).some((identity) => identity.peer),
+    ).toBe(false);
+  });
+
+  it('keeps the proof out of the identity the host sees', async () => {
+    const daemon = await controlPlane(verifier());
+    const raw = await rawConnection(daemon.path);
+    const proof = provePeer(raw.connectionId);
+    await initializeWithClient(raw, { desktopPeerProof: proof });
+    const seen = JSON.stringify(identitiesOf(daemon, raw.connectionId));
+    const hex = secret.toString('hex');
+    const encoded = secret.toString('base64url');
+    // Booleans only, so a failure never prints the secret or the proof.
+    expect(
+      seen.includes(proof) || seen.includes(hex) || seen.includes(encoded),
+    ).toBe(false);
   });
 });

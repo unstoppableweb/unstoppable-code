@@ -19,6 +19,7 @@
 // session-spawn routing already force-routes gateway-only models regardless.
 
 import {
+  buildNoBillingSourceError,
   buildSignedOutNoBillingSourceError,
   hasHydratedGatewayCatalog,
   type AgentProviderType,
@@ -194,6 +195,41 @@ export function resolveChatBillingFramework(
       (availability.nativeAuth || !isGatewayOnlyModel(model)),
   });
 
+  // A loading or failed auth probe is not a sign-out (CAN-4272). Availability
+  // that predates the auth-only signal falls back to aggregate `loading`.
+  const nativeAuthInconclusive =
+    availability.nativeAuthInconclusive ?? availability.loading;
+  const signedOutConfirmed =
+    availability.nativeAuth === false && !nativeAuthInconclusive;
+
+  // Nothing can pay (billing setup gate, 2026-11-25): a confirmed sign-out,
+  // no subscription override, a native-capable model, and AI Credits settled
+  // as unable to pay (neither loading nor inconclusive). A remembered or live
+  // credits route cannot pay at a zero balance either, so it does not count
+  // as credits being available here; the No billing source notice owns the
+  // slot instead of the "Using AI Credits" card. Main refuses a send in this
+  // state with the same sentence. Native auth that is present or inconclusive
+  // keeps today's behavior, so an on-quota chat that runs out of credits keeps
+  // its card and its out-of-credits recovery.
+  const creditsSettledIneligible =
+    !availability.creditsEligible &&
+    (availability.creditsLoading ?? availability.loading) !== true &&
+    availability.creditsInconclusive !== true;
+  if (
+    signedOutConfirmed &&
+    !subscriptionBillingOverride &&
+    !isGatewayOnlyModel(model) &&
+    creditsSettledIneligible
+  ) {
+    return withBannerVisibility({
+      framework: null,
+      toggleVisible: true,
+      toggleDisabled: true,
+      lockKind: 'no-billing-source',
+      lockedReason: buildNoBillingSourceError(getProviderLabel(provider)),
+    });
+  }
+
   // Preserve an active credits route even if the balance read is pending or
   // exhausted. Only confirmed eligibility offers credits as a *new* choice.
   // An explicit subscription override supersedes stale routing signals unless
@@ -204,12 +240,6 @@ export function resolveChatBillingFramework(
   const creditsAvailable =
     isGatewayRoutableModel(model) &&
     (availability.creditsEligible || routedCreditsChoice);
-  // A loading or failed auth probe is not a sign-out (CAN-4272). Availability
-  // that predates the auth-only signal falls back to aggregate `loading`.
-  const nativeAuthInconclusive =
-    availability.nativeAuthInconclusive ?? availability.loading;
-  const signedOutConfirmed =
-    availability.nativeAuth === false && !nativeAuthInconclusive;
   // CAN-5349 narrows CAN-4272: a confirmed sign-out with available credits and
   // no explicit subscription override cannot newly select subscription. An
   // existing override stays honored until the user picks credits again.

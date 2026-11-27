@@ -11,6 +11,7 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { useShallow } from 'zustand/shallow';
 import {
@@ -67,7 +68,7 @@ import {
   AgentStateGlyph,
   ChatTab as SharedChatTab,
   Dot,
-  FloatingMenu,
+  Menu,
   HoverCard,
   TitlebarIconButton,
 } from '@canopy/ui-shared/components';
@@ -335,7 +336,12 @@ export const ChatTabBar = memo(function ChatTabBar({
   useEffect(() => {
     setWorktreeRootPath(undefined);
     // A cloud scope has no worktree path on this computer (CAN-6395).
-    if (!scopeProjectId || !scopeWorktreeId || isWebCoreScope(scopeProjectId)) {
+    if (
+      !scopeProjectId ||
+      !scopeWorktreeId ||
+      isWebCoreScope(scopeProjectId) ||
+      isPairedComputerId(scopeProjectId)
+    ) {
       return;
     }
     let cancelled = false;
@@ -844,7 +850,7 @@ export const ChatTabBar = memo(function ChatTabBar({
                   className="pointer-events-none absolute right-1 top-1"
                 />
               )}
-              <FloatingMenu
+              <Menu
                 open={sessionMenuOpen}
                 onOpenChange={setSessionMenuOpen}
                 anchorRef={sessionMenuButtonRef}
@@ -875,7 +881,7 @@ export const ChatTabBar = memo(function ChatTabBar({
                     }}
                   />
                 </ActionMenuRowStyle>
-              </FloatingMenu>
+              </Menu>
             </div>
           );
         })()}
@@ -963,12 +969,14 @@ export const ChatTabBar = memo(function ChatTabBar({
                 void (async (): Promise<void> => {
                   let worktreePath: string | undefined;
                   try {
-                    worktreePath = isWebCoreScope(sel.projectId)
-                      ? undefined
-                      : await window.api.getWorktreePath({
-                          projectId: sel.projectId,
-                          worktreeId: sel.worktreeId,
-                        });
+                    worktreePath =
+                      isWebCoreScope(sel.projectId) ||
+                      isPairedComputerId(sel.projectId)
+                        ? undefined
+                        : await window.api.getWorktreePath({
+                            projectId: sel.projectId,
+                            worktreeId: sel.worktreeId,
+                          });
                   } catch {
                     worktreePath = undefined;
                   }

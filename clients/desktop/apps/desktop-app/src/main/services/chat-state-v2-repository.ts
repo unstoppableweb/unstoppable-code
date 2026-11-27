@@ -4168,13 +4168,35 @@ export class ChatStateV2Repository {
    */
   public async sweepFormat4(
     scope: ChatScopeKey,
-    { admit }: { admit?: () => boolean } = {},
+    {
+      admit,
+      beforeLegacyLoad,
+      afterFailedLegacyLoad,
+    }: {
+      admit?: () => boolean;
+      /**
+       * Runs under the lease just before a legacy scope's load; true when it
+       * set legacy files aside (CAN-7851).
+       */
+      beforeLegacyLoad?: (paths: LegacyChatScopePaths) => Promise<boolean>;
+      /**
+       * Asked after a legacy scope's load fails: a fingerprint when its
+       * snapshots can't be recovered by any reader (CAN-7851).
+       */
+      afterFailedLegacyLoad?: (
+        paths: LegacyChatScopePaths,
+      ) => Promise<string | undefined>;
+    } = {},
   ): Promise<
-    | { readonly outcome: 'promoted' }
+    | { readonly outcome: 'promoted'; readonly quarantined?: true }
     | { readonly outcome: 'already_format4' }
     | { readonly outcome: 'held' }
     | { readonly outcome: 'withheld' }
-    | { readonly outcome: 'failed'; readonly cause?: unknown }
+    | {
+        readonly outcome: 'failed';
+        readonly cause?: unknown;
+        readonly unrecoverable?: string;
+      }
   > {
     const held = { outcome: 'held' } as const;
     // The sweep alone promotes a viewer scope; an open never does.
@@ -4190,9 +4212,20 @@ export class ChatStateV2Repository {
       existing.deleting === 0 &&
       existing.loading === undefined;
     // A load that already failed with a cached error fails again, so the
-    // sweep counts it and backs off; residency doesn't make it held.
-    if (quiet && existing.lifecycle === 'recovery_error' && existing.loadError)
-      return { outcome: 'failed', cause: existing.loadError } as const;
+    // sweep counts it and backs off; residency doesn't make it held. A caller
+    // that asks about unrecoverable legacy files (CAN-7851) releases a cached
+    // failure first, so its hooks see a fresh load, as after its own failure.
+    if (
+      quiet &&
+      existing.lifecycle === 'recovery_error' &&
+      existing.loadError
+    ) {
+      const fresh =
+        afterFailedLegacyLoad !== undefined &&
+        (await this.releaseScope(scope).catch(() => false));
+      if (!fresh)
+        return { outcome: 'failed', cause: existing.loadError } as const;
+    }
     if (
       existing &&
       !(
@@ -4221,6 +4254,10 @@ export class ChatStateV2Repository {
       }
       if (before === 'v4') return { outcome: 'already_format4' } as const;
       if (entry.inFlightTurns !== 1 || admit?.() === false) return held;
+      const quarantined =
+        before === 'v1' &&
+        beforeLegacyLoad !== undefined &&
+        (await beforeLegacyLoad(entry.paths).catch(() => false));
       loadedHere = true;
       entry.sweepLoading = true;
       try {
@@ -4228,7 +4265,13 @@ export class ChatStateV2Repository {
         // A failed reopen becomes a load error here, as it does for an open.
         if (viewer) await this.reconcileFormat(entry, { includeViewer: true });
       } catch (cause) {
-        return { outcome: 'failed', cause } as const;
+        const unrecoverable =
+          before === 'v1'
+            ? await afterFailedLegacyLoad?.(entry.paths).catch(() => undefined)
+            : undefined;
+        return unrecoverable === undefined
+          ? ({ outcome: 'failed', cause } as const)
+          : ({ outcome: 'failed', cause, unrecoverable } as const);
       } finally {
         entry.sweepLoading = false;
       }
@@ -4238,7 +4281,10 @@ export class ChatStateV2Repository {
       } catch (cause) {
         return { outcome: 'failed', cause } as const;
       }
-      if (after === 'v4') return { outcome: 'promoted' } as const;
+      if (after === 'v4')
+        return quarantined
+          ? ({ outcome: 'promoted', quarantined: true } as const)
+          : ({ outcome: 'promoted' } as const);
       return entry.backend.allowsFormat4Promotion()
         ? ({ outcome: 'failed' } as const)
         : ({ outcome: 'withheld' } as const);

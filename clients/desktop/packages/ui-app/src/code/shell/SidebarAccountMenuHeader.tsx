@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, type JSX } from 'react';
-import { DisplayAvatar, DropdownMenuLabel } from '@canopy/ui-shared/components';
+import { DisplayAvatar, MenuLabel } from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { isDisplayableAvatarUrl } from './SidebarAccountFooter';
 
@@ -29,7 +29,7 @@ export function SidebarAccountMenuHeader({
   const showImage =
     !!image && failedImage !== image && isDisplayableAvatarUrl(image);
   return (
-    <DropdownMenuLabel
+    <MenuLabel
       spacing="relaxed"
       data-testid="sidebar-account-menu-header-identity"
     >
@@ -65,6 +65,6 @@ export function SidebarAccountMenuHeader({
           ) : null}
         </span>
       </span>
-    </DropdownMenuLabel>
+    </MenuLabel>
   );
 }

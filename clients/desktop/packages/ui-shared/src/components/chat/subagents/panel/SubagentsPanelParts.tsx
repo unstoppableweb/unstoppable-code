@@ -28,15 +28,15 @@ import {
   subagentsRootLiveDetail,
 } from '../subagent-copy';
 import {
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionDescription,
-  PickerMenuOptionLabel,
-  PickerMenuOptionLeading,
-  PickerMenuSection,
-  PickerMenuSectionLabel,
-} from '../../../../primitives/PickerMenu';
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionDescription,
+  PickerOptionLabel,
+  PickerOptionLeading,
+  PickerSection,
+  PickerSectionLabel,
+} from '../../../../primitives/PickerParts';
 import { formatRelativeTime } from '../../../../lib/format-relative-time';
 import { REPLAY_MASK_CLASS } from '../../../../lib/replay-privacy';
 import { ThinkingSpinner } from '../../../../primitives/ThinkingSpinner';
@@ -83,14 +83,14 @@ function RootPickerOption({
     `${subagentsCountLabel(root.total)} · ${formatRelativeTime(root.lastActivityAt)}`
   );
   return (
-    <PickerMenuOption
+    <PickerOption
       role="menuitemradio"
       aria-checked={selected}
       selected={selected}
       data-testid={`subagents-root-option-${root.id}`}
       onClick={(): void => onSelectRoot(root.id)}
     >
-      <PickerMenuOptionLeading
+      <PickerOptionLeading
         data-testid="subagents-root-status"
         tone={root.live > 0 ? 'accent' : 'tertiary'}
       >
@@ -100,15 +100,15 @@ function RootPickerOption({
         ) : (
           <ChatIcon size={14} />
         )}
-      </PickerMenuOptionLeading>
-      <PickerMenuOptionContent>
-        <PickerMenuOptionLabel>
+      </PickerOptionLeading>
+      <PickerOptionContent>
+        <PickerOptionLabel>
           <span className={REPLAY_MASK_CLASS}>{root.title}</span>
-        </PickerMenuOptionLabel>
-        <PickerMenuOptionDescription>{detail}</PickerMenuOptionDescription>
-      </PickerMenuOptionContent>
-      <PickerMenuOptionCheck selected={selected} />
-    </PickerMenuOption>
+        </PickerOptionLabel>
+        <PickerOptionDescription>{detail}</PickerOptionDescription>
+      </PickerOptionContent>
+      <PickerOptionCheck selected={selected} />
+    </PickerOption>
   );
 }
 
@@ -121,7 +121,7 @@ function FinishedSection({
   readonly children: ReactNode;
 }): JSX.Element {
   return divided ? (
-    <PickerMenuSection>{children}</PickerMenuSection>
+    <PickerSection>{children}</PickerSection>
   ) : (
     <div>{children}</div>
   );
@@ -139,9 +139,9 @@ export function SubagentsRootPickerMenu({
     <div>
       {active.length > 0 ? (
         <>
-          <PickerMenuSectionLabel>
+          <PickerSectionLabel>
             {SUBAGENTS_ROOT_SECTION_ACTIVE}
-          </PickerMenuSectionLabel>
+          </PickerSectionLabel>
           {active.map((root) => (
             <RootPickerOption
               key={root.id}
@@ -154,9 +154,9 @@ export function SubagentsRootPickerMenu({
       ) : null}
       {finished.length > 0 ? (
         <FinishedSection divided={active.length > 0}>
-          <PickerMenuSectionLabel>
+          <PickerSectionLabel>
             {SUBAGENTS_ROOT_SECTION_FINISHED}
-          </PickerMenuSectionLabel>
+          </PickerSectionLabel>
           {finished.map((root) => (
             <RootPickerOption
               key={root.id}
@@ -204,23 +204,21 @@ function LevelOption({
         ? SUBAGENTS_LEVELS_ALL_LABEL
         : String(value);
   return (
-    <PickerMenuOption
+    <PickerOption
       role="menuitemradio"
       aria-checked={selected}
       selected={selected}
       data-testid={`subagents-levels-option-${key}`}
       onClick={(): void => onChange(value)}
     >
-      <PickerMenuOptionCheck selected={selected} reserveSpace />
-      <PickerMenuOptionContent>
-        <PickerMenuOptionLabel>{label}</PickerMenuOptionLabel>
+      <PickerOptionCheck selected={selected} reserveSpace />
+      <PickerOptionContent>
+        <PickerOptionLabel>{label}</PickerOptionLabel>
         {description ? (
-          <PickerMenuOptionDescription>
-            {description}
-          </PickerMenuOptionDescription>
+          <PickerOptionDescription>{description}</PickerOptionDescription>
         ) : null}
-      </PickerMenuOptionContent>
-    </PickerMenuOption>
+      </PickerOptionContent>
+    </PickerOption>
   );
 }
 
@@ -236,9 +234,7 @@ export function SubagentsLevelsMenu({
   for (let level = 3; level <= maxDepth; level += 1) numbered.push(level);
   return (
     <div>
-      <PickerMenuSectionLabel>
-        {SUBAGENTS_LEVELS_MENU_LABEL}
-      </PickerMenuSectionLabel>
+      <PickerSectionLabel>{SUBAGENTS_LEVELS_MENU_LABEL}</PickerSectionLabel>
       <LevelOption
         value="auto"
         selected={value === 'auto'}

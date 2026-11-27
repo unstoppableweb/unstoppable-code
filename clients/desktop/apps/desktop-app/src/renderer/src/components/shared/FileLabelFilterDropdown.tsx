@@ -2,16 +2,16 @@ import { Dot } from '@canopy/ui-shared/primitives/Badge';
 import { useCallback, useMemo, useRef, useState, type JSX } from 'react';
 import { FilterIcon, SettingsIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
-  FloatingPickerMenu,
+  Picker,
   HeaderActionButton,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-  PickerMenuOptionLeading,
-  PickerMenuOptionTrailing,
-  PickerMenuSection,
-  PickerMenuState,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
+  PickerOptionLeading,
+  PickerOptionTrailing,
+  PickerSection,
+  PickerState,
   RailIconButton,
 } from '@canopy/ui-shared/components';
 import {
@@ -120,7 +120,7 @@ export function FileLabelFilterDropdown({
         />
       )}
 
-      <FloatingPickerMenu
+      <Picker
         open={isOpen}
         onOpenChange={setOpen}
         anchorRef={triggerRef}
@@ -131,12 +131,12 @@ export function FileLabelFilterDropdown({
         data-testid={`${testIdPrefix}-dropdown`}
       >
         {options.length === 0 ? (
-          <PickerMenuState>No labels</PickerMenuState>
+          <PickerState>No labels</PickerState>
         ) : (
           options.map((option) => {
             const isVisible = !hiddenSet.has(option.id);
             return (
-              <PickerMenuOption
+              <PickerOption
                 key={option.id}
                 role="menuitemcheckbox"
                 aria-checked={isVisible}
@@ -144,32 +144,32 @@ export function FileLabelFilterDropdown({
                 data-testid={`${testIdPrefix}-option-${option.id}`}
                 selected={isVisible}
               >
-                <PickerMenuOptionCheck selected={isVisible} reserveSpace />
-                <PickerMenuOptionContent>
-                  <PickerMenuOptionLabel>{option.name}</PickerMenuOptionLabel>
-                </PickerMenuOptionContent>
-                <PickerMenuOptionTrailing tone="tertiary">
+                <PickerOptionCheck selected={isVisible} reserveSpace />
+                <PickerOptionContent>
+                  <PickerOptionLabel>{option.name}</PickerOptionLabel>
+                </PickerOptionContent>
+                <PickerOptionTrailing tone="tertiary">
                   {option.count}
-                </PickerMenuOptionTrailing>
-              </PickerMenuOption>
+                </PickerOptionTrailing>
+              </PickerOption>
             );
           })
         )}
-        <PickerMenuSection>
-          <PickerMenuOption
+        <PickerSection>
+          <PickerOption
             role="menuitem"
             onClick={handleOpenSettings}
             data-testid={`${testIdPrefix}-settings`}
           >
-            <PickerMenuOptionLeading tone="secondary">
+            <PickerOptionLeading tone="secondary">
               <SettingsIcon size="sm" />
-            </PickerMenuOptionLeading>
-            <PickerMenuOptionContent>
-              <PickerMenuOptionLabel>Settings</PickerMenuOptionLabel>
-            </PickerMenuOptionContent>
-          </PickerMenuOption>
-        </PickerMenuSection>
-      </FloatingPickerMenu>
+            </PickerOptionLeading>
+            <PickerOptionContent>
+              <PickerOptionLabel>Settings</PickerOptionLabel>
+            </PickerOptionContent>
+          </PickerOption>
+        </PickerSection>
+      </Picker>
     </div>
   );
 }

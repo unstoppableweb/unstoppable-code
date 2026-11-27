@@ -2,8 +2,8 @@ import { type JSX, useId, useRef, useState } from 'react';
 import { ChevronDownIcon } from '../icons/AppIcons';
 import type { UnifiedPluginEntry } from '../lib/unified-plugin-entry';
 import { Button } from '../primitives/Button';
-import { DropdownMenuItem } from '../primitives/DropdownMenu';
-import { FloatingMenu } from '../primitives/FloatingMenu';
+import { MenuItem } from '../primitives/MenuItem';
+import { Menu } from '../primitives/Menu';
 
 interface MarketplaceInstallButtonProps {
   readonly entry: UnifiedPluginEntry;
@@ -65,7 +65,7 @@ function GroupedMarketplaceInstall({
       >
         Install <ChevronDownIcon size="sm" aria-hidden />
       </Button>
-      <FloatingMenu
+      <Menu
         id={menuId}
         anchorRef={triggerRef}
         open={open}
@@ -74,16 +74,16 @@ function GroupedMarketplaceInstall({
         placement="bottom-right"
       >
         {choices.map(({ provider, listing }) => (
-          <DropdownMenuItem
+          <MenuItem
             key={provider}
             data-testid={`${testId}-${provider.toLowerCase()}`}
-            // FloatingMenu closes on select and returns focus to the trigger.
+            // Menu closes on select and returns focus to the trigger.
             onClick={() => onAdd(listing)}
           >
             {provider}
-          </DropdownMenuItem>
+          </MenuItem>
         ))}
-      </FloatingMenu>
+      </Menu>
     </>
   );
 }

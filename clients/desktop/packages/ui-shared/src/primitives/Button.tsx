@@ -83,6 +83,12 @@ interface ButtonLoadingProps {
   loading?: boolean;
   /** Label while loading. Defaults to the resting label. */
   loadingLabel?: ReactNode;
+  /**
+   * While loading, the spinner alone takes the label's place, so the button
+   * keeps its resting width. `loadingLabel` is then read to assistive
+   * technology only.
+   */
+  loadingSpinnerOnly?: boolean;
   /** Test hook for the spinner, scoped inside this button. */
   spinnerTestId?: string;
 }
@@ -205,6 +211,7 @@ interface LinkButtonProps
   variant: ButtonLinkVariant;
   loading?: undefined;
   loadingLabel?: undefined;
+  loadingSpinnerOnly?: undefined;
   spinnerTestId?: undefined;
   size?: undefined;
   iconOnly?: false;
@@ -614,6 +621,7 @@ export const ControlButton = forwardRef<HTMLButtonElement, ControlButtonProps>(
       type = 'button',
       loading,
       loadingLabel,
+      loadingSpinnerOnly,
       spinnerTestId,
       children,
       ...props
@@ -652,6 +660,7 @@ export const ControlButton = forwardRef<HTMLButtonElement, ControlButtonProps>(
         <BusyLayers
           busy={loading}
           busyLabel={loadingLabel}
+          spinnerOnly={loadingSpinnerOnly}
           spinnerTestId={spinnerTestId}
           presentation={BUSY_LAYERS_PRESENTATION[presentation] ?? 'app'}
         >
@@ -708,6 +717,7 @@ function renderActionButton({
   shortcut,
   loading,
   loadingLabel,
+  loadingSpinnerOnly,
   spinnerTestId,
   ref,
   ...rest
@@ -776,6 +786,7 @@ function renderActionButton({
         <BusyLayers
           busy={loading}
           busyLabel={loadingLabel}
+          spinnerOnly={loadingSpinnerOnly}
           spinnerTestId={spinnerTestId}
         >
           {children}

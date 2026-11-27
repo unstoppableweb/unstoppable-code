@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type JSX } from 'react';
 import {
   ActionMenuRowStyle,
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  FloatingMenu,
+  MenuDivider,
+  MenuItem,
+  MenuItemIcon,
+  Menu,
   RailIconButton,
 } from '@canopy/ui-shared/components';
 import {
@@ -95,7 +95,7 @@ export function SharedContainerRecipientActionsMenu({
           setOpen((value) => !value);
         }}
       />
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={setOpen}
         anchorRef={buttonRef}
@@ -107,7 +107,7 @@ export function SharedContainerRecipientActionsMenu({
         <ActionMenuRowStyle>
           {forkable && (
             <>
-              <DropdownMenuItem
+              <MenuItem
                 data-testid={`${testIdPrefix}-fork`}
                 onClick={(event): void => {
                   event.stopPropagation();
@@ -115,16 +115,16 @@ export function SharedContainerRecipientActionsMenu({
                   setForking(true);
                 }}
               >
-                <DropdownMenuItemIcon>
+                <MenuItemIcon>
                   <CopyIcon />
-                </DropdownMenuItemIcon>
+                </MenuItemIcon>
                 Make a copy
-              </DropdownMenuItem>
+              </MenuItem>
               {/* Removal closes the menu in its own group. */}
-              <DropdownMenuDivider />
+              <MenuDivider />
             </>
           )}
-          <DropdownMenuItem
+          <MenuItem
             tone="destructive"
             disabled={actions.dismissing}
             data-testid={`${testIdPrefix}-remove`}
@@ -134,13 +134,13 @@ export function SharedContainerRecipientActionsMenu({
               setConfirmingRemove(true);
             }}
           >
-            <DropdownMenuItemIcon>
+            <MenuItemIcon>
               <TrashIcon />
-            </DropdownMenuItemIcon>
+            </MenuItemIcon>
             Remove share
-          </DropdownMenuItem>
+          </MenuItem>
         </ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
       {forking && (
         <SharedContainerForkModal
           containerId={entry.container.id}

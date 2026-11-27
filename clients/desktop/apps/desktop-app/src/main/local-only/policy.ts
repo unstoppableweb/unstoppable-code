@@ -1,6 +1,6 @@
 /**
  * Every automatic outbound call desktop main makes, and what a local-only
- * build (docs/local-only-build.md) does with it.
+ * build and a self-host build (docs/local-only-build.md) do with it.
  *
  * This table is the one place a reader can see every local-only difference
  * outside the chokepoints (cloud base URL, feature flags, PostHog, updater,
@@ -8,8 +8,15 @@
  * `allowsAutomaticCall('<id>')`, which is always true in a normal build, so
  * a guard is one line at an existing scheduler or startup site.
  *
+ * `AUTOMATIC_CALLS` holds the local-only dispositions and
+ * `SELF_HOST_AUTOMATIC_CALLS` the self-host ones. Keep `AUTOMATIC_CALLS`
+ * first: `check:local-only-egress` reads it lexically up to its
+ * `} as const`.
+ *
  * Dispositions:
- * - `off`: the call never happens in a local-only build.
+ * - `on` (self-host only): the call runs as in a normal build. Only calls
+ *   that go to the configured server and nowhere else may be `on`.
+ * - `off`: the call never happens in the profile.
  * - `on-demand`: the automatic (timer or startup) call never happens; the
  *   same request may still run when the user opens the surface that shows
  *   it, for an account the user connected. Those sites ask
@@ -19,9 +26,11 @@
  * entry in docs/local-only/network-calls.yaml; `check:local-only-egress`
  * fails until both exist.
  */
-import { isLocalOnlyBuild } from './profile';
+import { isLocalOnlyBuild, isSelfHostBuild } from './profile';
 
 export type LocalOnlyDisposition = 'off' | 'on-demand';
+
+export type SelfHostDisposition = 'on' | LocalOnlyDisposition;
 
 export type AutomaticCallId =
   | 'cloud.startup-outbox-flush'
@@ -92,15 +101,54 @@ export const AUTOMATIC_CALLS = {
 } as const satisfies Record<AutomaticCallId, LocalOnlyDisposition>;
 
 /**
+ * The self-host dispositions. The cloud is on and pointed at the configured
+ * server, so the two calls that go only to it run; every other call goes to
+ * a third party (or, for `telemetry.*`, is off by decision, as in
+ * local-only) and copies its local-only disposition.
+ */
+export const SELF_HOST_AUTOMATIC_CALLS = {
+  'cloud.startup-outbox-flush': 'on',
+  'cloud.blueprint-prefetch': 'on',
+  'skills.audit': AUTOMATIC_CALLS['skills.audit'],
+  'skills.update-check': AUTOMATIC_CALLS['skills.update-check'],
+  'marketplace.default-refresh': AUTOMATIC_CALLS['marketplace.default-refresh'],
+  'marketplace.manifest-preview':
+    AUTOMATIC_CALLS['marketplace.manifest-preview'],
+  'runtime.npm-download': AUTOMATIC_CALLS['runtime.npm-download'],
+  'runtime.cursor-download': AUTOMATIC_CALLS['runtime.cursor-download'],
+  'helpers.unconnected-codex': AUTOMATIC_CALLS['helpers.unconnected-codex'],
+  'usage.anthropic-poll': AUTOMATIC_CALLS['usage.anthropic-poll'],
+  'models.codex-account-refresh':
+    AUTOMATIC_CALLS['models.codex-account-refresh'],
+  'github.pr-poll': AUTOMATIC_CALLS['github.pr-poll'],
+  'avatars.project-cache': AUTOMATIC_CALLS['avatars.project-cache'],
+  'telemetry.active-use-signal': AUTOMATIC_CALLS['telemetry.active-use-signal'],
+  'telemetry.anonymous-id': AUTOMATIC_CALLS['telemetry.anonymous-id'],
+  'telemetry.sync': AUTOMATIC_CALLS['telemetry.sync'],
+  'telemetry.usage-analytics-optout':
+    AUTOMATIC_CALLS['telemetry.usage-analytics-optout'],
+  'dictation.speech-model-update':
+    AUTOMATIC_CALLS['dictation.speech-model-update'],
+} as const satisfies Record<AutomaticCallId, SelfHostDisposition>;
+
+function activeDisposition(id: AutomaticCallId): SelfHostDisposition {
+  if (isLocalOnlyBuild()) return AUTOMATIC_CALLS[id];
+  if (isSelfHostBuild()) return SELF_HOST_AUTOMATIC_CALLS[id];
+  return 'on';
+}
+
+/**
  * Whether an automatic (timer, startup or background) call may run. Always
  * true in a normal build.
  */
 export function allowsAutomaticCall(id: AutomaticCallId): boolean {
-  if (!isLocalOnlyBuild()) return true;
-  // Both dispositions stop the automatic call; they differ only in whether a
-  // user-opened surface may still make it (see allowsOnDemandCall). The
-  // switch is exhaustive, so a new disposition fails typecheck here.
-  switch (AUTOMATIC_CALLS[id]) {
+  // `off` and `on-demand` both stop the automatic call; they differ only in
+  // whether a user-opened surface may still make it (see
+  // allowsOnDemandCall). The switch is exhaustive, so a new disposition
+  // fails typecheck here.
+  switch (activeDisposition(id)) {
+    case 'on':
+      return true;
     case 'off':
     case 'on-demand':
       return false;
@@ -109,23 +157,25 @@ export function allowsAutomaticCall(id: AutomaticCallId): boolean {
 
 /**
  * Whether a user-opened surface may make the call `id` describes. True in a
- * normal build, and in a local-only build only for `on-demand` calls.
+ * normal build, and in a guarded build for `on` and `on-demand` calls.
  */
 export function allowsOnDemandCall(id: AutomaticCallId): boolean {
-  return !isLocalOnlyBuild() || AUTOMATIC_CALLS[id] === 'on-demand';
+  const disposition = activeDisposition(id);
+  return disposition === 'on' || disposition === 'on-demand';
 }
 
 /**
- * The UI-automation seam (`CANOPY_E2E_LOCAL_ONLY=1` in an E2E build) runs
- * the deferred startup background tasks immediately, so the local-only golden
- * sees every delayed call. Folded away in production bundles, where the
- * environment variable is never read.
+ * The UI-automation seams (`CANOPY_E2E_LOCAL_ONLY=1` or
+ * `CANOPY_E2E_SELF_HOST=1` in an E2E build) run the deferred startup
+ * background tasks immediately, so the profile goldens see every delayed
+ * call. Folded away in production bundles, where the environment variables
+ * are never read; a production self-host build keeps the normal delay.
  */
 export function runsDeferredStartupTasksImmediately(): boolean {
   return (
     typeof __CANOPY_E2E__ !== 'undefined' &&
     __CANOPY_E2E__ &&
-    process.env.CANOPY_E2E_LOCAL_ONLY === '1' &&
-    isLocalOnlyBuild()
+    ((process.env.CANOPY_E2E_LOCAL_ONLY === '1' && isLocalOnlyBuild()) ||
+      (process.env.CANOPY_E2E_SELF_HOST === '1' && isSelfHostBuild()))
   );
 }

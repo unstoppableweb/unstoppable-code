@@ -102,9 +102,10 @@ const DEFAULT_MODEL_PREFERENCE_KEYS = [
  * re-project loaded Portal catalogs, so Default-model Agent rows follow it.
  */
 export async function refreshCatalogAgentDefaults(
-  changed: Partial<PreferencesData>,
+  changedKeys: ReadonlySet<string>,
 ): Promise<void> {
-  if (!DEFAULT_MODEL_PREFERENCE_KEYS.some((key) => key in changed)) return;
+  if (!DEFAULT_MODEL_PREFERENCE_KEYS.some((key) => changedKeys.has(key)))
+    return;
   catalogAgentDefaults.clear();
   if (!AGENT_MODELS.some((model) => isInheritingAgentModel(model))) return;
   // Lazy: the Portal bus reaches services that import this module.

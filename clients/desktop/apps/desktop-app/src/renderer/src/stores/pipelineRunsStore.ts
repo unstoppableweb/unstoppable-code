@@ -47,6 +47,12 @@ const MAX_FAILED_QUEUED_EXECUTIONS_PER_WORKTREE = 5;
 let executionListInFlight: ReturnType<
   typeof window.pipelines.listExecutions
 > | null = null;
+let globalPipelineStatusHydrationInFlight: Promise<void> | null = null;
+let globalPipelineStatusHydrationQueued = false;
+// A pass prunes saved seen IDs only when a caller in its batch asked to; the
+// history read skips unreadable files, so a background refresh keeps them.
+let globalPipelineStatusPruneRequested = false;
+let globalPipelineStatusKeepSeenCall = false;
 
 function listExecutionsSingleFlight(): ReturnType<
   typeof window.pipelines.listExecutions
@@ -343,6 +349,8 @@ interface PipelineRunsState {
   handleExecutionEvent: (event: ExecutionEvent) => void;
   trackGlobalExecutionEvent: (event: ExecutionEvent) => void;
   loadGlobalPipelineStatuses: () => Promise<void>;
+  /** {@link loadGlobalPipelineStatuses} without pruning saved seen IDs. */
+  refreshGlobalPipelineStatusesKeepingSeen: () => Promise<void>;
   /**
    * Fetch advisor snapshots for the given execution ids and merge them into
    * {@link advisorSnapshotsByExecutionId}. Used after summary loads so the
@@ -2067,67 +2075,101 @@ export const usePipelineRunsStore = create<PipelineRunsState>((set, get) => ({
   },
 
   loadGlobalPipelineStatuses: async (): Promise<void> => {
-    set({
-      isHydratingGlobalPipelineStatuses: true,
-      pendingGlobalExecutionStatesById: {},
+    if (!globalPipelineStatusKeepSeenCall) {
+      globalPipelineStatusPruneRequested = true;
+    }
+    globalPipelineStatusKeepSeenCall = false;
+    if (globalPipelineStatusHydrationInFlight) {
+      globalPipelineStatusHydrationQueued = true;
+      return globalPipelineStatusHydrationInFlight;
+    }
+
+    const run = (async (): Promise<void> => {
+      do {
+        globalPipelineStatusHydrationQueued = false;
+        const pruneSeen = globalPipelineStatusPruneRequested;
+        globalPipelineStatusPruneRequested = false;
+        set({
+          isHydratingGlobalPipelineStatuses: true,
+          pendingGlobalExecutionStatesById: {},
+        });
+
+        let result: Awaited<
+          ReturnType<typeof listExecutionsSingleFlight>
+        > | null = null;
+        try {
+          result = await listExecutionsSingleFlight();
+        } catch {
+          set({
+            isHydratingGlobalPipelineStatuses: false,
+            hasHydratedGlobalPipelineStatuses: true,
+            pendingGlobalExecutionStatesById: {},
+          });
+          continue;
+        }
+        if (result === null || !result.success || !result.data) {
+          set({
+            isHydratingGlobalPipelineStatuses: false,
+            hasHydratedGlobalPipelineStatuses: true,
+            pendingGlobalExecutionStatesById: {},
+          });
+          continue;
+        }
+
+        const summaries = result.data;
+        const seenByWorktree = getSeenPipelineExecutionIdsByWorktree();
+        let activeExecutionIdsByWorktree: Record<string, Set<string>> = {};
+
+        set((prev) => {
+          const next = buildGlobalPipelineStatusesSnapshot(
+            summaries,
+            prev.pendingGlobalExecutionStatesById,
+            seenByWorktree,
+          );
+          activeExecutionIdsByWorktree = next.activeExecutionIdsByWorktree;
+
+          return {
+            isHydratingGlobalPipelineStatuses: false,
+            hasHydratedGlobalPipelineStatuses: true,
+            pendingGlobalExecutionStatesById: {},
+            runningExecutionsByWorktree: next.runningExecutionsByWorktree,
+            pausedExecutionsByWorktree: next.pausedExecutionsByWorktree,
+            unseenPipelineWorktreeKeys: next.unseenPipelineWorktreeKeys,
+            unseenFailedPipelineWorktreeKeys:
+              next.unseenFailedPipelineWorktreeKeys,
+            pipelineSummariesByWorktree: next.pipelineSummariesByWorktree,
+          };
+        });
+
+        if (!pruneSeen) {
+          activeExecutionIdsByWorktree =
+            getSeenPipelineExecutionIdsByWorktree();
+        }
+        await useProjectsStore
+          .getState()
+          .pruneStaleSeenPipelineExecutionIds(activeExecutionIdsByWorktree);
+
+        // Hydrate advisor snapshots for the global summaries so overview /
+        // worktree status surfaces can read the latest ETA without waiting for a
+        // push event.
+        const summaryIds = summaries.map((summary) => summary.id);
+        if (summaryIds.length > 0) {
+          await get().loadAdvisorSnapshots(summaryIds);
+        }
+      } while (globalPipelineStatusHydrationQueued);
+    })().finally(() => {
+      if (globalPipelineStatusHydrationInFlight === run) {
+        globalPipelineStatusHydrationInFlight = null;
+      }
     });
 
-    let result: Awaited<ReturnType<typeof listExecutionsSingleFlight>> | null =
-      null;
-    try {
-      result = await listExecutionsSingleFlight();
-    } catch {
-      set({
-        isHydratingGlobalPipelineStatuses: false,
-        hasHydratedGlobalPipelineStatuses: true,
-        pendingGlobalExecutionStatesById: {},
-      });
-      return;
-    }
-    if (result === null || !result.success || !result.data) {
-      set({
-        isHydratingGlobalPipelineStatuses: false,
-        hasHydratedGlobalPipelineStatuses: true,
-        pendingGlobalExecutionStatesById: {},
-      });
-      return;
-    }
+    globalPipelineStatusHydrationInFlight = run;
+    return run;
+  },
 
-    const summaries = result.data;
-    const seenByWorktree = getSeenPipelineExecutionIdsByWorktree();
-    let activeExecutionIdsByWorktree: Record<string, Set<string>> = {};
-
-    set((prev) => {
-      const next = buildGlobalPipelineStatusesSnapshot(
-        summaries,
-        prev.pendingGlobalExecutionStatesById,
-        seenByWorktree,
-      );
-      activeExecutionIdsByWorktree = next.activeExecutionIdsByWorktree;
-
-      return {
-        isHydratingGlobalPipelineStatuses: false,
-        hasHydratedGlobalPipelineStatuses: true,
-        pendingGlobalExecutionStatesById: {},
-        runningExecutionsByWorktree: next.runningExecutionsByWorktree,
-        pausedExecutionsByWorktree: next.pausedExecutionsByWorktree,
-        unseenPipelineWorktreeKeys: next.unseenPipelineWorktreeKeys,
-        unseenFailedPipelineWorktreeKeys: next.unseenFailedPipelineWorktreeKeys,
-        pipelineSummariesByWorktree: next.pipelineSummariesByWorktree,
-      };
-    });
-
-    await useProjectsStore
-      .getState()
-      .pruneStaleSeenPipelineExecutionIds(activeExecutionIdsByWorktree);
-
-    // Hydrate advisor snapshots for the global summaries so overview /
-    // worktree status surfaces can read the latest ETA without waiting for a
-    // push event.
-    const summaryIds = summaries.map((summary) => summary.id);
-    if (summaryIds.length > 0) {
-      await get().loadAdvisorSnapshots(summaryIds);
-    }
+  refreshGlobalPipelineStatusesKeepingSeen: (): Promise<void> => {
+    globalPipelineStatusKeepSeenCall = true;
+    return get().loadGlobalPipelineStatuses();
   },
 
   loadAdvisorSnapshots: async (executionIds: string[]): Promise<void> => {

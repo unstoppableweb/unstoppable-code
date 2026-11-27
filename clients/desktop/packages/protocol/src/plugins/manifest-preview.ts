@@ -11,10 +11,23 @@ import {
 export interface PluginManifestPreview {
   /** Per harness, from the same rules as a scanned plugin; partial is fine. */
   readonly compatibility?: HarnessCompatibility;
+  /**
+   * Part of the repository went unread (a truncated listing, a file cap or
+   * the deadline), so members may be missing: the names are not the whole
+   * plugin, and none named does not mean it has none.
+   */
+  readonly partial?: true;
   /** Skill, command and agent names, from their conventional folders. */
   readonly skills: readonly string[];
   readonly commands: readonly string[];
   readonly agents: readonly string[];
+  /** App names, listed from their folders; absent from an older desktop. */
+  readonly apps?: readonly string[];
+  /** A root `.app.json` app config is listed; its apps arrive with Add. */
+  readonly rootApp?: boolean;
+  /** Mod and LSP server names from the configs read; absent from an older desktop. */
+  readonly mods?: readonly string[];
+  readonly lspServers?: readonly string[];
   /** Hooks or MCP servers are listed; their details arrive with Add. */
   readonly hooks: boolean;
   readonly mcpServers: boolean;
@@ -172,12 +185,19 @@ export function parsePluginManifestPreviewResult(
   const commands = names(preview.commands);
   const agents = names(preview.agents);
   // Absent from an older desktop's answer: none named.
+  const apps = preview.apps === undefined ? [] : names(preview.apps);
+  const mods = preview.mods === undefined ? [] : names(preview.mods);
+  const lspServers =
+    preview.lspServers === undefined ? [] : names(preview.lspServers);
   const mcpServerNames =
     preview.mcpServerNames === undefined ? [] : names(preview.mcpServerNames);
   if (
     skills === null ||
     commands === null ||
     agents === null ||
+    apps === null ||
+    mods === null ||
+    lspServers === null ||
     mcpServerNames === null ||
     typeof preview.hooks !== 'boolean' ||
     typeof preview.mcpServers !== 'boolean'
@@ -217,9 +237,14 @@ export function parsePluginManifestPreviewResult(
     ok: true,
     preview: {
       ...(compatibility ? { compatibility } : {}),
+      ...(preview.partial === true ? { partial: true } : {}),
       skills,
       commands,
       agents,
+      ...(apps.length > 0 ? { apps } : {}),
+      ...(preview.rootApp === true ? { rootApp: true } : {}),
+      ...(mods.length > 0 ? { mods } : {}),
+      ...(lspServers.length > 0 ? { lspServers } : {}),
       hooks: preview.hooks,
       mcpServers: preview.mcpServers,
       mcpServerNames,

@@ -202,6 +202,18 @@ export const OrganizationConnectionSchema = z
           .catchall(CanopyJsonValueSchema),
       )
       .max(2048),
+    /**
+     * For a default, the active projects that switched it off. Absent from
+     * servers that predate it.
+     */
+    excludedProjects: z
+      .array(
+        z
+          .object({ id: z.string().min(1).max(128), name: z.string().max(512) })
+          .catchall(CanopyJsonValueSchema),
+      )
+      .max(2048)
+      .optional(),
   })
   .catchall(CanopyJsonValueSchema);
 export type OrganizationConnection = z.output<
@@ -389,8 +401,9 @@ export const SharedConnectionStartResultSchema = z
     signInPath: z.string().max(8192).optional(),
     connection: OrganizationConnectionSchema.optional(),
     /**
-     * The new connection's id, also while its sign-in is pending; set when
-     * the connect added it to a project (CAN-6251).
+     * The new connection's id, also while its sign-in is pending. Servers
+     * from before it set it only when the connect added it to a project
+     * (CAN-6251).
      */
     connectionId: ConnectionIdSchema.optional(),
   })
@@ -453,12 +466,59 @@ export const SharedConnectionRemoveResultSchema = z
   })
   .catchall(CanopyJsonValueSchema);
 
+/**
+ * Where an organization connection is used: every project (the
+ * organization's default) or only the projects that use it, and the projects
+ * the caller changed. Each change says what the caller read, so a project or
+ * default someone else changed since refuses the whole update.
+ */
+export const SharedConnectionProjectsUpdateParamsSchema = z.strictObject({
+  organizationId: OrganizationIdSchema,
+  connectionId: ConnectionIdSchema,
+  /** True for every project, new ones included; false for chosen ones. */
+  everyProject: z.boolean(),
+  /** Whether it was a default when the caller read it. */
+  expectedEveryProject: z.boolean(),
+  /** The projects the caller changed; every other project keeps its use. */
+  changes: z
+    .array(
+      z.strictObject({
+        projectId: z.string().min(1).max(128),
+        /** Whether the project should use it. */
+        use: z.boolean(),
+        /** Whether it used it when the caller read it. */
+        using: z.boolean(),
+      }),
+    )
+    .max(2048),
+  _meta: KeyedMetaSchema,
+});
+
+export const SharedConnectionProjectsUpdateResultSchema = z
+  .object({ connection: OrganizationConnectionSchema })
+  .catchall(CanopyJsonValueSchema);
+
 export const ORGANIZATION_CONNECTION_CODES = [
   'core.integration.sharedConnection.notFound',
   /** The server is shared only as its bot, whose sign-in is not set up. */
   'core.integration.sharedConnection.botUnavailable',
   /** The server cannot be held by the organization (not in the catalog). */
   'core.integration.sharedConnection.serverUnavailable',
+] as const;
+
+/** `projects.update`'s codes: the others, and a read that went stale. */
+export const ORGANIZATION_CONNECTION_PROJECTS_CODES = [
+  ...ORGANIZATION_CONNECTION_CODES,
+  /**
+   * The default, or a project the caller changed, moved since the caller
+   * read it (another admin's change); nothing was written.
+   */
+  'core.integration.sharedConnection.changed',
+  /**
+   * The update would put more connectors in a project or in the defaults,
+   * or the connection in more projects, than they can hold.
+   */
+  'core.integration.sharedConnection.tooMany',
 ] as const;
 
 export const CORE_INTEGRATION_SHARED_CONNECTION_QUERY_DEFINITIONS =
@@ -544,4 +604,18 @@ export const CORE_INTEGRATION_ORGANIZATION_CONNECTION_INSTRUCTION_DEFINITIONS =
       result: SharedConnectionRemoveResultSchema,
       error: keyedOperationErrorSchema(ORGANIZATION_CONNECTION_CODES),
     }),
+    'core.integration.sharedConnection.projects.update':
+      defineCanopyInstruction({
+        plane: 'core',
+        domain: 'integration',
+        version: 1,
+        placement: 'core-only',
+        idempotency: 'keyed',
+        requiredGrants: [CORE_INTEGRATION_GRANTS.write],
+        params: SharedConnectionProjectsUpdateParamsSchema,
+        result: SharedConnectionProjectsUpdateResultSchema,
+        error: keyedOperationErrorSchema(
+          ORGANIZATION_CONNECTION_PROJECTS_CODES,
+        ),
+      }),
   });

@@ -3,7 +3,7 @@ import {
   ComposerAccessPicker,
   type ComposerAccessPickerProps,
   type ComposerAccessOption,
-  type DropdownMenuItemIconTone,
+  type MenuItemIconTone,
 } from '@canopy/ui-shared';
 import {
   ApprovalAskIcon,
@@ -49,12 +49,11 @@ const APPROVAL_MODE_COLOR_CLASSES: Record<ApprovalMode, string> = {
 };
 
 /** The same inks for the menu's icon slot, which takes a typed tone. */
-const APPROVAL_MODE_ICON_TONES: Record<ApprovalMode, DropdownMenuItemIconTone> =
-  {
-    ask: 'secondary',
-    auto: 'secondary',
-    'full-access': 'destructive',
-  };
+const APPROVAL_MODE_ICON_TONES: Record<ApprovalMode, MenuItemIconTone> = {
+  ask: 'secondary',
+  auto: 'secondary',
+  'full-access': 'destructive',
+};
 
 export interface ApprovalModeGlyphProps {
   mode: ApprovalMode;

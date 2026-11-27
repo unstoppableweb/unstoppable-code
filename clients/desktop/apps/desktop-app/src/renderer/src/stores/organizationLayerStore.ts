@@ -3,6 +3,7 @@ import { create } from 'zustand';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import type { OrganizationLayerView } from '@canopy/desktop-shared/lib/organization-capabilities';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { useProjectsStore } from './projectsStore';
 import { connectorScopeWorkspaceId } from './chat/tab-utils';
@@ -79,7 +80,12 @@ export const useOrganizationLayerStore = create<OrganizationLayerState>(
       const key = targetKey(projectId, worktreeId);
       // A cloud chat's ids never reach main's local IPC; its organization
       // items come with its cloud workspace, not from this desktop.
-      if (isWebCoreScope(projectId) || isWebCoreScope(worktreeId)) {
+      if (
+        isWebCoreScope(projectId) ||
+        isWebCoreScope(worktreeId) ||
+        isPairedComputerId(projectId) ||
+        isPairedComputerId(worktreeId)
+      ) {
         if (get().views[key] !== null)
           set((state) => ({ views: { ...state.views, [key]: null } }));
         return Promise.resolve();

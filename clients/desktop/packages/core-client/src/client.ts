@@ -1151,6 +1151,9 @@ export async function createCanopyClient(
       ...(options.ownerProof && {
         ownerProof: options.ownerProof(connection.connectionId),
       }),
+      ...(options.desktopPeerProof && {
+        desktopPeerProof: options.desktopPeerProof(connection.connectionId),
+      }),
     });
     session.accepted = await session.request(INITIALIZE, params, {
       signal,

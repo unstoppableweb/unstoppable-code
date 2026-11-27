@@ -96,6 +96,13 @@ export interface OllamaService {
   initialize(): Promise<void>;
   getState(): Promise<OllamaState>;
   getCachedModels(): OllamaModelEntry[];
+  /**
+   * Cache-only read of the installed models for billing readiness and the
+   * Ollama-only default. `undefined` until startup initialization has an
+   * answer; `[]` when Ollama is unsupported, or in managed mode without a
+   * validated executable. Never probes the server.
+   */
+  peekInstalledModels(): OllamaModelEntry[] | undefined;
   broadcastModelRegistryUpdated(): void;
   refreshModels(opts?: { allowStart?: boolean }): Promise<OllamaState>;
   pullModel(rawModelId: unknown): Promise<OllamaState>;
@@ -730,6 +737,15 @@ class OllamaServiceImpl implements OllamaService {
   }
 
   getCachedModels(): OllamaModelEntry[] {
+    return cloneModels(this.state.models);
+  }
+
+  peekInstalledModels(): OllamaModelEntry[] | undefined {
+    if (!this.initialized) return undefined;
+    // A managed install whose executable is gone keeps its per-port model
+    // cache on disk; those models cannot run, so they do not count.
+    if (this.state.mode === 'managed' && !this.state.installation.ready)
+      return [];
     return cloneModels(this.state.models);
   }
 

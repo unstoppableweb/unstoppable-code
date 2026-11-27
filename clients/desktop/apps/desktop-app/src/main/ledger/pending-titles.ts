@@ -603,9 +603,10 @@ export function startDesktopPendingTitleOrchestrator(options: {
     const { model } = await readSettings();
     if (model === undefined) return false;
     const provider = requireProviderForModel(model);
-    const { isNoBillingSourceRefusalCached } =
+    const { isHelperNoBillingSourceRefusalCached } =
       await import('../agents/no-billing-source-refusal');
-    if (!isNoBillingSourceRefusalCached({ model }, provider)) return false;
+    if (!isHelperNoBillingSourceRefusalCached({ model }, provider))
+      return false;
     const context = await readEntry();
     const scope =
       context === null
@@ -613,7 +614,7 @@ export function startDesktopPendingTitleOrchestrator(options: {
         : ledgerTaskViewScopeForContainer(context.container);
     // A missing entry or a global Ledger is resolved by the normal path.
     if (scope === null) return false;
-    return isNoBillingSourceRefusalCached(
+    return isHelperNoBillingSourceRefusalCached(
       { model, projectId: scope.projectId },
       provider,
     );

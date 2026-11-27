@@ -47,9 +47,9 @@ import {
 } from '@canopy/ui-app';
 import {
   DelayedLoadingPlaceholder,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  FloatingMenu,
+  MenuItem,
+  MenuItemIcon,
+  Menu,
   ProjectListPagination,
   RailIconButton,
   SidebarFadePresence,
@@ -717,7 +717,7 @@ export function SidebarWorkspacesSection({
                       />
                     )}
                   </div>
-                  <FloatingMenu
+                  <Menu
                     open={projectsMenuOpen}
                     onOpenChange={setProjectsMenuOpen}
                     anchorRef={projectsMenuButtonRef}
@@ -733,7 +733,7 @@ export function SidebarWorkspacesSection({
                       // The sole project borrows this header, so its own
                       // overflow entries belong in this menu instead of a
                       // second "…" beside it.
-                      <DropdownMenuItem
+                      <MenuItem
                         data-testid="workspace-import-session-menu-item"
                         onClick={(): void => {
                           setProjectsMenuOpen(false);
@@ -744,11 +744,11 @@ export function SidebarWorkspacesSection({
                             );
                         }}
                       >
-                        <DropdownMenuItemIcon>
+                        <MenuItemIcon>
                           <DownloadIcon />
-                        </DropdownMenuItemIcon>
+                        </MenuItemIcon>
                         <span className="truncate">Import session…</span>
-                      </DropdownMenuItem>
+                      </MenuItem>
                     )}
                     <SidebarSortMenuItems
                       mode={model.projectSortMode}
@@ -765,7 +765,7 @@ export function SidebarWorkspacesSection({
                       hiddenWorkspaceIds={model.hiddenWorkspaceIds}
                       onChange={model.onFilterChange}
                     />
-                  </FloatingMenu>
+                  </Menu>
                   <RailIconButton
                     icon={PlusMediumIcon}
                     onClick={handleOpenAddWorkspaceModal}

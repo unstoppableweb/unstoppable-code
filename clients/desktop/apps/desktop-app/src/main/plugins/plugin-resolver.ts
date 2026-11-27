@@ -55,11 +55,21 @@ import {
 import {
   CURATED_PLUGIN_MCP_AMBIGUOUS,
   CURATED_PLUGIN_MCP_LIST_UNAVAILABLE,
+  CONNECTOR_PLUGIN_MCP_CATALOG_UNAVAILABLE,
+  cloudAccountMcpRefs,
+  connectorPluginMcpAccountChoice,
+  connectorPluginMcpMayBePicked,
+  connectorPluginMcpMember,
   curatedPluginMcpMemberKey,
+  type ConnectorPluginMcpMember,
   findCuratedAccountMcpConnection,
   findCuratedDeviceMcpServer,
 } from '../mcp/curated-plugin-binding';
-import { readCachedCuratedMcpDesktopOnlyKeys } from '../mcp/curated-catalog';
+import {
+  readCachedCuratedMcpDesktopOnlyKeys,
+  readCachedCuratedMcpServerEntries,
+} from '../mcp/curated-catalog';
+import type { CuratedMcpServerEntry } from '@canopy/protocol/mcp-catalog';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -843,6 +853,14 @@ interface HttpMcpResolutionContext {
   accountConnections?: Promise<AccountMcpConnection[] | null>;
   /** The cached catalog's desktop-only keys, read at most once per resolution. */
   desktopOnlyCuratedKeys?: Promise<ReadonlySet<string>>;
+  /** The cached catalog's servers, read at most once per resolution. */
+  curatedCatalogServers?: Promise<readonly CuratedMcpServerEntry[] | null>;
+  /**
+   * Whether each direct ref the standalone pass resolved named a device
+   * server file, by server id, so a plugin's account choice reads the same
+   * answer that pass loaded rather than the file a second time.
+   */
+  standaloneDeviceRefs: Map<string, boolean>;
   /** Delegated default pins by {@link mcpHttpAuthTargetKey}; see `mcpHttpAuthPins`. */
   pinnedHandlers?: ReadonlyMap<string, McpHttpAuthHandler>;
 }
@@ -889,6 +907,13 @@ function loadSharedDesktopOnlyCuratedKeys(
 ): Promise<ReadonlySet<string>> {
   context.desktopOnlyCuratedKeys ??= readCachedCuratedMcpDesktopOnlyKeys();
   return context.desktopOnlyCuratedKeys;
+}
+
+function loadSharedCuratedCatalogServers(
+  context: HttpMcpResolutionContext,
+): Promise<readonly CuratedMcpServerEntry[] | null> {
+  context.curatedCatalogServers ??= readCachedCuratedMcpServerEntries();
+  return context.curatedCatalogServers;
 }
 
 function mcpServerBindingsByName(
@@ -1312,6 +1337,7 @@ export async function resolvePlugins(
     proxyAvailable,
     proxyFallbackWarningEmitted: false,
     boundServers: new Map(),
+    standaloneDeviceRefs: new Map(),
     ...(options?.mcpHttpAuthPins?.length
       ? {
           pinnedHandlers: new Map(
@@ -1802,7 +1828,7 @@ export async function resolvePlugins(
       const projection = mcpOnlySource
         ? {
             ok: true as const,
-            path: projectClaudePluginWithoutMcpServers({
+            path: await projectClaudePluginWithoutMcpServers({
               sourcePluginPath: mcpOnlySource.pluginPath,
               marketplaceId: mcpOnlySource.marketplaceId,
               pluginName: mcpOnlySource.pluginName,
@@ -1866,7 +1892,7 @@ export async function resolvePlugins(
       if (!pluginsWithMcpServers.has(plugin.pluginPath)) {
         continue;
       }
-      const projectedPath = projectClaudePluginWithoutMcpServers({
+      const projectedPath = await projectClaudePluginWithoutMcpServers({
         sourcePluginPath: plugin.pluginPath,
         marketplaceId: plugin.marketplaceId,
         pluginName: plugin.pluginName,
@@ -2932,6 +2958,7 @@ async function resolveStandaloneMcpServers(
     const serverFile = accountOnly
       ? undefined
       : await readStandaloneMcpServerFile(ref.serverId);
+    context.standaloneDeviceRefs.set(ref.serverId, serverFile !== undefined);
     if (!serverFile) {
       if (!accountMcpConnectionsEnabled()) {
         warnings.push(
@@ -3477,6 +3504,77 @@ async function bindCuratedPluginMcpMember(args: {
   return undefined;
 }
 
+/**
+ * Bind a third-party plugin's member to the account of the catalog connector
+ * its URL names that the selection picks, by
+ * {@link connectorPluginMcpAccountChoice}, the choice the MCP servers card
+ * shows. With no pick it is `fallback`: the member keeps its own sign-in, as
+ * it did before this binding existed, whatever accounts the person holds.
+ * With a pick it never runs as anyone else: it binds the picked account, or
+ * is `skipped` with the reason (the pick can't be honored, this resolution
+ * has no local proxy to route it, its route fails). A member whose account an
+ * earlier selection in this resolution already loaded is `shared`: that
+ * entry, and any tool policy it carries, stays the only one under the
+ * account's name.
+ */
+async function bindConnectorPluginMcpMember(args: {
+  plugin: PluginResolvedPath;
+  serverName: string;
+  member: ConnectorPluginMcpMember;
+  warnings: string[];
+  options: ResolvePluginsOptions | undefined;
+  context: HttpMcpResolutionContext;
+  proxyPortPreference: number;
+}): Promise<
+  | { kind: 'bound'; entry: BoundMcpServer }
+  | { kind: 'shared' | 'skipped' | 'fallback' }
+> {
+  const { plugin, serverName, options, context } = args;
+  if (!accountMcpConnectionsEnabled()) return { kind: 'fallback' };
+  const directRefs = await cloudAccountMcpRefs(
+    context.selections.mcpServerRefs ?? [],
+    context.standaloneDeviceRefs,
+  );
+  if (!connectorPluginMcpMayBePicked(directRefs, args.member.connectorKey))
+    return { kind: 'fallback' };
+  const label = `${plugin.pluginName}/${serverName}`;
+  const choice = connectorPluginMcpAccountChoice(
+    await loadSharedAccountMcpConnections(context),
+    args.member,
+    directRefs,
+    options?.accountResolution,
+  );
+  if (choice.kind === 'own') return { kind: 'fallback' };
+  if (choice.kind === 'skip') {
+    args.warnings.push(
+      `Account MCP server "${label}" skipped: ${choice.reason}`,
+    );
+    return { kind: 'skipped' };
+  }
+  // No proxy (a helper launch): the picked account can't be reached, as the
+  // selection's own ref to it can't; the warning comes from the bind.
+  const bound = await bindAccountMcpConnection({
+    options,
+    context,
+    warnings: args.warnings,
+    proxyPortPreference: args.proxyPortPreference,
+    target: { accountConnectionId: choice.connection.id },
+    displayName: label,
+    source: {
+      kind: 'plugin',
+      marketplaceId: plugin.marketplaceId,
+      pluginName: plugin.pluginName,
+      serverName,
+    },
+  });
+  if (!bound) return { kind: 'skipped' };
+  if (!bound.reused) return { kind: 'bound', entry: bound.entry };
+  args.warnings.push(
+    `MCP server "${label}" is already connected as "${bound.entry.binding.displayName}"; loading it once.`,
+  );
+  return { kind: 'shared' };
+}
+
 async function resolvePluginMcpServers(
   plugin: PluginResolvedPath,
   warnings: string[],
@@ -3689,6 +3787,55 @@ async function resolvePluginMcpServers(
         if (bound)
           result[bound.serverName] = { ...bound.server, ...codexExtras };
         continue;
+      }
+      // A third-party member whose URL is a catalog connector's endpoint uses
+      // the person's account of that connector when one is chosen; otherwise
+      // it carries on below exactly as before.
+      // A chat override keeps the member's own handler; so does a delegated
+      // launch, whose parent pinned the handler its snapshot approved.
+      const connectorMember =
+        handlerResolution.source === 'override' ||
+        handlerResolution.source === 'pinned' ||
+        options?.purpose === 'delegation-codex-mcp'
+          ? undefined
+          : connectorPluginMcpMember(
+              plugin.marketplaceId,
+              rawValue,
+              await loadSharedCuratedCatalogServers(context),
+            );
+      // With no catalog to tell which connector it reaches, a member that a
+      // pick may cover is left out rather than run on its own sign-in.
+      if (connectorMember?.kind === 'catalog-unavailable') {
+        if (
+          accountMcpConnectionsEnabled() &&
+          (
+            await cloudAccountMcpRefs(
+              context.selections.mcpServerRefs ?? [],
+              context.standaloneDeviceRefs,
+            )
+          ).length > 0
+        ) {
+          warnings.push(
+            `Account MCP server "${plugin.pluginName}/${serverName}" skipped: ${CONNECTOR_PLUGIN_MCP_CATALOG_UNAVAILABLE}`,
+          );
+          continue;
+        }
+      } else if (connectorMember !== undefined) {
+        const outcome = await bindConnectorPluginMcpMember({
+          plugin,
+          serverName,
+          member: connectorMember,
+          warnings,
+          options,
+          context,
+          proxyPortPreference,
+        });
+        if (outcome.kind === 'bound')
+          result[outcome.entry.serverName] = {
+            ...outcome.entry.server,
+            ...codexExtras,
+          };
+        if (outcome.kind !== 'fallback') continue;
       }
       if (handler === 'account') {
         const pluginServer = buildPluginHttpMcpServerForAuth(

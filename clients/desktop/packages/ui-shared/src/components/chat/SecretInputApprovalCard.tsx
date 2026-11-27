@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type JSX,
+  type ReactNode,
   type Ref,
 } from 'react';
 import type {
@@ -39,6 +40,8 @@ export interface SecretInputApprovalCardProps {
     secret: string,
   ) => Promise<void>;
   focusHandleRef?: Ref<ToolApprovalCardHandle>;
+  /** Renders the request read-only instead of the secret input and buttons. */
+  readOnlyHint?: ReactNode;
 }
 
 /**
@@ -52,6 +55,7 @@ export const SecretInputApprovalCard = memo(function SecretInputApprovalCard({
   onRespond,
   onRespondSecretInput,
   focusHandleRef,
+  readOnlyHint,
 }: SecretInputApprovalCardProps): JSX.Element {
   const [secret, setSecret] = useState('');
   const respondingRef = useRef(false);
@@ -78,7 +82,7 @@ export const SecretInputApprovalCard = memo(function SecretInputApprovalCard({
   };
 
   const allow = (): void => {
-    if (!onRespondSecretInput) return;
+    if (!onRespondSecretInput || readOnlyHint !== undefined) return;
     const value = secret;
     setSecret('');
     void respond(() =>
@@ -91,6 +95,7 @@ export const SecretInputApprovalCard = memo(function SecretInputApprovalCard({
   };
 
   const deny = (): void => {
+    if (readOnlyHint !== undefined) return;
     setSecret('');
     void respond(() =>
       onRespond(pending.requestId, { behavior: 'deny', scope: 'once' }),
@@ -124,51 +129,60 @@ export const SecretInputApprovalCard = memo(function SecretInputApprovalCard({
           </div>
         ) : null}
       </div>
-      <form
-        className="flex flex-col gap-3"
-        autoComplete="off"
-        onSubmit={(event) => {
-          event.preventDefault();
-          allow();
-        }}
-      >
-        <FormField label={pending.secretInput.label}>
-          {(control) => (
-            <div className={REPLAY_BLOCK_CLASS}>
-              <TextInput
-                {...control}
-                ref={inputRef}
-                type="password"
-                mono
-                autoComplete="off"
-                spellCheck={false}
-                value={secret}
-                data-testid="tool-approval-secret-input"
-                onChange={(event) => setSecret(event.target.value)}
-              />
-            </div>
-          )}
-        </FormField>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            type="submit"
-            variant="primary"
-            size="compact"
-            disabled={!onRespondSecretInput}
-            data-testid="tool-approval-allow"
-          >
-            Allow
-          </Button>
-          <Button
-            type="button"
-            size="compact"
-            onClick={deny}
-            data-testid="tool-approval-deny"
-          >
-            Deny
-          </Button>
+      {readOnlyHint !== undefined ? (
+        <div
+          data-testid="tool-approval-read-only-hint"
+          className="text-xs fg-secondary"
+        >
+          {readOnlyHint}
         </div>
-      </form>
+      ) : (
+        <form
+          className="flex flex-col gap-3"
+          autoComplete="off"
+          onSubmit={(event) => {
+            event.preventDefault();
+            allow();
+          }}
+        >
+          <FormField label={pending.secretInput.label}>
+            {(control) => (
+              <div className={REPLAY_BLOCK_CLASS}>
+                <TextInput
+                  {...control}
+                  ref={inputRef}
+                  type="password"
+                  mono
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={secret}
+                  data-testid="tool-approval-secret-input"
+                  onChange={(event) => setSecret(event.target.value)}
+                />
+              </div>
+            )}
+          </FormField>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="submit"
+              variant="primary"
+              size="compact"
+              disabled={!onRespondSecretInput}
+              data-testid="tool-approval-allow"
+            >
+              Allow
+            </Button>
+            <Button
+              type="button"
+              size="compact"
+              onClick={deny}
+              data-testid="tool-approval-deny"
+            >
+              Deny
+            </Button>
+          </div>
+        </form>
+      )}
     </div>
   );
 });

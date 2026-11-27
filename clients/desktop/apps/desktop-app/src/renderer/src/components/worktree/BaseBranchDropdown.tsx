@@ -8,11 +8,7 @@ import {
   useState,
   type JSX,
 } from 'react';
-import {
-  FloatingPickerMenu,
-  PickerTrigger,
-  PickerTriggerChevron,
-} from '@canopy/ui-shared';
+import { Picker, PickerTrigger, PickerTriggerChevron } from '@canopy/ui-shared';
 import type { BranchEntry } from '@canopy/desktop-shared/types';
 import {
   collapseBranchDuplicates,
@@ -122,7 +118,7 @@ export function BaseBranchDropdown({
         <PickerTriggerChevron open={open} />
       </PickerTrigger>
 
-      <FloatingPickerMenu
+      <Picker
         id={menuId}
         open={open}
         onOpenChange={setOpen}
@@ -146,7 +142,7 @@ export function BaseBranchDropdown({
             triggerRef.current?.focus();
           }}
         />
-      </FloatingPickerMenu>
+      </Picker>
     </>
   );
 }

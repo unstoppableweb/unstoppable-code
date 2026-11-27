@@ -4,7 +4,10 @@ import {
   getProviderForModel,
   type ChatModel,
 } from '@canopy/desktop-shared/types';
-import type { BillingLaneAvailability } from '@canopy/desktop-shared/lib/default-model-lane';
+import {
+  personalGatewayEquivalentModel,
+  type BillingLaneAvailability,
+} from '@canopy/desktop-shared/lib/default-model-lane';
 import { isGatewayOnlyModel } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { MODEL_PICKER_ROW_CUE_COPY } from '@canopy/ui-shared';
 import {
@@ -16,21 +19,31 @@ import {
   getRendererModelFactsVersion,
   subscribeRendererModelFacts,
 } from '@/stores/modelPolicyRuntime';
-import { firstPersonalGatewayDefaultModel } from '@/stores/chat/defaults';
+import {
+  firstPersonalGatewayDefaultModel,
+  personalGatewaySendableModels,
+} from '@/stores/chat/defaults';
 import { getProviderLabel } from './providerLabels';
 
 /**
  * The built-in harness `model` needs when this account can't bill it at all:
  * its Claude or Codex sign-in is confirmed missing and AI Credits are
- * confirmed unavailable (CAN-6444). `undefined` when it can bill, isn't a
- * built-in model, or any fact is still unknown, so nothing is refused or
- * flagged on a guess.
+ * confirmed unavailable (CAN-6444), or unknown while both sign-ins are
+ * confirmed missing (the Personal gateway's stand-in rule,
+ * `personalGatewayStandsIn`). `undefined` when it can bill, isn't a built-in
+ * model, or the facts can't tell, so nothing is refused or flagged on a guess.
  */
 export function unbillableBuiltInProvider(
   model: ChatModel,
   lanes: BillingLaneAvailability,
 ): 'claude' | 'codex' | undefined {
-  if (isGatewayOnlyModel(model) || lanes.creditsEligible !== false) {
+  if (isGatewayOnlyModel(model) || lanes.creditsEligible === true) {
+    return undefined;
+  }
+  if (
+    lanes.creditsEligible === undefined &&
+    (lanes.claudeNativeAuth !== false || lanes.codexNativeAuth !== false)
+  ) {
     return undefined;
   }
   const provider = getProviderForModel(model);
@@ -49,7 +62,8 @@ export interface UnbillableModelSwitch {
 /**
  * When the composer's model can't run for this account and the user's own AI
  * gateway has one that can, what to tell them and what to switch to. The
- * switch target is the same model a new chat would default to.
+ * switch target is the gateway's route for the same model when it has one,
+ * otherwise the model a new chat would default to.
  */
 export function useUnbillableModelSwitch(
   model: ChatModel | undefined,
@@ -73,7 +87,10 @@ export function useUnbillableModelSwitch(
       getRendererBillingLaneAvailability(),
     );
     if (!provider) return null;
-    const switchModel = firstPersonalGatewayDefaultModel();
+    const switchModel =
+      personalGatewayEquivalentModel(model, {
+        models: personalGatewaySendableModels(),
+      }) ?? firstPersonalGatewayDefaultModel();
     if (!switchModel) return null;
     return {
       modelLabel: getModelDisplayName(model),

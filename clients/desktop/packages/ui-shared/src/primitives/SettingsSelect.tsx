@@ -18,14 +18,14 @@ import {
   useInFormField,
 } from './form-field-context';
 import { useSettingsRowDescriptionId } from './SettingsRowDescription';
+import { Picker } from './Picker';
 import {
-  FloatingPickerMenu,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-  PickerMenuSectionLabel,
-} from './PickerMenu';
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
+  PickerSectionLabel,
+} from './PickerParts';
 
 /** Settings menus scroll past this height (about six rows). */
 const SETTINGS_SELECT_MENU_HEIGHT = 208;
@@ -131,7 +131,7 @@ export function settingsSelectOptions<Value extends string>(
  * (a `FormField` with the dropdown as its children) it fills the dialog's
  * content width.
  *
- * The menu owns the keyboard (`FloatingMenu`'s listbox mode): ArrowUp or
+ * The menu owns the keyboard (`Menu`'s listbox mode): ArrowUp or
  * ArrowDown on the trigger opens it on the chosen option; arrows, Home and
  * End move; typing jumps to a matching label; Enter or Space choose; Escape,
  * Tab or an outside press close with focus back on the trigger.
@@ -216,7 +216,7 @@ export function SettingsSelect<Value extends string>({
   const renderOption = (option: SettingsSelectOption<Value>): JSX.Element => {
     const selected = option.value === value;
     return (
-      <PickerMenuOption
+      <PickerOption
         key={option.value}
         role="option"
         aria-selected={selected}
@@ -231,13 +231,13 @@ export function SettingsSelect<Value extends string>({
         }}
       >
         {option.preview}
-        <PickerMenuOptionContent>
-          <PickerMenuOptionLabel className={privacyClassName}>
+        <PickerOptionContent>
+          <PickerOptionLabel className={privacyClassName}>
             {option.label}
-          </PickerMenuOptionLabel>
-        </PickerMenuOptionContent>
-        <PickerMenuOptionCheck selected={selected} />
-      </PickerMenuOption>
+          </PickerOptionLabel>
+        </PickerOptionContent>
+        <PickerOptionCheck selected={selected} />
+      </PickerOption>
     );
   };
 
@@ -283,7 +283,7 @@ export function SettingsSelect<Value extends string>({
           />
         </Button>
       </span>
-      <FloatingPickerMenu
+      <Picker
         open={menuOpen}
         onOpenChange={setOpen}
         anchorRef={anchorRef}
@@ -304,16 +304,16 @@ export function SettingsSelect<Value extends string>({
         {options.map((item, index) =>
           isGroup(item) ? (
             <Fragment key={`group-${index}-${item.label}`}>
-              <PickerMenuSectionLabel role="presentation">
+              <PickerSectionLabel role="presentation">
                 {item.label}
-              </PickerMenuSectionLabel>
+              </PickerSectionLabel>
               {item.options.map(renderOption)}
             </Fragment>
           ) : (
             renderOption(item)
           ),
         )}
-      </FloatingPickerMenu>
+      </Picker>
     </>
   );
 }

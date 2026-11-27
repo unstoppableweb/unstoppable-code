@@ -3,10 +3,10 @@ import { MoreHorizontalIcon } from '../../icons/AppIcons';
 import { Button } from '../../primitives/Button';
 import { CLEAN_ICON_BUTTON_VARIANT } from '../chat-look';
 import {
-  DropdownMenuRowStyleProvider,
+  MenuRowStyleProvider,
   QUIET_MENU_ROW_STYLE,
-} from '../../primitives/DropdownMenu';
-import { FLOATING_MENU_GAP, FloatingMenu } from '../../primitives/FloatingMenu';
+} from '../../primitives/MenuItem';
+import { MENU_GAP, Menu } from '../../primitives/Menu';
 import { TurnFeedbackAsMenuItemsContext } from '../TurnFeedbackControl';
 import { Tooltip } from '../../primitives/Tooltip';
 
@@ -15,7 +15,7 @@ import { Tooltip } from '../../primitives/Tooltip';
  * ChatGPT transcript: the less-used actions (branch into a worktree, share,
  * run comments) live in this small menu instead of more icons. Hosts own
  * the open state so a menu item can close it after opening a dialog, and
- * pass `DropdownMenuItem`s as children.
+ * pass `MenuItem`s as children.
  */
 export function TurnMoreMenu({
   open,
@@ -56,13 +56,13 @@ export function TurnMoreMenu({
           <MoreHorizontalIcon size="sm" aria-hidden="true" />
         </Button>
       </Tooltip>
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={open}
         onOpenChange={onOpenChange}
         anchorRef={triggerRef}
         placement="bottom-left"
-        gap={FLOATING_MENU_GAP}
+        gap={MENU_GAP}
         interaction="menu"
         aria-label={label}
         data-testid={`${dataTestId}-menu`}
@@ -80,12 +80,12 @@ export function TurnMoreMenu({
       >
         {/* Small text and quiet icons, like the reference's menu. The thumbs
             render as "Good response" / "Bad response" rows here. */}
-        <DropdownMenuRowStyleProvider value={QUIET_MENU_ROW_STYLE}>
+        <MenuRowStyleProvider value={QUIET_MENU_ROW_STYLE}>
           <TurnFeedbackAsMenuItemsContext.Provider value>
             {children}
           </TurnFeedbackAsMenuItemsContext.Provider>
-        </DropdownMenuRowStyleProvider>
-      </FloatingMenu>
+        </MenuRowStyleProvider>
+      </Menu>
     </>
   );
 }

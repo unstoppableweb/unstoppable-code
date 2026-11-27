@@ -12,7 +12,7 @@ import {
   type RefObject,
 } from 'react';
 import {
-  DropdownMenuSurface,
+  MenuSurface,
   OverlayScrollArea,
   TitlebarIconButton,
 } from '@canopy/ui-shared';
@@ -193,7 +193,7 @@ const ActivityCard = memo(function ActivityCard({
         className={`${over ? 'pointer-events-auto' : 'pointer-events-none'} relative flex min-h-0 flex-col`}
       >
         {over ? (
-          <DropdownMenuSurface
+          <MenuSurface
             role="presentation"
             aria-hidden="true"
             data-testid="activity-card-surface"

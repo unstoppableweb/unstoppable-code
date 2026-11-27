@@ -37,7 +37,7 @@ import { ErrorState, Surface } from '@canopy/ui-shared/components';
 import { ChatIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
-  FloatingPickerMenu,
+  Picker,
   PickerTrigger,
   PickerTriggerChevron,
   SegmentedControl,
@@ -895,7 +895,7 @@ export function SubagentsPanel({
           )}
           <PickerTriggerChevron open={rootPickerOpen} />
         </PickerTrigger>
-        <FloatingPickerMenu
+        <Picker
           open={rootPickerOpen}
           onOpenChange={closeRootPicker}
           anchorRef={rootTriggerRef}
@@ -909,7 +909,7 @@ export function SubagentsPanel({
             selectedRootId={selectedRootId}
             onSelectRoot={selectRoot}
           />
-        </FloatingPickerMenu>
+        </Picker>
       </div>
     ) : null;
 
@@ -932,7 +932,7 @@ export function SubagentsPanel({
           </span>
           <PickerTriggerChevron open={levelsMenuOpen} />
         </PickerTrigger>
-        <FloatingPickerMenu
+        <Picker
           open={levelsMenuOpen}
           onOpenChange={closeLevelsMenu}
           anchorRef={levelsTriggerRef}
@@ -951,7 +951,7 @@ export function SubagentsPanel({
               setLevelsMenuOpen(false);
             }}
           />
-        </FloatingPickerMenu>
+        </Picker>
       </div>
     ) : null;
 

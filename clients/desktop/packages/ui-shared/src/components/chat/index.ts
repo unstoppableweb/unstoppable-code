@@ -61,7 +61,10 @@ export * from './TurnFileChipView';
 export * from './TurnFilesSummaryView';
 export * from './turn-files-heading';
 export * from './MessageImageAttachments';
-export { DelegatedAgentCard } from './DelegatedAgentCard';
+export {
+  DelegatedAgentCard,
+  delegatedAgentRouteMetadata,
+} from './DelegatedAgentCard';
 export * from './TaskStopButton';
 export {
   DelegatedAgentCapabilities,

@@ -16,7 +16,7 @@ import {
   type ComposerShowAllControl,
   type ComposerActionRow,
 } from './ComposerActionList';
-import { FloatingMenu } from '../primitives/FloatingMenu';
+import { Menu } from '../primitives/Menu';
 import { Tooltip } from '../primitives/Tooltip';
 import { ComposerIconButton } from './ComposerIconButton';
 import { PlusLargeIcon } from '../icons/AppIcons';
@@ -275,7 +275,7 @@ export function ComposerPlusMenuPresentation({
         </Tooltip>
       )}
 
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={isOpen}
         onOpenChange={setIsOpen}
@@ -326,7 +326,7 @@ export function ComposerPlusMenuPresentation({
           // opening it would otherwise serialize thousands of elements.
           blockRowsFromReplay
         />
-      </FloatingMenu>
+      </Menu>
     </>
   );
 }

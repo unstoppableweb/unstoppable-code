@@ -6,26 +6,26 @@ import {
   BranchPickerOptionContent,
   DelayedLoadingPlaceholder,
   Divider,
-  FloatingPickerMenu,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionDescription,
-  PickerMenuOptionLabel,
-  PickerMenuOptionLeading,
-  PickerMenuState,
-  PickerMenuTab,
-  PickerMenuTabList,
+  Picker,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionDescription,
+  PickerOptionLabel,
+  PickerOptionLeading,
+  PickerState,
+  PickerTab,
+  PickerTabList,
   PickerTrigger,
   PickerTriggerChevron,
-  PickListResults,
-  pickListOptionId,
-  resolvePickListActiveKey,
+  PickerSearchResults,
+  pickerSearchOptionId,
+  resolvePickerSearchActiveKey,
   HoverCard,
   SearchField,
   Skeleton,
   tabNavigationIndex,
-  usePickListKeys,
+  usePickerSearchKeys,
   WorktreePickerOptionContent,
   branchPickerOptionTestId,
 } from '@canopy/ui-shared';
@@ -168,19 +168,19 @@ function BaseBranchPickerLoadingRows({
     >
       <Skeleton loading label={TAB_LOADING_LABELS[tab]} testId={testId}>
         {samples.map((label) => (
-          <PickerMenuOption key={label} disabled>
-            <PickerMenuOptionLeading>
+          <PickerOption key={label} disabled>
+            <PickerOptionLeading>
               {tab === 'prs' ? <GitPullRequestIcon /> : <BranchIcon />}
-            </PickerMenuOptionLeading>
-            <PickerMenuOptionContent>
-              <PickerMenuOptionLabel>{label}</PickerMenuOptionLabel>
+            </PickerOptionLeading>
+            <PickerOptionContent>
+              <PickerOptionLabel>{label}</PickerOptionLabel>
               {tab === 'prs' ? (
-                <PickerMenuOptionDescription>
+                <PickerOptionDescription>
                   Example author
-                </PickerMenuOptionDescription>
+                </PickerOptionDescription>
               ) : null}
-            </PickerMenuOptionContent>
-          </PickerMenuOption>
+            </PickerOptionContent>
+          </PickerOption>
         ))}
       </Skeleton>
     </DelayedLoadingPlaceholder>
@@ -318,19 +318,19 @@ const BaseBranchPickerRowContent = memo(function BaseBranchPickerRowContent({
   }
   return (
     <>
-      <PickerMenuOptionLeading>
+      <PickerOptionLeading>
         {row.kind === 'pr' ? <GitPullRequestIcon /> : <BranchIcon />}
-      </PickerMenuOptionLeading>
-      <PickerMenuOptionContent>
-        <PickerMenuOptionLabel>{rowLabel(row)}</PickerMenuOptionLabel>
+      </PickerOptionLeading>
+      <PickerOptionContent>
+        <PickerOptionLabel>{rowLabel(row)}</PickerOptionLabel>
         {row.kind === 'pr' ? (
-          <PickerMenuOptionDescription>
+          <PickerOptionDescription>
             {/* Session replay blocks the author's login. */}
             <span className={REPLAY_BLOCK_CLASS}>{row.pr.authorLogin}</span>
-          </PickerMenuOptionDescription>
+          </PickerOptionDescription>
         ) : null}
-      </PickerMenuOptionContent>
-      <PickerMenuOptionCheck selected={selected} />
+      </PickerOptionContent>
+      <PickerOptionCheck selected={selected} />
     </>
   );
 });
@@ -389,7 +389,7 @@ function resolveTabStatus(
     : null;
 }
 
-/** The content of a `PickerMenuState`, inside or below the list. */
+/** The content of a `PickerState`, inside or below the list. */
 function BaseBranchPickerTabState({
   status,
   tab,
@@ -654,7 +654,7 @@ export function BaseBranchPicker({
   // Keep the pinned default reachable by navigation, but start on a match.
   const activeKey = search.trim()
     ? (movedKey ?? keys.find((key) => key !== DEFAULT_OPTION_KEY) ?? null)
-    : resolvePickListActiveKey(keys, movedKey, selectedKey);
+    : resolvePickerSearchActiveKey(keys, movedKey, selectedKey);
   const moveActive = (key: string): void =>
     setMoved({ key, tab: shownTab, query: search });
 
@@ -693,7 +693,7 @@ export function BaseBranchPicker({
     restoreTriggerFocus();
   }
 
-  const handleKeys = usePickListKeys({
+  const handleKeys = usePickerSearchKeys({
     keys,
     activeKey,
     onActiveKeyChange: moveActive,
@@ -805,7 +805,7 @@ export function BaseBranchPicker({
         trigger
       )}
 
-      <FloatingPickerMenu
+      <Picker
         id={menuId}
         open={open && !disabled}
         onOpenChange={setOpen}
@@ -835,7 +835,7 @@ export function BaseBranchPicker({
           clearOnEscape={false}
           onKeyDownCapture={(event) => {
             keepCompositionKeysInField(event);
-            // FloatingMenu dismisses on unhandled Tab.
+            // Menu dismisses on unhandled Tab.
             const next = tabRefs.current.get(shownTab) ?? retryRef.current;
             if (
               !event.defaultPrevented &&
@@ -856,15 +856,17 @@ export function BaseBranchPicker({
           aria-expanded
           aria-controls={listId}
           aria-activedescendant={
-            activeKey === null ? undefined : pickListOptionId(listId, activeKey)
+            activeKey === null
+              ? undefined
+              : pickerSearchOptionId(listId, activeKey)
           }
           data-testid={`${testIdPrefix}-search`}
         />
         <Divider aria-hidden className="-mx-1" />
         {visibleTabs.length > 1 ? (
-          <PickerMenuTabList aria-label="Base branch sources">
+          <PickerTabList aria-label="Base branch sources">
             {visibleTabs.map((tab, index) => (
-              <PickerMenuTab
+              <PickerTab
                 key={tab.id}
                 ref={(button) => {
                   if (button) tabRefs.current.set(tab.id, button);
@@ -906,9 +908,9 @@ export function BaseBranchPicker({
                 data-testid={`${testIdPrefix}-tab-${tab.id}`}
               >
                 {tab.label}
-              </PickerMenuTab>
+              </PickerTab>
             ))}
-          </PickerMenuTabList>
+          </PickerTabList>
         ) : null}
         <div
           id={panelId}
@@ -928,7 +930,7 @@ export function BaseBranchPicker({
                 : 'flex min-h-0 flex-col'
             }
           >
-            <PickListResults
+            <PickerSearchResults
               items={rows}
               getKey={rowKey}
               getLabel={rowLabel}
@@ -952,11 +954,11 @@ export function BaseBranchPicker({
           </div>
           {statusContent ? (
             <div className={`shrink-0 pb-1${rows.length === 0 ? ' pt-1' : ''}`}>
-              <PickerMenuState role="status">{statusContent}</PickerMenuState>
+              <PickerState role="status">{statusContent}</PickerState>
             </div>
           ) : null}
         </div>
-      </FloatingPickerMenu>
+      </Picker>
     </div>
   );
 }

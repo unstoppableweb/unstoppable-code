@@ -148,7 +148,10 @@
     "setup:local": "node scripts/public-build/desktop.mjs setup --local-only",
     "build:local": "node scripts/public-build/desktop.mjs build --local-only",
     "start:local": "node scripts/public-build/desktop.mjs start --local-only",
-    "smoke:local": "node scripts/public-build/desktop.mjs smoke"
+    "smoke:local": "node scripts/public-build/desktop.mjs smoke",
+    "setup:selfhost": "node scripts/public-build/desktop.mjs setup --self-host",
+    "build:selfhost": "node scripts/public-build/desktop.mjs build --self-host",
+    "start:selfhost": "node scripts/public-build/desktop.mjs start --self-host"
   },
   "claude-code": {
     "version": "2.1.325",

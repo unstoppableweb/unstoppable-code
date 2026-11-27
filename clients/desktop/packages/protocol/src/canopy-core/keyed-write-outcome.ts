@@ -65,6 +65,11 @@ export const NOT_APPLIED_MARKS: readonly NotAppliedMark[] = [
     source:
       'packages/core-runtime/src/node/pipeline/daemon-definitions.ts:113-124, :186-187',
   },
+  // The ledger could not be used, so it recorded nothing.
+  {
+    code: 'core.operationLedger.unavailable',
+    source: 'packages/core-runtime/src/node/operations/ledger-handlers.ts',
+  },
 ];
 
 function detail(payload: CanopyErrorPayload, name: string): unknown {

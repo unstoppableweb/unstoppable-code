@@ -83,6 +83,7 @@ import {
   normalizeAgentModelConfig,
 } from '@canopy/desktop-shared/types';
 import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
+import { resolvePersonalGatewaySendRoute } from '../agents/no-billing-source-refusal';
 import type { RemoteControlChatScheduledMessages } from '@canopy/protocol/remote-control/shell';
 import { resolveClaudeForkResumePoint } from '@canopy/desktop-shared/lib/claude-fork-resume-point';
 import { readCodexSpeedRecord } from '@canopy/execution-engine/lib/codex-speed';
@@ -2732,6 +2733,33 @@ async function sendWorktreeChatMessageNow(
     worktreeId: request.worktreeId,
     ...(request.chatId ? { chatId: request.chatId } : {}),
   });
+  // A built-in model this account can't pay for (signed out, no AI Credits)
+  // runs as the same model on the user's Personal AI gateway instead of being
+  // refused. Before every gate below, so they judge the model that runs, and
+  // the tab is stamped with it. Covers chats, automations, hooks and workflow
+  // sends, which all reach this service with a concrete `request.model`.
+  const gatewayRoute = options.requiredAccountProxyConnectionId
+    ? undefined
+    : await resolvePersonalGatewaySendRoute(request.model, {
+        owner: () => Promise.resolve(policyOwner),
+        projectId: request.projectId,
+      });
+  if (gatewayRoute) {
+    request = {
+      ...request,
+      model: gatewayRoute.model,
+      ...(request.providerType
+        ? { providerType: gatewayRoute.providerType ?? request.providerType }
+        : {}),
+      // A carried harness belongs to the built-in model (`sendModelPin`
+      // stamps it); the echo check below compares it with the new model's.
+      ...('executionHarness' in request &&
+      request.executionHarness !== undefined &&
+      gatewayRoute.executionHarness !== undefined
+        ? { executionHarness: gatewayRoute.executionHarness }
+        : {}),
+    };
+  }
   if (options.requiredAccountProxyConnectionId) {
     const provider = request.providerType ?? existingTab?.providerType;
     if (

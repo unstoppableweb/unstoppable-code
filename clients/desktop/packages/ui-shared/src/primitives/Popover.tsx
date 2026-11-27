@@ -10,11 +10,11 @@ import {
   type SyntheticEvent,
 } from 'react';
 import {
-  FloatingMenu,
-  FloatingMenuPointAnchor,
-  type FloatingMenuPlacement,
-  type FloatingMenuPoint,
-} from './FloatingMenu';
+  Menu,
+  MenuPointAnchor,
+  type MenuPlacement,
+  type MenuPoint,
+} from './Menu';
 
 interface PopoverBaseProps {
   readonly open: boolean;
@@ -24,7 +24,7 @@ interface PopoverBaseProps {
   readonly 'aria-labelledby'?: string;
   readonly 'data-testid'?: string;
   readonly id?: string;
-  readonly placement?: FloatingMenuPlacement;
+  readonly placement?: MenuPlacement;
   readonly gap?: number;
   /**
    * The panel's width: `sm` 224px, `md` 288px (default), `lg` 320px, or
@@ -82,7 +82,7 @@ interface PopoverAtPointProps extends PopoverBaseProps {
   readonly anchorRef?: never;
   readonly anchorRect?: never;
   /** A point in `ownerDocument`'s viewport, such as a selection's end. */
-  readonly anchorPoint: FloatingMenuPoint;
+  readonly anchorPoint: MenuPoint;
   readonly ownerDocument: Document;
 }
 
@@ -117,7 +117,7 @@ export type PopoverWidth = 'sm' | 'md' | 'lg' | 'content';
 
 /**
  * A small panel tied to a control, a point or a box: a preview, a short form.
- * Built on `FloatingMenu`, so it places, flips and clamps in the window like
+ * Built on `Menu`, so it places, flips and clamps in the window like
  * every menu, on the menu surface (fill, radius, shadow) with a 12px inset.
  * Opening moves focus into it and keeps Tab inside; Escape, an outside
  * press, and for a point a window resize or blur close it, and focus goes
@@ -201,7 +201,7 @@ export function Popover(props: PopoverProps): JSX.Element {
   return (
     <>
       {props.anchorPoint !== undefined && open ? (
-        <FloatingMenuPointAnchor
+        <MenuPointAnchor
           ref={pointAnchorRef}
           x={props.anchorPoint.x}
           y={props.anchorPoint.y}
@@ -209,7 +209,7 @@ export function Popover(props: PopoverProps): JSX.Element {
         />
       ) : null}
       {props.anchorRect !== undefined && open ? (
-        <FloatingMenuPointAnchor
+        <MenuPointAnchor
           ref={pointAnchorRef}
           x={props.anchorRect.left}
           y={props.anchorRect.top}
@@ -218,7 +218,7 @@ export function Popover(props: PopoverProps): JSX.Element {
           ownerDocument={props.ownerDocument}
         />
       ) : null}
-      <FloatingMenu
+      <Menu
         ref={surfaceRef}
         open={open}
         onOpenChange={onOpenChange}
@@ -255,8 +255,8 @@ export function Popover(props: PopoverProps): JSX.Element {
               onClick: stopAtSurface,
             }
           : {})}
-        // `manual` turns off FloatingMenu's scroll viewport, so the surface
-        // scrolls itself within the max height FloatingMenu measures for the
+        // `manual` turns off Menu's scroll viewport, so the surface
+        // scrolls itself within the max height Menu measures for the
         // window: a tall popover in a short window keeps every control
         // reachable.
         className={
@@ -270,7 +270,7 @@ export function Popover(props: PopoverProps): JSX.Element {
         }
       >
         {children}
-      </FloatingMenu>
+      </Menu>
     </>
   );
 }

@@ -11,6 +11,7 @@ import type {
 import { chatInterestRefKey } from '@/lib/chat-interest/tracker';
 import { applyCanonicalChanges } from './canonical-changes';
 import { chatScopeKey } from './revisioned-sync';
+import { registerStaleChatCatchUpResetHandler } from './stale-catch-up-reset';
 import { chatStoreApi } from './store-ref';
 import {
   installTranscriptPage,
@@ -36,15 +37,21 @@ interface Recording {
   changes: Array<{ revision: number; changes: ChatStateChange[] }>;
 }
 
+interface PublishedCatchUpEntry {
+  readonly target: ChatInterestChatRef;
+  readonly state: StaleChatCatchUpState;
+}
+
 const recordings = new Map<string, Recording>();
-const states = new Map<string, StaleChatCatchUpState>();
+const states = new Map<string, PublishedCatchUpEntry>();
 const listeners = new Set<() => void>();
+const checkCallbacks = new Set<() => void>();
 const idle: StaleChatCatchUpState = { loading: false, error: null };
 
 export function getStaleChatCatchUpState(
   target: ChatInterestChatRef,
 ): StaleChatCatchUpState {
-  return states.get(chatInterestRefKey(target)) ?? idle;
+  return states.get(chatInterestRefKey(target))?.state ?? idle;
 }
 
 /** A catch-up read for `target` is running (including its first 300 ms). */
@@ -67,9 +74,37 @@ function publish(
 ): void {
   const key = chatInterestRefKey(target);
   if (!state.loading && state.error === null) states.delete(key);
-  else states.set(key, state);
+  else states.set(key, { target, state });
   listeners.forEach((listener) => listener());
 }
+
+/**
+ * Clears failed catch-up error entries for a reconnected scope so still-focused
+ * stale tabs retry catch-up once the scope refresh finishes.
+ */
+export function clearFailedStaleChatCatchUpForScope(
+  projectId: string,
+  worktreeId: string,
+): void {
+  let changed = false;
+  for (const [key, entry] of Array.from(states.entries())) {
+    if (
+      entry.target.projectId === projectId &&
+      entry.target.worktreeId === worktreeId &&
+      !entry.state.loading &&
+      entry.state.error !== null &&
+      !recordings.has(key)
+    ) {
+      states.delete(key);
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  listeners.forEach((listener) => listener());
+  checkCallbacks.forEach((check) => check());
+}
+
+registerStaleChatCatchUpResetHandler(clearFailedStaleChatCatchUpForScope);
 
 /** Called inside canonical publication, before store subscribers can start a read.
  * Cadence batches may contain several transcript revisions; retain each boundary. */
@@ -227,12 +262,17 @@ export function startStaleChatCatchUp(host: StaleChatCatchUpHost): () => void {
     const refs = host.current()?.focused ?? [];
     const previous = focused;
     focused = new Set(refs.map(chatInterestRefKey));
+    const storeState = api.getState();
     for (const target of refs) {
-      const tab = api
-        .getState()
-        .worktreeChats[
-          chatScopeKey(target.projectId, target.worktreeId)
-        ]?.tabs.find((tab) => tab.id === target.chatId);
+      const scopeKey = chatScopeKey(target.projectId, target.worktreeId);
+      // Wait for an in-flight reconnect/gap refresh to settle before starting
+      // paged catch-up so we read against the refreshed scope revision.
+      if (storeState.chatStateSync[scopeKey]?.phase === 'refreshing') {
+        continue;
+      }
+      const tab = storeState.worktreeChats[scopeKey]?.tabs.find(
+        (tab) => tab.id === target.chatId,
+      );
       // Only stale tabs; an unhydrated focused chat stays with today's
       // selection path.
       if (
@@ -246,12 +286,19 @@ export function startStaleChatCatchUp(host: StaleChatCatchUpHost): () => void {
       }
     }
   };
+  checkCallbacks.add(check);
   const unsubscribeInterest = host.subscribe(check);
   const unsubscribeStore = api.subscribe((state, previous) => {
-    if (state.worktreeChats !== previous.worktreeChats) check();
+    if (
+      state.worktreeChats !== previous.worktreeChats ||
+      state.chatStateSync !== previous.chatStateSync
+    ) {
+      check();
+    }
   });
   check();
   return (): void => {
+    checkCallbacks.delete(check);
     unsubscribeInterest();
     unsubscribeStore();
     for (const [key, recording] of Array.from(recordings.entries())) {

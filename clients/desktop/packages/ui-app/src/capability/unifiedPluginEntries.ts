@@ -13,6 +13,7 @@ import type { ResourceOwner } from '@canopy/protocol/resource-owner';
  */
 import {
   curatedMcpDesktopOnly,
+  curatedMcpProviderOnly,
   type CuratedMcpServerEntry,
 } from '@canopy/protocol/mcp-catalog';
 import type { HarnessCompatibilityHarness } from '@canopy/protocol/plugins';
@@ -138,8 +139,13 @@ import {
 // Shared with the connector rows so "what do we advertise" has one answer.
 import {
   buildProviderConnectorRows,
+  providerConnectorCatalogEntry,
   type ProviderConnectorInput,
 } from './providerConnectorRows';
+import {
+  MCP_PROVIDER_CONNECTOR_LABELS,
+  mcpProviderRoutesDescription,
+} from './mcpConnectionCopy';
 import {
   bundledMcpServersOf,
   githubOwner,
@@ -1276,6 +1282,10 @@ function buildCuratedMcpEntry(
     ...(pendingSignIns > 0 ? { pendingSignIns } : {}),
     accountProxyMcp:
       entry.platformOAuth === true && !desktopOnly ? true : undefined,
+    curatedManagedConnection: !curatedMcpProviderOnly(entry) ? true : undefined,
+    // The catalog's editorial pick, independent of platform sign-in. It only
+    // drives the row mark, so it stays out of the `recommended` ranking input.
+    ...(entry.recommended === true ? { curatedRecommended: true } : {}),
     recommended: false,
     catalogSortOrder: entry.sortOrder,
     integration: {
@@ -4560,6 +4570,9 @@ export function buildUnifiedPluginEntries(
   };
   const notOwned = (entry: UnifiedPluginEntry): boolean => {
     if (entry.state !== 'available') return true;
+    // All search lists the Claude and Codex plugins independently of the
+    // service's MCP connection. A provider connector is not their replacement.
+    if (inputs.customizeAllSearch && entry.kind === 'plugin') return true;
     // Name suppression is for a provider marketplace's wrapper of the
     // connector. A curated plugin is not one: a multi-key plugin named like a
     // folded connector keeps its card and its requirement chips.
@@ -4784,6 +4797,22 @@ export function buildUnifiedPluginEntries(
   }));
 }
 
+/** The catalog entry's mark, bundled first as its own card resolves it. */
+function sameServiceLogo(
+  entry: CuratedMcpServerEntry,
+): Pick<UnifiedPluginEntry, 'logoUrl' | 'bundledLogo'> {
+  const bundled = Object.prototype.hasOwnProperty.call(
+    MCP_BRAND_LOGOS,
+    entry.key,
+  )
+    ? MCP_BRAND_LOGOS[entry.key]
+    : undefined;
+  return {
+    ...(bundled !== undefined ? { bundledLogo: bundled } : {}),
+    ...(entry.logoUrl ? { logoUrl: entry.logoUrl } : {}),
+  };
+}
+
 interface ProviderConnectorProjection {
   /** Connectors the catalog does not describe, as rows of their own. */
   entries: UnifiedPluginEntry[];
@@ -4836,16 +4865,42 @@ function buildProviderConnectorEntries(
       });
       continue;
     }
+    // Only the accounts that report the connector carry it; neither harness
+    // reaches it through the other's account.
+    const accounts = row.providers.map((provider) => provider.provider);
+    const accountLabels = accounts.map(
+      (provider) => MCP_PROVIDER_CONNECTOR_LABELS[provider],
+    );
+    // The same service under the catalog's name lends its brand and summary,
+    // never its key: a key would fold the connector into that entry's card.
+    const sameService = providerConnectorCatalogEntry(row, curated);
+    const routes = mcpProviderRoutesDescription(
+      appName ?? 'The app',
+      accountLabels,
+    );
     entries.push({
       id: `provider-connector:${row.displayName}`,
       kind: 'app',
       origin: 'curated',
       name: row.displayName,
-      description: `Connect with your Claude or Codex account. ${appName ?? 'The app'} never sees these credentials.`,
-      categories: [],
+      description: sameService
+        ? `${sameService.shortDescription} ${routes}`
+        : routes,
+      ...(sameService ? sameServiceLogo(sameService) : {}),
+      categories: sameService ? [...sameService.categories] : [],
       authorName: undefined,
+      typeLabel: 'MCP server',
+      // Where it lives, said instead of a publisher it does not have.
+      ...(accountLabels.length > 0
+        ? {
+            sourceLabel: `${accountLabels.join(' and ')} account${accountLabels.length > 1 ? 's' : ''}`,
+          }
+        : {}),
       components: mcpAppComponents(),
-      providerSupport: NEUTRAL_PROVIDER_SUPPORT,
+      providerSupport: {
+        claude: accounts.includes('claude'),
+        codex: accounts.includes('codex'),
+      },
       // `needs-auth` buckets into Installed, which is right for a curated
       // server the user added and wrong here: an unlinked connector was never
       // installed, so listing it as such — with a "Needs attention" badge —

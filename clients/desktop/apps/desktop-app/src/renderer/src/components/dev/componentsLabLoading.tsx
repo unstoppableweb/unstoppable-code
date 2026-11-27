@@ -14,7 +14,7 @@ import {
   InlineMeasuredSkeleton,
   LoadingIndicatorStyleProvider,
   LoadingSpinner,
-  PickerMenuSampleOptions,
+  PickerSampleOptions,
   Skeleton,
   SKELETON_KEEP,
   SlowLoadNote,
@@ -98,14 +98,14 @@ export function LoadingSpecimen(): JSX.Element {
       </SpecimenPanel>
       <SpecimenPanel title="Skeleton around shared sample content">
         <SpecimenGrid min={260}>
-          <SpecimenCell label="PickerMenuSampleOptions, leading icon rail">
+          <SpecimenCell label="PickerSampleOptions, leading icon rail">
             <Skeleton loading className="w-full">
-              <PickerMenuSampleOptions rows={3} />
+              <PickerSampleOptions rows={3} />
             </Skeleton>
           </SpecimenCell>
-          <SpecimenCell label="PickerMenuSampleOptions, no rail">
+          <SpecimenCell label="PickerSampleOptions, no rail">
             <Skeleton loading className="w-full">
-              <PickerMenuSampleOptions rows={3} leading={false} />
+              <PickerSampleOptions rows={3} leading={false} />
             </Skeleton>
           </SpecimenCell>
         </SpecimenGrid>

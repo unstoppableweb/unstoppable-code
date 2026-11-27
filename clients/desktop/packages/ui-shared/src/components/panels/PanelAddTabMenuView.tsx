@@ -20,12 +20,8 @@ import {
   type RefObject,
 } from 'react';
 import { ActionMenuRowStyle } from '../../primitives/ActionMenuItems';
-import {
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-} from '../../primitives/DropdownMenu';
-import { FloatingMenu } from '../../primitives/FloatingMenu';
+import { MenuDivider, MenuItem, MenuItemIcon } from '../../primitives/MenuItem';
+import { Menu } from '../../primitives/Menu';
 import { NestedMenuFlyout } from '../../primitives/NestedMenuFlyout';
 import { Tooltip } from '../../primitives/Tooltip';
 
@@ -101,7 +97,7 @@ function MenuEntry({
   readonly entry: PanelAddTabMenuViewEntry;
 }): JSX.Element {
   const item = (
-    <DropdownMenuItem
+    <MenuItem
       className="min-w-0"
       data-testid={entry.testId}
       disabled={entry.disabled}
@@ -111,9 +107,9 @@ function MenuEntry({
         entry.onActivate();
       }}
     >
-      <DropdownMenuItemIcon data-testid={`${entry.testId}-icon`}>
+      <MenuItemIcon data-testid={`${entry.testId}-icon`}>
         {entry.icon}
-      </DropdownMenuItemIcon>
+      </MenuItemIcon>
       <span
         data-testid={`${entry.testId}-label`}
         className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap"
@@ -121,7 +117,7 @@ function MenuEntry({
         {entry.label}
       </span>
       {entry.accessory}
-    </DropdownMenuItem>
+    </MenuItem>
   );
   return entry.tooltip ? (
     <Tooltip label={entry.tooltip} className="w-full">
@@ -158,11 +154,11 @@ function MenuSubmenu({ section }: MenuSubmenuProps): JSX.Element {
       {headerEntries.map((entry) => (
         <MenuEntry key={entry.key ?? entry.testId} entry={entry} />
       ))}
-      {headerEntries.length > 0 && hasContent ? <DropdownMenuDivider /> : null}
+      {headerEntries.length > 0 && hasContent ? <MenuDivider /> : null}
       {visibleSubsections.length > 0
         ? visibleSubsections.map((subsection, index) => (
             <Fragment key={subsection.id}>
-              {index > 0 ? <DropdownMenuDivider /> : null}
+              {index > 0 ? <MenuDivider /> : null}
               <div
                 role="group"
                 aria-label={subsection.label}
@@ -185,7 +181,7 @@ function MenuSubmenu({ section }: MenuSubmenuProps): JSX.Element {
           ))}
       {(section.footerEntries?.length ?? 0) > 0 ? (
         <>
-          <DropdownMenuDivider />
+          <MenuDivider />
           {section.footerEntries?.map((entry) => (
             <MenuEntry key={entry.key ?? entry.testId} entry={entry} />
           ))}
@@ -240,7 +236,7 @@ export function PanelAddTabMenuView({
   );
 
   return (
-    <FloatingMenu
+    <Menu
       open
       onOpenChange={(nextOpen) => {
         if (!nextOpen) onClose();
@@ -261,7 +257,7 @@ export function PanelAddTabMenuView({
         {sections.map((section) =>
           !hasSectionContent(section) ? null : (
             <Fragment key={section.id}>
-              <DropdownMenuDivider
+              <MenuDivider
                 data-testid={`panel-add-menu-${section.id}-divider`}
               />
               {section.presentation === 'submenu' ? (
@@ -291,6 +287,6 @@ export function PanelAddTabMenuView({
           ),
         )}
       </ActionMenuRowStyle>
-    </FloatingMenu>
+    </Menu>
   );
 }

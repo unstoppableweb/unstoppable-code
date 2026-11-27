@@ -1,8 +1,8 @@
 'use client';
 
-import { CodeBlock } from './CodeBlock';
 import type { JSX } from 'react';
 import type { AppErrorPresentation } from '@canopy/protocol/app-errors';
+import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { CopyButton } from './CopyButton';
 import { Disclosure } from './Disclosure';
 
@@ -12,6 +12,11 @@ export interface AppErrorDetailsProps {
     'referenceId' | 'rawDetail'
   >;
   readonly dataTestId?: string;
+  /**
+   * `center` under a centered message: the reference row and the Technical
+   * details toggle center, and the trace inside stays left-aligned.
+   */
+  readonly align?: 'start' | 'center';
   /** Placement only. */
   readonly className?: string;
 }
@@ -25,12 +30,14 @@ export interface AppErrorDetailsProps {
 export function AppErrorDetails({
   presentation,
   dataTestId = 'app-error-details',
+  align = 'start',
   className,
 }: AppErrorDetailsProps): JSX.Element {
   const { referenceId, rawDetail } = presentation;
+  const centered = align === 'center';
   return (
     <div
-      className={`flex min-w-0 flex-col gap-2${className ? ` ${className}` : ''}`}
+      className={`flex min-w-0 flex-col gap-2${centered ? ' items-center' : ''}${className ? ` ${className}` : ''}`}
       data-testid={dataTestId}
     >
       <div className="flex items-center gap-2 text-xs fg-secondary">
@@ -38,11 +45,7 @@ export function AppErrorDetails({
         {/* The copy control sits right against the ID: its quiet 12px glyph
             and the capsule's own padding are the only space between them. */}
         <span className="flex items-center">
-          <span
-            className="font-mono"
-            data-selectable
-            data-testid={`${dataTestId}-reference`}
-          >
+          <span data-selectable data-testid={`${dataTestId}-reference`}>
             {referenceId}
           </span>
           <CopyButton
@@ -56,20 +59,21 @@ export function AppErrorDetails({
         </span>
       </div>
       {rawDetail ? (
-        <Disclosure label="Technical details" dataTestId={`${dataTestId}-raw`}>
-          <CodeBlock
-            variant="bare"
-            size="xs"
-            wrap="words"
-            tone="secondary"
-            replay="block"
-            className="max-h-64"
+        <Disclosure
+          label="Technical details"
+          dataTestId={`${dataTestId}-raw`}
+          className={centered ? 'max-w-full items-center' : undefined}
+        >
+          {/* The reference's caption style, not code: the trace keeps its
+              line breaks and scrolls, and replay never records it. */}
+          <p
+            className={`max-h-64 max-w-full overflow-auto whitespace-pre-wrap break-words text-xs fg-secondary ${centered ? 'text-left' : ''} ${REPLAY_BLOCK_CLASS}`}
             data-selectable
           >
             {[rawDetail.name, rawDetail.message, rawDetail.stack]
               .filter(Boolean)
               .join('\n')}
-          </CodeBlock>
+          </p>
         </Disclosure>
       ) : null}
     </div>

@@ -22,10 +22,7 @@ import {
   CONTEXT_MENU_POINTER_OFFSET,
   useContextMenuPlacement,
 } from '../primitives/context-menu-placement';
-import {
-  FloatingMenu,
-  FloatingMenuPointAnchor,
-} from '../primitives/FloatingMenu';
+import { Menu, MenuPointAnchor } from '../primitives/Menu';
 import { WorktreeRowActionChip } from './WorktreeRow';
 
 export type WorktreeMenuItemKey =
@@ -325,14 +322,14 @@ export const WorktreeActionsMenu = forwardRef<
         </span>
       )}
       {open && pointerAnchor ? (
-        <FloatingMenuPointAnchor
+        <MenuPointAnchor
           ref={pointAnchorRef}
           x={pointerAnchor.x}
           y={pointerAnchor.y}
           ownerDocument={triggerRef.current?.ownerDocument ?? document}
         />
       ) : null}
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={handleOpenChange}
         anchorRef={pointerAnchor ? pointAnchorRef : triggerRef}
@@ -356,7 +353,7 @@ export const WorktreeActionsMenu = forwardRef<
         <ActionMenuRowStyle>
           <WorktreeActionMenuItems items={items} onSelect={selectItem} />
         </ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
     </WorktreeRowActionChip>
   );
 });

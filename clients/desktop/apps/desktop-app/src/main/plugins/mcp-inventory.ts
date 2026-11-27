@@ -16,11 +16,21 @@ import {
 import {
   CURATED_PLUGIN_MCP_AMBIGUOUS,
   CURATED_PLUGIN_MCP_LIST_UNAVAILABLE,
+  CONNECTOR_PLUGIN_MCP_CATALOG_UNAVAILABLE,
+  cloudAccountMcpRefs,
+  connectorPluginMcpAccountChoice,
+  connectorPluginMcpMayBePicked,
+  connectorPluginMcpMember,
   curatedPluginMcpMemberKey,
+  type ConnectorPluginMcpMember,
   findCuratedAccountMcpConnection,
   findCuratedDeviceMcpServer,
 } from '../mcp/curated-plugin-binding';
-import { readCachedCuratedMcpDesktopOnlyKeys } from '../mcp/curated-catalog';
+import {
+  readCachedCuratedMcpDesktopOnlyKeys,
+  readCachedCuratedMcpServerEntries,
+} from '../mcp/curated-catalog';
+import type { CuratedMcpServerEntry } from '@canopy/protocol/mcp-catalog';
 import {
   mcpAuthConnectLabel,
   mcpAuthStatusLabel,
@@ -508,6 +518,57 @@ async function buildCuratedPluginEntry(args: {
   return unbound;
 }
 
+/**
+ * Project a third-party plugin member at a catalog connector's endpoint
+ * (`connectorPluginMcpMember`) by the resolver's own choice
+ * (`connectorPluginMcpAccountChoice`). With no account of the connector
+ * picked it answers `undefined`, and the member shows its own sign-in. Bound
+ * to the pick it answers `null`: the picked account's own row is the one
+ * server the session loads, so the plugin adds no second row. When the pick
+ * can't be honored the row is unbound and names no account, leaving the
+ * pick's own row the one place to sign it in or turn it back on. No row names a `curatedKey`: the pick is
+ * the selection's own direct ref, which the Send as choice and a scheduled
+ * run's account check already read.
+ */
+async function buildConnectorPluginEntry(args: {
+  base: DetectedMcpServerInfo;
+  member: ConnectorPluginMcpMember;
+  handler: McpHttpAuthHandler;
+  handlerSource: 'default' | 'override';
+  selections: ChatTabPluginSelections;
+  warnings: string[];
+  accountConnections: () => Promise<AccountMcpConnection[] | null>;
+}): Promise<DetectedMcpServerInfo | null | undefined> {
+  if (!accountMcpConnectionsEnabled()) return undefined;
+  const directRefs = await cloudAccountMcpRefs(
+    args.selections.mcpServerRefs ?? [],
+  );
+  if (!connectorPluginMcpMayBePicked(directRefs, args.member.connectorKey))
+    return undefined;
+  const choice = connectorPluginMcpAccountChoice(
+    await args.accountConnections(),
+    args.member,
+    directRefs,
+  );
+  if (choice.kind === 'own') return undefined;
+  if (choice.kind === 'bind') return null;
+  const label = `${args.base.pluginName ?? ''}/${args.base.pluginServerName ?? args.base.serverName}`;
+  args.warnings.push(`Account MCP server "${label}" skipped: ${choice.reason}`);
+  // One recovery row per account: the pick's own row signs it in or turns
+  // it back on, so the plugin's row names no account.
+  return {
+    ...args.base,
+    authHandler: args.handler,
+    httpAuthHandler: args.handler,
+    httpAuthHandlerSource: args.handlerSource,
+    canToggleCanopyProxy: true,
+    canopyProxyEnabled: false,
+    authStatus: 'not_connected',
+    authStatusLabel: CURATED_PLUGIN_MCP_CONNECT_LABEL,
+    canConnect: false,
+  };
+}
+
 async function buildPluginEntry(
   marketplaceId: string,
   plugin: PluginInfo,
@@ -519,6 +580,7 @@ async function buildPluginEntry(
   warnings: string[],
   accountConnections: () => Promise<AccountMcpConnection[] | null>,
   desktopOnlyKeys: () => Promise<ReadonlySet<string>>,
+  catalogServers: () => Promise<readonly CuratedMcpServerEntry[] | null>,
   provider?: 'claude' | 'codex',
 ): Promise<DetectedMcpServerInfo | null> {
   const url = readString(rawValue, 'url');
@@ -581,6 +643,47 @@ async function buildPluginEntry(
       accountConnections,
       desktopOnlyKeys,
     });
+  }
+  // The same rule as the resolver: a third-party member whose URL names a
+  // catalog connector shows as the account the selection picks for it.
+  if (source !== 'override') {
+    const member = connectorPluginMcpMember(
+      marketplaceId,
+      rawValue,
+      await catalogServers(),
+    );
+    if (member?.kind === 'catalog-unavailable') {
+      if (
+        accountMcpConnectionsEnabled() &&
+        (await cloudAccountMcpRefs(selections.mcpServerRefs ?? [])).length > 0
+      ) {
+        warnings.push(
+          `Account MCP server "${plugin.name}/${serverName}" skipped: ${CONNECTOR_PLUGIN_MCP_CATALOG_UNAVAILABLE}`,
+        );
+        return {
+          ...base,
+          authHandler: handler,
+          httpAuthHandler: handler,
+          httpAuthHandlerSource: source,
+          canToggleCanopyProxy: true,
+          canopyProxyEnabled: false,
+          authStatus: 'not_connected',
+          authStatusLabel: CURATED_PLUGIN_MCP_CONNECT_LABEL,
+          canConnect: false,
+        };
+      }
+    } else if (member !== undefined) {
+      const bound = await buildConnectorPluginEntry({
+        base,
+        member,
+        handler,
+        handlerSource: source,
+        selections,
+        warnings,
+        accountConnections,
+      });
+      if (bound !== undefined) return bound;
+    }
   }
   const withHandler = {
     ...base,
@@ -716,6 +819,7 @@ async function buildPluginEntries(
   warnings: string[],
   accountConnections: () => Promise<AccountMcpConnection[] | null>,
   desktopOnlyKeys: () => Promise<ReadonlySet<string>>,
+  catalogServers: () => Promise<readonly CuratedMcpServerEntry[] | null>,
   provider?: 'claude' | 'codex',
   primaryPluginPath?: string | null,
 ): Promise<DetectedMcpServerInfo[]> {
@@ -744,6 +848,7 @@ async function buildPluginEntries(
           warnings,
           accountConnections,
           desktopOnlyKeys,
+          catalogServers,
           provider,
         ),
     ),
@@ -781,6 +886,12 @@ export async function listDetectedMcpServersForSelections(
   let desktopOnlyKeys: Promise<ReadonlySet<string>> | undefined;
   const loadDesktopOnlyKeys = (): Promise<ReadonlySet<string>> =>
     (desktopOnlyKeys ??= readCachedCuratedMcpDesktopOnlyKeys());
+  let catalogServers:
+    | Promise<readonly CuratedMcpServerEntry[] | null>
+    | undefined;
+  const loadCatalogServers = (): Promise<
+    readonly CuratedMcpServerEntry[] | null
+  > => (catalogServers ??= readCachedCuratedMcpServerEntries());
   const preferences = await readPreferencesFile();
   const defaultHandler = preferences.mcpHttpAuthDefaultHandler;
   const standaloneRefs = new Map<string, StandaloneInventoryRef>();
@@ -896,6 +1007,7 @@ export async function listDetectedMcpServersForSelections(
         warnings,
         loadAccountConnections,
         loadDesktopOnlyKeys,
+        loadCatalogServers,
         provider,
         primaryPath,
       )) {

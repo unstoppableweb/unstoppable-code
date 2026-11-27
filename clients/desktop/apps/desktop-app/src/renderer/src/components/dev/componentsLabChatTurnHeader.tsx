@@ -5,7 +5,7 @@ import type {
 } from '@canopy/protocol/remote-control/shell';
 import {
   Button,
-  DropdownMenuItem,
+  MenuItem,
   Surface,
   TurnMoreMenu,
   TurnOutcomeControl,
@@ -426,9 +426,9 @@ function MoreMenuDemo({
       {...(label !== undefined ? { label } : {})}
       dataTestId={`lab-more-${forcedOpen ? 'open' : 'closed'}`}
     >
-      <DropdownMenuItem>Branch into a new worktree</DropdownMenuItem>
-      <DropdownMenuItem>Share this reply</DropdownMenuItem>
-      <DropdownMenuItem disabled>Run comments</DropdownMenuItem>
+      <MenuItem>Branch into a new worktree</MenuItem>
+      <MenuItem>Share this reply</MenuItem>
+      <MenuItem disabled>Run comments</MenuItem>
     </TurnMoreMenu>
   );
 }

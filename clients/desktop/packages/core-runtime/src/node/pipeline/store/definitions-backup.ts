@@ -17,8 +17,16 @@ import {
   namespaceBackupPathError,
   type NamespaceBackupRecord,
 } from '../../../storage/backup-record';
+import {
+  backupRecordReference,
+  storageRecordsFolder,
+  type OwnerFlipRecordRead,
+} from '../../../storage/owner-records';
 import { STORAGE_OWNERSHIP } from '../../../storage/storage-ownership.generated';
-import type { StorageOwnershipRow } from '../../../storage/writer-authority';
+import type {
+  StorageOwnershipRow,
+  StorageTransitionOwner,
+} from '../../../storage/writer-authority';
 import {
   FileSetBackupError,
   copyFileSet,
@@ -30,6 +38,11 @@ import {
   whenMissing,
   type FileSetManifest,
 } from '../../file-set-backup';
+import {
+  persistNamespaceBackupRecord,
+  readOwnerFlipRecord,
+  writeOwnerFlipRecord,
+} from '../../storage-records';
 import {
   PIPELINE_DEFINITIONS_BACKUP_MEMBERS,
   type PipelineDefinitionsBackupMember,
@@ -124,6 +137,12 @@ export interface PipelineDefinitionsRestoreOptions extends FamilyOptions {
     readonly confirmedBy: 'person';
     readonly log: (loss: PipelineDefinitionsNewerLoss) => void;
   };
+  /**
+   * The owner the rows had when the backup was taken. A row whose owner
+   * record names another owner is returned to it; without `owner`, any
+   * owner record refuses the restore.
+   */
+  readonly owner?: StorageTransitionOwner;
 }
 
 export interface PipelineDefinitionsRestoreResult {
@@ -308,6 +327,61 @@ function holdsBackup(
   return (
     fileSetDigest(current) === fileSetDigest(backup) ||
     (member.kind === 'directory' && isEmpty(current) && isEmpty(backup))
+  );
+}
+
+/** The owners a restore returns a row to, and moves one away from. */
+const RETURNABLE: readonly StorageTransitionOwner[] = ['legacy', 'daemon'];
+
+/** A row the restore returns to `owner` from `from`, the owner it moved to. */
+interface OwnerReturn {
+  readonly from: StorageTransitionOwner;
+  readonly owner: StorageTransitionOwner;
+  readonly workPackage: string;
+}
+
+function ownerRefused(namespaceId: string, why: string): FileSetBackupError {
+  return new FileSetBackupError(
+    'OWNER_RECORD',
+    `The ${namespaceId} owner record ${why}. Nothing was restored.`,
+  );
+}
+
+/**
+ * What a restore does with a row's owner record (CAN-7842): nothing when
+ * there is none or it already names `owner` (`returned` when it is this
+ * backup's own return, whose flushes the restore repeats), or a return to
+ * `owner` from the owner the row moved to since the backup, or from this
+ * backup's own `offline` fence. Anything else refuses, before anything
+ * changes.
+ */
+function ownerReturn(
+  namespaceId: string,
+  read: OwnerFlipRecordRead,
+  thisBackup: string,
+  owner: StorageTransitionOwner | undefined,
+): OwnerReturn | 'returned' | undefined {
+  if (read.kind === 'absent') return undefined;
+  if (read.kind === 'unreadable')
+    throw ownerRefused(namespaceId, `can't be read (${read.reason})`);
+  const { fromOwner, toOwner, workPackage, backupRecord } = read.record;
+  if (owner === undefined)
+    throw ownerRefused(
+      namespaceId,
+      `names ${toOwner}; name the owner to return the row to`,
+    );
+  if (!RETURNABLE.includes(owner))
+    throw ownerRefused(namespaceId, `can't be returned to ${owner}`);
+  const ours = backupRecord === thisBackup;
+  if (toOwner === owner)
+    return ours && fromOwner === 'offline' ? 'returned' : undefined;
+  if (toOwner === 'offline' && ours && RETURNABLE.includes(fromOwner))
+    return { from: fromOwner, owner, workPackage };
+  if (RETURNABLE.includes(toOwner))
+    return { from: toOwner, owner, workPackage };
+  throw ownerRefused(
+    namespaceId,
+    `names ${toOwner}, which a restore doesn't return from`,
   );
 }
 
@@ -1099,6 +1173,18 @@ export async function restorePipelineDefinitionsBackup(
         });
         plans.push({ member, copy, manifest });
       }
+      const returns = new Map<string, OwnerReturn>();
+      const returned: string[] = [];
+      for (const record of verified) {
+        const back = ownerReturn(
+          record.namespaceId,
+          await readOwnerFlipRecord(root, record.namespaceId),
+          backupRecordReference(record.namespaceId, record.verifiedBy.digest),
+          options.owner,
+        );
+        if (back === 'returned') returned.push(record.namespaceId);
+        else if (back !== undefined) returns.set(record.namespaceId, back);
+      }
       if (newer.length > 0) {
         if (options.acceptNewerLoss?.confirmedBy !== 'person')
           throw new FileSetBackupError(
@@ -1107,6 +1193,55 @@ export async function restorePipelineDefinitionsBackup(
           );
         options.acceptNewerLoss.log({ backupPath: parent, rows: newer });
       }
+      const recordOptions = {
+        syncDirectory: options.syncDirectory,
+        isOutsideCheckouts: options.isOutsideCheckouts,
+        ownership: options.ownership,
+      };
+      const flip = async (
+        record: NamespaceBackupRecord,
+        { workPackage }: OwnerReturn,
+        fromOwner: StorageTransitionOwner,
+        toOwner: StorageTransitionOwner,
+      ): Promise<void> => {
+        const { namespaceId, verifiedBy } = record;
+        const flippedAt = new Date((options.clock ?? Date.now)());
+        await writeOwnerFlipRecord(
+          root,
+          {
+            namespaceId,
+            fromOwner,
+            toOwner,
+            workPackage,
+            backupDigest: verifiedBy.digest,
+            flippedAt: flippedAt.toISOString(),
+          },
+          recordOptions,
+        );
+      };
+      // An offline record keeps every writer out of a row whose owner moved,
+      // from before anything changes until the row is back in place. A fence
+      // an earlier attempt left is written again, so it is flushed too.
+      for (const record of verified) {
+        const back = returns.get(record.namespaceId);
+        if (back === undefined) continue;
+        await persistNamespaceBackupRecord(root, record, recordOptions);
+        await flip(record, back, back.from, 'offline');
+      }
+      const returnOwners = async (): Promise<void> => {
+        for (const record of verified) {
+          const back = returns.get(record.namespaceId);
+          if (back !== undefined)
+            await flip(record, back, 'offline', back.owner);
+        }
+        // An earlier attempt's return may not have been flushed.
+        for (const namespaceId of returned) {
+          const folder = hostPath(root, storageRecordsFolder(namespaceId));
+          await flush(folder);
+          await flush(dirname(folder));
+          await flush(root);
+        }
+      };
       const staging = [...(journalled?.staging ?? [])];
       const save = async (): Promise<void> => {
         await moves.flush();
@@ -1208,6 +1343,8 @@ export async function restorePipelineDefinitionsBackup(
         }
         await moves.flush();
         await flush(root);
+        // Every row is in place and durable before its owner returns.
+        await returnOwners();
         for (const name of staging)
           await rm(hostPath(root, name), { recursive: true, force: true });
         // The staging folders' removal is durable before the journal that
@@ -1215,7 +1352,7 @@ export async function restorePipelineDefinitionsBackup(
         if (staging.length > 0) await flush(root);
         await rm(journal, { force: true });
         await flush(base);
-      }
+      } else await returnOwners();
       return {
         restored: plans.map(({ member }) => member.namespaceId),
         unchanged,

@@ -17,20 +17,20 @@ import {
   type RefObject,
 } from 'react';
 import {
-  PickerMenuList,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-  PickerMenuSearchHeader,
-  PickerMenuSearchInput,
-  PickerMenuSampleOptions,
-  PickerMenuSection,
-  PickerMenuSectionLabel,
-  PickerMenuState,
-} from './PickerMenu';
+  PickerList,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
+  PickerSearchHeader,
+  PickerSearchInput,
+  PickerSampleOptions,
+  PickerSection,
+  PickerSectionLabel,
+  PickerState,
+} from './PickerParts';
 
-export interface PickListRowState {
+export interface PickerSearchRowState {
   /** The keyboard-active row (the neutral picker highlight). */
   readonly active: boolean;
   /** The current value, when the list marks one. */
@@ -40,23 +40,23 @@ export interface PickListRowState {
 }
 
 /** Test ids and `data-*` a host needs on a row; never its role or handlers. */
-export type PickListOptionProps = Readonly<
+export type PickerSearchOptionProps = Readonly<
   Record<`data-${string}`, string | undefined>
 >;
 
-/** The rows of a list, shared by `PickList` and `PickListResults`. */
-interface PickListRowProps<T> {
+/** The rows of a list, shared by `PickerSearchList` and `PickerSearchResults`. */
+interface PickerSearchRowProps<T> {
   readonly items: readonly T[];
   readonly getKey: (item: T) => string;
-  /** The default row label, and the text `PickList` matches. */
+  /** The default row label, and the text `PickerSearchList` matches. */
   readonly getLabel: (item: T) => string;
-  /** Row content; defaults to the label. Draw it with the PickerMenuOption parts. */
-  readonly renderItem?: (item: T, state: PickListRowState) => ReactNode;
+  /** Row content; defaults to the label. Draw it with the PickerOption parts. */
+  readonly renderItem?: (item: T, state: PickerSearchRowState) => ReactNode;
   /**
    * A control beside the row, not inside it (a tab's close button): it stays
    * outside the `option`, so it is reachable and not read as the row.
    */
-  readonly renderRowEnd?: (item: T, state: PickListRowState) => ReactNode;
+  readonly renderRowEnd?: (item: T, state: PickerSearchRowState) => ReactNode;
   /** A click, and Enter unless `onActivate` is set. */
   readonly onPick: (item: T) => void;
   /** For a list where a click only selects: a double-click and Enter activate. */
@@ -76,11 +76,11 @@ interface PickListRowProps<T> {
   readonly optionTestId?: (item: T) => string;
   readonly optionProps?: (
     item: T,
-    state: PickListRowState,
-  ) => PickListOptionProps;
+    state: PickerSearchRowState,
+  ) => PickerSearchOptionProps;
 }
 
-export interface PickListProps<T> extends PickListRowProps<T> {
+export interface PickerSearchListProps<T> extends PickerSearchRowProps<T> {
   /** Names the search field: `Search commands`. */
   readonly searchLabel: string;
   readonly placeholder?: string;
@@ -112,17 +112,17 @@ export interface PickListProps<T> extends PickListRowProps<T> {
   readonly listMaxHeight?: 'md' | 'lg';
 }
 
-export interface PickListResultsProps<T> extends PickListRowProps<T> {
+export interface PickerSearchResultsProps<T> extends PickerSearchRowProps<T> {
   /** The listbox's id: the host's `aria-controls`. */
   readonly listId: string;
-  /** The active row, from `resolvePickListActiveKey`. */
+  /** The active row, from `resolvePickerSearchActiveKey`. */
   readonly activeKey: string | null;
   /** The pointer moved onto a row. */
   readonly onActiveKeyChange: (key: string) => void;
 }
 
 /** The DOM id of a row: the host's `aria-activedescendant`. */
-export function pickListOptionId(listId: string, key: string): string {
+export function pickerSearchOptionId(listId: string, key: string): string {
   return `${listId}-option-${encodeURIComponent(key)}`;
 }
 
@@ -132,7 +132,7 @@ export function pickListOptionId(listId: string, key: string): string {
  * the keyboard can reach. A list refresh keeps the user's row; it never moves
  * the highlight on its own.
  */
-export function resolvePickListActiveKey(
+export function resolvePickerSearchActiveKey(
   keys: readonly string[],
   movedKey: string | null,
   selectedKey?: string,
@@ -145,7 +145,7 @@ export function resolvePickListActiveKey(
 }
 
 /** The parts of a React or DOM keyboard event the list reads. */
-export interface PickListKeyEvent {
+export interface PickerSearchKeyEvent {
   readonly key: string;
   readonly shiftKey: boolean;
   readonly target?: EventTarget | null;
@@ -154,7 +154,7 @@ export interface PickListKeyEvent {
   preventDefault: () => void;
 }
 
-export interface UsePickListKeysOptions {
+export interface UsePickerSearchKeysOptions {
   /** Keys of the rendered rows the keyboard can reach, in order. */
   readonly keys: readonly string[];
   readonly activeKey: string | null;
@@ -177,7 +177,7 @@ export interface UsePickListKeysOptions {
  * picks it. Home and End move the caret in text fields and navigate elsewhere.
  * Keys during an IME composition belong to the input method.
  */
-export function usePickListKeys({
+export function usePickerSearchKeys({
   keys,
   activeKey,
   onActiveKeyChange,
@@ -185,9 +185,9 @@ export function usePickListKeys({
   onEscape,
   onEdge,
   clampEdges = false,
-}: UsePickListKeysOptions): (event: PickListKeyEvent) => boolean {
+}: UsePickerSearchKeysOptions): (event: PickerSearchKeyEvent) => boolean {
   return useCallback(
-    (event: PickListKeyEvent): boolean => {
+    (event: PickerSearchKeyEvent): boolean => {
       if (
         (event.nativeEvent?.isComposing ?? event.isComposing) ||
         event.key === 'Process'
@@ -241,68 +241,70 @@ export function usePickListKeys({
   );
 }
 
-interface PickListSearchProps extends Omit<
-  ComponentPropsWithoutRef<typeof PickerMenuSearchInput>,
+interface PickerSearchComboboxProps extends Omit<
+  ComponentPropsWithoutRef<typeof PickerSearchInput>,
   'onKeyDown' | 'role' | 'aria-controls' | 'aria-activedescendant'
 > {
   readonly listId: string;
   readonly activeDescendant?: string;
-  readonly keyboard: UsePickListKeysOptions;
+  readonly keyboard: UsePickerSearchKeysOptions;
 }
 
 /** Search field for a list that draws its own groups or compound options. */
-export const PickListSearch = forwardRef<HTMLInputElement, PickListSearchProps>(
-  function PickListSearch(
-    { listId, activeDescendant, keyboard, ...props },
-    ref,
-  ): JSX.Element {
-    const handleKeys = usePickListKeys(keyboard);
-    return (
-      <PickerMenuSearchInput
-        {...props}
-        ref={ref}
-        role="combobox"
-        aria-autocomplete="list"
-        aria-expanded
-        aria-controls={listId}
-        aria-activedescendant={activeDescendant}
-        onKeyDown={(event) => {
-          if (handleKeys(event)) event.stopPropagation();
-        }}
-      />
-    );
-  },
-);
+export const PickerSearchCombobox = forwardRef<
+  HTMLInputElement,
+  PickerSearchComboboxProps
+>(function PickerSearchCombobox(
+  { listId, activeDescendant, keyboard, ...props },
+  ref,
+): JSX.Element {
+  const handleKeys = usePickerSearchKeys(keyboard);
+  return (
+    <PickerSearchInput
+      {...props}
+      ref={ref}
+      role="combobox"
+      aria-autocomplete="list"
+      aria-expanded
+      aria-controls={listId}
+      aria-activedescendant={activeDescendant}
+      onKeyDown={(event) => {
+        if (handleKeys(event)) event.stopPropagation();
+      }}
+    />
+  );
+});
 
-interface PickListFieldProps extends SearchFieldProps {
-  readonly keyboard: UsePickListKeysOptions;
+interface PickerSearchFieldProps extends SearchFieldProps {
+  readonly keyboard: UsePickerSearchKeysOptions;
   readonly listId?: string;
   readonly activeDescendant?: string;
 }
 
 /** A palette search field that retains focus while controlling its options. */
-export const PickListField = forwardRef<HTMLInputElement, PickListFieldProps>(
-  function PickListField(
-    { keyboard, listId, activeDescendant, ...props },
-    ref,
-  ): JSX.Element {
-    const handleKeys = usePickListKeys(keyboard);
-    return (
-      <SearchField
-        {...props}
-        ref={ref}
-        role="combobox"
-        aria-autocomplete="list"
-        aria-expanded={listId !== undefined}
-        aria-controls={listId}
-        aria-activedescendant={activeDescendant}
-        onKeyDown={(event) => {
-          if (handleKeys(event)) event.stopPropagation();
-        }}
-      />
-    );
-  },
-);
+export const PickerSearchField = forwardRef<
+  HTMLInputElement,
+  PickerSearchFieldProps
+>(function PickerSearchField(
+  { keyboard, listId, activeDescendant, ...props },
+  ref,
+): JSX.Element {
+  const handleKeys = usePickerSearchKeys(keyboard);
+  return (
+    <SearchField
+      {...props}
+      ref={ref}
+      role="combobox"
+      aria-autocomplete="list"
+      aria-expanded={listId !== undefined}
+      aria-controls={listId}
+      aria-activedescendant={activeDescendant}
+      onKeyDown={(event) => {
+        if (handleKeys(event)) event.stopPropagation();
+      }}
+    />
+  );
+});
 
 /** Adjacent rows that share a heading. A row with no heading ends a run. */
 function sectionRuns<T>(
@@ -323,13 +325,13 @@ function sectionRuns<T>(
 }
 
 /**
- * The listbox of a `PickList` for a host that owns its own input (a palette's
+ * The listbox of a `PickerSearchList` for a host that owns its own input (a palette's
  * `SearchField`, a composer's editor): `listbox`, `group` and `option` roles,
  * scrolling the active row into view, and the empty and loading states. It is
- * controlled: `usePickListKeys` moves `activeKey`. Give only the rows to
+ * controlled: `usePickerSearchKeys` moves `activeKey`. Give only the rows to
  * render, so the keyboard and this list never walk a long result set.
  */
-export function PickListResults<T>({
+export function PickerSearchResults<T>({
   items,
   getKey,
   getLabel,
@@ -349,29 +351,29 @@ export function PickListResults<T>({
   selectedKey,
   optionTestId,
   optionProps,
-}: PickListResultsProps<T>): JSX.Element {
+}: PickerSearchResultsProps<T>): JSX.Element {
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (activeKey === null) return;
     listRef.current?.ownerDocument
-      .getElementById(pickListOptionId(listId, activeKey))
+      .getElementById(pickerSearchOptionId(listId, activeKey))
       ?.scrollIntoView?.({ block: 'nearest' });
   }, [activeKey, items, listId, loading]);
 
   const renderRow = (item: T): JSX.Element => {
     const key = getKey(item);
-    const state: PickListRowState = {
+    const state: PickerSearchRowState = {
       active: key === activeKey,
       selected: selectedKey === key,
       disabled: isItemDisabled?.(item) ?? false,
     };
     const rowEnd = renderRowEnd?.(item, state);
     const option = (
-      <PickerMenuOption
+      <PickerOption
         {...optionProps?.(item, state)}
         key={key}
-        id={pickListOptionId(listId, key)}
+        id={pickerSearchOptionId(listId, key)}
         role="option"
         tabIndex={-1}
         aria-selected={state.selected}
@@ -394,13 +396,13 @@ export function PickListResults<T>({
           renderItem(item, state)
         ) : (
           <>
-            <PickerMenuOptionContent>
-              <PickerMenuOptionLabel>{getLabel(item)}</PickerMenuOptionLabel>
-            </PickerMenuOptionContent>
-            <PickerMenuOptionCheck selected={state.selected} />
+            <PickerOptionContent>
+              <PickerOptionLabel>{getLabel(item)}</PickerOptionLabel>
+            </PickerOptionContent>
+            <PickerOptionCheck selected={state.selected} />
           </>
         )}
-      </PickerMenuOption>
+      </PickerOption>
     );
     if (!renderRowEnd) return option;
     return (
@@ -414,7 +416,7 @@ export function PickListResults<T>({
   };
 
   return (
-    <PickerMenuList
+    <PickerList
       ref={listRef}
       id={listId}
       aria-label={listLabel}
@@ -422,24 +424,24 @@ export function PickListResults<T>({
     >
       {loading ? (
         <Skeleton loading label={loadingLabel}>
-          <PickerMenuSampleOptions rows={4} leading={false} />
+          <PickerSampleOptions rows={4} leading={false} />
         </Skeleton>
       ) : items.length === 0 ? (
-        <PickerMenuState role="status">{emptyLabel}</PickerMenuState>
+        <PickerState role="status">{emptyLabel}</PickerState>
       ) : getSection ? (
         sectionRuns(items, getSection).map((run, index) => {
           if (run.section === undefined) return run.rows.map(renderRow);
           // A rule separates a section from the rows above it.
-          const Group = index === 0 ? 'div' : PickerMenuSection;
+          const Group = index === 0 ? 'div' : PickerSection;
           return (
             <Group
               key={`${run.section}-${index}`}
               role="group"
               aria-labelledby={`${listId}-section-${index}`}
             >
-              <PickerMenuSectionLabel id={`${listId}-section-${index}`}>
+              <PickerSectionLabel id={`${listId}-section-${index}`}>
                 {run.section}
-              </PickerMenuSectionLabel>
+              </PickerSectionLabel>
               {run.rows.map(renderRow)}
             </Group>
           );
@@ -447,7 +449,7 @@ export function PickListResults<T>({
       ) : (
         items.map(renderRow)
       )}
-    </PickerMenuList>
+    </PickerList>
   );
 }
 
@@ -460,11 +462,13 @@ function labelMatches(label: string, query: string): boolean {
  * filters; the arrows move the active row while focus stays in the field,
  * and Enter or a click picks. It owns the combobox, `listbox` and
  * `option` semantics and the empty and loading states, so a palette, a
- * picker and the composer's lists behave and read the same. Put it in a
- * `DialogModal` (a palette), a `FloatingPickerMenu` or a `Popover`. A host
- * that owns its input uses `PickListResults` and `usePickListKeys`.
+ * picker and the composer's lists behave and read the same. A floating
+ * picker takes it as `Picker`'s `search`, which draws this list and focuses
+ * its field; use it directly in a `DialogModal` (a palette) or a `Popover`. A
+ * host that owns its input uses `PickerSearchResults` and
+ * `usePickerSearchKeys`.
  */
-export function PickList<T>({
+export function PickerSearchList<T>({
   items,
   getKey,
   getLabel,
@@ -494,7 +498,7 @@ export function PickList<T>({
   optionTestId,
   optionProps,
   listMaxHeight,
-}: PickListProps<T>): JSX.Element {
+}: PickerSearchListProps<T>): JSX.Element {
   const baseId = useId();
   const listId = `${baseId}-list`;
   const localInputRef = useRef<HTMLInputElement>(null);
@@ -536,7 +540,7 @@ export function PickList<T>({
   if (moved.query !== query) {
     setMoved({ key: null, query });
   }
-  const activeKey = resolvePickListActiveKey(
+  const activeKey = resolvePickerSearchActiveKey(
     keys,
     moved.query === query ? moved.key : null,
     preferSelectedForNavigation ? selectedKey : undefined,
@@ -549,7 +553,7 @@ export function PickList<T>({
       inputRef.current?.focus({ preventScroll: true });
   }, [autoFocus, inputRef]);
 
-  const handleKeys = usePickListKeys({
+  const handleKeys = usePickerSearchKeys({
     keys,
     activeKey,
     onActiveKeyChange: moveActive,
@@ -571,8 +575,8 @@ export function PickList<T>({
             : 'flex min-h-0 flex-col'
       }
     >
-      <PickerMenuSearchHeader>
-        <PickerMenuSearchInput
+      <PickerSearchHeader>
+        <PickerSearchInput
           ref={inputRef}
           role="combobox"
           aria-label={searchLabel}
@@ -580,7 +584,9 @@ export function PickList<T>({
           aria-controls={listId}
           aria-autocomplete="list"
           aria-activedescendant={
-            activeKey === null ? undefined : pickListOptionId(listId, activeKey)
+            activeKey === null
+              ? undefined
+              : pickerSearchOptionId(listId, activeKey)
           }
           placeholder={placeholder ?? searchLabel}
           value={query}
@@ -589,9 +595,9 @@ export function PickList<T>({
           onKeyDown={handleKeys}
           onClear={query ? (): void => setQuery('') : undefined}
         />
-      </PickerMenuSearchHeader>
+      </PickerSearchHeader>
       {header}
-      <PickListResults
+      <PickerSearchResults
         items={visible}
         getKey={getKey}
         getLabel={getLabel}

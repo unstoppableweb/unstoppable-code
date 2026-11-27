@@ -8,6 +8,7 @@ import {
 } from '@canopy/ui-shared/components/chat';
 import { setTurnHover } from '@canopy/ui-shared/components/chat/TurnHoverScope';
 import { isCreditHeldQueuedMessage } from '@canopy/ui-shared/lib/queued-message-force';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import {
   chatsOwnDelegationIds,
@@ -89,7 +90,10 @@ import {
 import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/shallow';
 import { WaitingDelegationsContext } from './ChatBlockRenderer';
-import { DelegationTranscriptSourceContext } from './delegated-agent-transcript';
+import {
+  DelegationTranscriptSourceContext,
+  resolveDelegationTranscriptSource,
+} from './delegated-agent-transcript';
 import { PinUserMessagesContext } from './pin-user-messages-context';
 import { placeSafetyDenialReceipts } from './safety-denial-placement';
 import { omitLegacySetupAnnotations } from './legacy-setup-annotation';
@@ -188,6 +192,8 @@ import {
   CloudChatFileTargetContext,
   cloudChatFileTarget,
 } from '@/cloud-chats/cloud-chat-file-target';
+import { ChatMessageAttachmentInteractionProvider } from '@canopy/ui-app';
+import { useCloudChatAttachmentInteraction } from '@/cloud-chats/cloud-message-attachments';
 import {
   chatMessageLookUpSelection,
   useChatMessageLinkActions,
@@ -405,16 +411,25 @@ function useIncrementalTurnGroups(
  * streaming deltas so the memoized `TurnGroupRenderer` can skip them; a chat
  * switch drops the cache.
  */
+const EMPTY_AGENT_ARTIFACT_PROJECTION: AgentArtifactProjection = {
+  byTurn: {},
+  chatInitiatedPipelineRuns: {},
+};
+
 function useAgentArtifactProjection(
   chatId: string,
   messages: ChatMessage[],
   carryByTurn: AgentArtifactCarryByTurn | undefined,
+  enabled: boolean,
 ): AgentArtifactProjection {
   const cacheRef = useRef<{
     chatId: string;
     cache: AgentArtifactProjectionCache;
   }>({ chatId, cache: createEmptyAgentArtifactProjectionCache() });
   return useMemo((): AgentArtifactProjection => {
+    if (!enabled) {
+      return EMPTY_AGENT_ARTIFACT_PROJECTION;
+    }
     if (cacheRef.current.chatId !== chatId) {
       cacheRef.current = {
         chatId,
@@ -426,7 +441,7 @@ function useAgentArtifactProjection(
       carryByTurn,
       cacheRef.current.cache,
     );
-  }, [chatId, messages, carryByTurn]);
+  }, [chatId, messages, carryByTurn, enabled]);
 }
 
 /**
@@ -775,7 +790,7 @@ export function ChatMessageList({
   agentUsage?: Record<string, AgentUsage>;
   turnDiffs?: Record<string, TurnDiffData>;
   memoryByMessageId?: Record<string, AppliedOrgMemoryTurn>;
-  onClearQueuedMessage: (index: number) => void;
+  onClearQueuedMessage?: (index: number) => void;
   onForceQueuedMessage?: (index: number) => void;
   onEditQueuedMessage?: (index: number, message?: QueuedChatMessage) => void;
   /**
@@ -928,7 +943,10 @@ export function ChatMessageList({
   );
   const readToolOutput = useMemo<ToolOutputReader | null>(
     () =>
-      outputProjectId && outputWorktreeId && chatId
+      outputProjectId &&
+      outputWorktreeId &&
+      chatId &&
+      !isPairedComputerId(outputProjectId)
         ? async (identity, offset, signal): Promise<ChatToolOutputResponse> => {
             if (identity.kind !== 'reference')
               throw new Error("Couldn't load full output in this view.");
@@ -973,6 +991,7 @@ export function ChatMessageList({
   const chatVisualsKey =
     outputProjectId &&
     !isBotProjectId(outputProjectId) &&
+    !isPairedComputerId(outputProjectId) &&
     outputWorktreeId &&
     chatId &&
     !archivedContainerId &&
@@ -987,6 +1006,7 @@ export function ChatMessageList({
     () =>
       outputProjectId &&
       !isBotProjectId(outputProjectId) &&
+      !isPairedComputerId(outputProjectId) &&
       outputWorktreeId &&
       chatId
         ? createDesktopChatVisualHost(
@@ -1019,15 +1039,13 @@ export function ChatMessageList({
   useChatVisualsPublisher(chatVisualsKey, chatVisualOwners, chatVisualHost);
   const delegationTranscriptSource = useMemo<DelegationTranscriptSource | null>(
     () =>
-      outputProjectId && outputWorktreeId && chatId
-        ? {
-            projectId: outputProjectId,
-            worktreeId: outputWorktreeId,
-            chatId,
-            ...(archivedContainerId ? { archivedContainerId } : {}),
-            ...(standaloneHistory ? { standaloneHistory: true } : {}),
-          }
-        : null,
+      resolveDelegationTranscriptSource({
+        projectId: outputProjectId,
+        worktreeId: outputWorktreeId,
+        chatId,
+        archivedContainerId,
+        standaloneHistory,
+      }),
     [
       outputProjectId,
       outputWorktreeId,
@@ -1096,6 +1114,8 @@ export function ChatMessageList({
     () => cloudChatFileTarget(chatTarget),
     [chatTarget],
   );
+  const cloudAttachmentInteraction =
+    useCloudChatAttachmentInteraction(cloudFileTarget);
   const trailingTurnSettled = useChatTabRenderState(
     chatTarget,
     ({ tab, runtime }) =>
@@ -1210,15 +1230,18 @@ export function ChatMessageList({
       };
     }),
   );
+  const isPairedScope =
+    worktreeTarget !== null && isPairedComputerId(worktreeTarget.projectId);
   const subagentEntryActions = useSubagentEntryActionsValue(
     worktreeTarget,
     chatId,
-    !readOnlyScope && worktreeTarget !== null && chatIsOpen,
+    !readOnlyScope && !isPairedScope && worktreeTarget !== null && chatIsOpen,
   );
   const artifactProjection = useAgentArtifactProjection(
     chatId,
     messages,
     agentArtifactCarryByTurn,
+    !(worktreeTarget !== null && isPairedComputerId(worktreeTarget.projectId)),
   );
   const activeTurn = useMemo(
     () =>
@@ -1292,7 +1315,11 @@ export function ChatMessageList({
   // composer and so a drawer: not a read-only view or tab (a replaced stale
   // session), nor a viewer with no live tab (an archived transcript).
   const backgroundWorkChatKey =
-    !readOnlyScope && !tabReadOnly && chatIsOpen && worktreeTarget !== null
+    !readOnlyScope &&
+    !isPairedScope &&
+    !tabReadOnly &&
+    chatIsOpen &&
+    worktreeTarget !== null
       ? chatBackgroundWorkKey(
           worktreeTarget.projectId,
           worktreeTarget.worktreeId,
@@ -1340,9 +1367,11 @@ export function ChatMessageList({
   // this; the drawer and, under the Subagents view, the Subagents panel get
   // Stop all. Read-only views offer neither, and nor does a scope that
   // doesn't stop its delegates itself (a cloud chat's).
-  const { delegationStop, delegationWorktreeDetails } = useScopeCapabilities({
-    projectId: worktreeTarget?.projectId ?? '',
-  });
+  const { chatQueueEdits, delegationStop, delegationWorktreeDetails } =
+    useScopeCapabilities({
+      projectId: worktreeTarget?.projectId ?? '',
+    });
+  const canEditQueue = chatQueueEdits !== false;
   const canStopDelegations =
     !readOnlyScope && worktreeTarget !== null && delegationStop === true;
   // A cloud chat's cards keep their first state; the web core reads their
@@ -1561,14 +1590,15 @@ export function ChatMessageList({
   const invocableInventory = useInvocableInventory(null);
   const invocableMentionIndex = useMemo(
     () =>
-      invocableInventory.entries.length > 0
+      !isPairedScope && invocableInventory.entries.length > 0
         ? invocableMentionIndexFor(invocableInventory.entries)
         : null,
-    [invocableInventory.entries],
+    [invocableInventory.entries, isPairedScope],
   );
-  const fileListKey = worktreeTarget
-    ? getWorktreeCacheKey(worktreeTarget.projectId, worktreeTarget.worktreeId)
-    : null;
+  const fileListKey =
+    worktreeTarget && !isPairedComputerId(worktreeTarget.projectId)
+      ? getWorktreeCacheKey(worktreeTarget.projectId, worktreeTarget.worktreeId)
+      : null;
   useRetainFileIndex(fileListKey);
   const { fileIndexEntry, fileIndexError, fileIndexLoading, fetchFileIndex } =
     useFileListStore(
@@ -1590,6 +1620,7 @@ export function ChatMessageList({
   useEffect(() => {
     if (
       !worktreeTarget ||
+      !fileListKey ||
       !shouldPreloadTranscriptFileIndex(
         messages.length > 0,
         fileIndexEntry,
@@ -3503,6 +3534,7 @@ export function ChatMessageList({
   ]);
 
   const queueSteeringSupported =
+    canEditQueue &&
     !sourceIsClaudeTerminal &&
     Boolean(worktreeTarget && steeringCapabilities?.steer);
   const compactRows = compactQueue
@@ -3540,7 +3572,7 @@ export function ChatMessageList({
         ids={compactRows.map((row) => row.id)}
         moveUnavailableReason={compactMoveUnavailableReason}
         onMove={
-          worktreeTarget
+          canEditQueue && worktreeTarget
             ? async (id, beforeId): Promise<void> => {
                 const entryId =
                   compactRowById.get(id)?.message.hostQueueEntryId;
@@ -3775,7 +3807,8 @@ export function ChatMessageList({
                   cloud chat runs in the web core, which draws no Mod surface. */}
                 {worktreeTarget &&
                 chatId &&
-                !isWebCoreScope(worktreeTarget.projectId) ? (
+                !isWebCoreScope(worktreeTarget.projectId) &&
+                !isPairedComputerId(worktreeTarget.projectId) ? (
                   <ClaudeModLogNotices
                     chat={{
                       projectId: worktreeTarget.projectId,
@@ -3973,40 +4006,44 @@ export function ChatMessageList({
     <AgentSentReceivingContextProvider receivingContext={receivingContext}>
       <ChatMarkdownFileTargetContext.Provider value={worktreeTarget}>
         <CloudChatFileTargetContext.Provider value={cloudFileTarget}>
-          <ToolOutputReaderContext.Provider value={readToolOutput}>
-            <ChatVisualHostProvider value={chatVisualHost}>
-              <SubagentEntryActionsContext.Provider
-                value={subagentEntryActions}
-              >
-                <DelegationTranscriptSourceContext.Provider
-                  value={delegationTranscriptSource}
+          <ChatMessageAttachmentInteractionProvider
+            value={cloudAttachmentInteraction}
+          >
+            <ToolOutputReaderContext.Provider value={readToolOutput}>
+              <ChatVisualHostProvider value={chatVisualHost}>
+                <SubagentEntryActionsContext.Provider
+                  value={subagentEntryActions}
                 >
-                  <WaitingDelegationsContext.Provider
-                    value={waitingDelegations}
+                  <DelegationTranscriptSourceContext.Provider
+                    value={delegationTranscriptSource}
                   >
-                    <NativeTaskStopContext.Provider
-                      value={nativeTaskStopControls}
+                    <WaitingDelegationsContext.Provider
+                      value={waitingDelegations}
                     >
-                      <ManagedDelegationStopContext.Provider
-                        value={delegationStopControls}
+                      <NativeTaskStopContext.Provider
+                        value={nativeTaskStopControls}
                       >
-                        <ChatMessageLinkActionsProvider value={linkActions}>
-                          <ChatMessageLookUpProvider value={lookUpSelection}>
-                            <StreamingTranscript
-                              id={chatId}
-                              hasContent={messages.length > 0}
-                            >
-                              {messageList}
-                            </StreamingTranscript>
-                          </ChatMessageLookUpProvider>
-                        </ChatMessageLinkActionsProvider>
-                      </ManagedDelegationStopContext.Provider>
-                    </NativeTaskStopContext.Provider>
-                  </WaitingDelegationsContext.Provider>
-                </DelegationTranscriptSourceContext.Provider>
-              </SubagentEntryActionsContext.Provider>
-            </ChatVisualHostProvider>
-          </ToolOutputReaderContext.Provider>
+                        <ManagedDelegationStopContext.Provider
+                          value={delegationStopControls}
+                        >
+                          <ChatMessageLinkActionsProvider value={linkActions}>
+                            <ChatMessageLookUpProvider value={lookUpSelection}>
+                              <StreamingTranscript
+                                id={chatId}
+                                hasContent={messages.length > 0}
+                              >
+                                {messageList}
+                              </StreamingTranscript>
+                            </ChatMessageLookUpProvider>
+                          </ChatMessageLinkActionsProvider>
+                        </ManagedDelegationStopContext.Provider>
+                      </NativeTaskStopContext.Provider>
+                    </WaitingDelegationsContext.Provider>
+                  </DelegationTranscriptSourceContext.Provider>
+                </SubagentEntryActionsContext.Provider>
+              </ChatVisualHostProvider>
+            </ToolOutputReaderContext.Provider>
+          </ChatMessageAttachmentInteractionProvider>
         </CloudChatFileTargetContext.Provider>
       </ChatMarkdownFileTargetContext.Provider>
     </AgentSentReceivingContextProvider>

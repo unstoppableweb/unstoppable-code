@@ -25,13 +25,10 @@ import {
   thinkingControlLevels,
   advanceThinkingControlLevel,
 } from '../lib/chat-thinking';
-import { DropdownMenuItem } from '../primitives/DropdownMenu';
-import {
-  COMPOSER_ROW_MENU_GAP,
-  FloatingMenu,
-} from '../primitives/FloatingMenu';
+import { MenuItem } from '../primitives/MenuItem';
+import { COMPOSER_ROW_MENU_GAP, Menu } from '../primitives/Menu';
 import { FoldReveal } from './FoldReveal';
-import { PickerTrigger, PickerTriggerChevron } from '../primitives/PickerMenu';
+import { PickerTrigger, PickerTriggerChevron } from '../primitives/PickerParts';
 import { Slider } from '../primitives/Slider';
 import { Tooltip } from '../primitives/Tooltip';
 import {
@@ -335,7 +332,7 @@ export function ThinkingLevelPicker({
           <PickerTriggerChevron open={open} />
         </PickerTrigger>
       </Tooltip>
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={open}
         onOpenChange={setOpen}
@@ -351,7 +348,7 @@ export function ThinkingLevelPicker({
         {options.map((option) => {
           const selected = option === current;
           return (
-            <DropdownMenuItem
+            <MenuItem
               key={option ?? 'default'}
               role="menuitemradio"
               aria-checked={selected}
@@ -377,10 +374,10 @@ export function ThinkingLevelPicker({
                   <CheckIcon size="sm" />
                 </span>
               )}
-            </DropdownMenuItem>
+            </MenuItem>
           );
         })}
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }
@@ -589,7 +586,7 @@ export function ThinkingLevelPanelPicker({
           {hideTriggerChevron ? null : <PickerTriggerChevron open={open} />}
         </PickerTrigger>
       </Tooltip>
-      <FloatingMenu
+      <Menu
         id={panelId}
         role="dialog"
         open={open}
@@ -663,7 +660,7 @@ export function ThinkingLevelPanelPicker({
                 panel's 12px inset at the bottom, as at the sides. */}
           {speedOnly ? null : <div className="-mb-1">{slider}</div>}
           {allowWorkspaceDefault && !speedOnly ? (
-            <DropdownMenuItem
+            <MenuItem
               data-testid={testId ? `${testId}-default` : undefined}
               disabled={disabled}
               aria-pressed={workspaceDefaultSelected}
@@ -674,10 +671,10 @@ export function ThinkingLevelPanelPicker({
             >
               Default
               {workspaceDefaultSelected ? <CheckIcon size={16} /> : null}
-            </DropdownMenuItem>
+            </MenuItem>
           ) : null}
         </div>
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

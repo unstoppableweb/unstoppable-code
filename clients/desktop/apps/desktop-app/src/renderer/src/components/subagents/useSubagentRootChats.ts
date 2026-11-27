@@ -10,6 +10,7 @@ import type {
   BackgroundProcess,
   ManagedDelegationRootEntry,
 } from '@canopy/desktop-shared/types';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isLiveDelegationSnapshot } from '@canopy/app-state/core-cowork';
 import type { SubagentRootChatSummary } from '@canopy/ui-app/subagents';
 import {
@@ -61,6 +62,7 @@ interface MutableRootChatsRecord {
   readonly scope: SubagentHostScope;
   /** A cloud scope: main holds none of its delegates (CAN-7133). */
   readonly cloud: boolean;
+  readonly paired: boolean;
   readonly listeners: Set<() => void>;
   readonly previouslyListedRootIds: Set<string>;
   snapshot: RootChatsStoreSnapshot;
@@ -152,6 +154,7 @@ function ensureRecord(scope: SubagentHostScope): MutableRootChatsRecord {
     key,
     scope,
     cloud: isWebCoreScope(scope.projectId),
+    paired: isPairedComputerId(scope.projectId),
     listeners: new Set(),
     previouslyListedRootIds: new Set(),
     snapshot: EMPTY_SNAPSHOT,
@@ -233,8 +236,8 @@ async function readRoots(record: MutableRootChatsRecord): Promise<void> {
     record.followUpQueued = true;
     return;
   }
-  if (record.cloud) {
-    // A cloud root's delegates are its own cards, counted from its tab.
+  if (record.cloud || record.paired) {
+    // Cloud and paired roots do not query local main-process delegates.
     record.snapshot = { ...record.snapshot, roots: [], loading: false };
     publish(record);
     return;
@@ -351,6 +354,7 @@ function toRootChatSummary(
   processes: readonly BackgroundProcess[],
 ): readonly SubagentRootChatSummary[] {
   const cloud = isWebCoreScope(scope.projectId);
+  const paired = isPairedComputerId(scope.projectId);
   // A background Claude task is live while its process is queued or running.
   const backgroundStatuses = new Map(
     processes.map((process) => [
@@ -368,9 +372,9 @@ function toRootChatSummary(
       backgroundStatuses.get(`${tab.id}\u0000${toolUseId}`),
     );
     const { native } = summary;
-    // Workflow runs are pipelines on this computer; a cloud root has none.
-    const hasWorkflowLaunch = !cloud && summary.hasWorkflowLaunches;
-    const workflowLocations = cloud ? [] : summary.workflowLocations;
+    // Workflow runs are pipelines on this computer; cloud and paired roots have none.
+    const hasWorkflowLaunch = !cloud && !paired && summary.hasWorkflowLaunches;
+    const workflowLocations = cloud || paired ? [] : summary.workflowLocations;
     const managed = cloud
       ? cloudRootDelegates(scope, tab)
       : rootsByChat.get(tab.id);
@@ -499,6 +503,7 @@ export function useSubagentRootChats(
   }, [enabled, scope, scopeId]);
 
   const cloud = isWebCoreScope(scope.projectId);
+  const paired = isPairedComputerId(scope.projectId);
   const getHeldLiveKey = useCallback(
     (): string =>
       enabled && cloud ? heldCloudLiveKey(scope, loaded.tabs) : '',
@@ -511,7 +516,7 @@ export function useSubagentRootChats(
   );
 
   const workflowLocations = useMemo((): readonly WorkflowRunLocation[] => {
-    if (!enabled || !loaded.hydrated || cloud) return [];
+    if (!enabled || !loaded.hydrated || cloud || paired) return [];
     const locations = new Map<string, WorkflowRunLocation>();
     for (const tab of loaded.tabs) {
       if (tab.kind === 'file') continue;
@@ -521,7 +526,7 @@ export function useSubagentRootChats(
       }
     }
     return Array.from(locations.values());
-  }, [cloud, enabled, loaded.hydrated, loaded.tabs]);
+  }, [cloud, enabled, loaded.hydrated, loaded.tabs, paired]);
   const workflowLocationKeys = useMemo(
     () =>
       JSON.stringify(

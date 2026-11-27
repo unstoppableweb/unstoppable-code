@@ -2892,4 +2892,192 @@ describe("paired computers' tasks in the main window's sidebar (CAN-7766)", () =
       'storefront',
     );
   });
+
+  it('renders a snapshot-backed paused badge through desktop row overrides and hydrates its popover details on open', async () => {
+    const {
+      resetDesktopRowLiveKeys,
+      setDesktopRowLiveKeys,
+      useDesktopWorktreeRowOverrides,
+    } = await import('@/components/sidebar/desktopWorktreeRowOverrides');
+    const {
+      readDesktopPipelinePopoverEntries,
+      subscribeDesktopPipelinePopoverEntries,
+    } = await import('@/components/sidebar/DesktopSharedSidebarHost');
+    const { SidebarPipelineStatusPopover } =
+      await import('@canopy/ui-app/code/shell/SidebarPipelineStatusPopover');
+    const { usePipelineRunsStore } = await import('@/stores/pipelineRunsStore');
+
+    const key = 'storefront/csv-export';
+    const baseKeys = {
+      statusByKey: new Map([[key, 'idle' as const]]),
+      streaming: new Set<string>(),
+      awaitingApproval: new Set<string>(),
+      pendingQuestion: new Set<string>(),
+      toolApproval: new Set<string>(),
+      unread: new Set<string>(),
+      pipelineRunning: new Set<string>(),
+      pipelineUnseen: new Set<string>(),
+      pipelineUnseenFailed: new Set<string>(),
+      pipelinePaused: new Set<string>(),
+      backgroundTasks: new Map<string, number>(),
+    };
+
+    const previousPipelines = window.pipelines;
+    const listExecutionsMock = jest.fn().mockResolvedValue({
+      success: true,
+      data: [
+        {
+          id: 'exec-restored-pause-1',
+          pipeline_id: 'deploy-check',
+          pipeline_name: 'Deploy Check',
+          status: 'paused',
+          started_at: '2026-11-26T00:00:00.000Z',
+          cwd: '/repos/storefront/csv-export',
+          project_id: 'storefront',
+          worktree_id: 'csv-export',
+        },
+      ],
+    });
+    const listAdvisorSnapshotsMock = jest.fn().mockResolvedValue({
+      success: true,
+      data: {},
+    });
+    Object.defineProperty(window, 'pipelines', {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(previousPipelines ?? {}),
+        listExecutions: listExecutionsMock,
+        listAdvisorSnapshots: listAdvisorSnapshotsMock,
+      },
+    });
+
+    usePipelineRunsStore.setState({
+      pipelineSummariesByWorktree: {},
+      pausedExecutionsByWorktree: {},
+      runningExecutionsByWorktree: {},
+      unseenPipelineWorktreeKeys: new Set<string>(),
+      unseenFailedPipelineWorktreeKeys: new Set<string>(),
+      isHydratingGlobalPipelineStatuses: false,
+      hasHydratedGlobalPipelineStatuses: true,
+    });
+    // Renderer only knows an unseen completion; snapshot carries the restored pause.
+    setDesktopRowLiveKeys({
+      ...baseKeys,
+      pipelineUnseen: new Set([key]),
+    });
+
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+    try {
+      act(() => {
+        root.render(
+          <WorkspacesSidebarSections
+            state={{
+              workspaces: [
+                {
+                  localId: 'storefront',
+                  name: 'storefront',
+                  type: 'single-repo',
+                  order: 0,
+                },
+              ],
+              worktrees: [
+                {
+                  localId: 'csv-export',
+                  workspaceLocalId: 'storefront',
+                  branch: 'csv-export',
+                  order: 0,
+                  pipelineStatus: 'paused',
+                },
+              ],
+            }}
+            capabilities={DESKTOP}
+            useWorktreeRowOverrides={useDesktopWorktreeRowOverrides}
+            renderPipelinePopover={({
+              worktree,
+              workspace,
+              anchorRect,
+              pipelineStatus,
+              popoverListId,
+            }) =>
+              pipelineStatus && anchorRect ? (
+                <SidebarPipelineStatusPopover
+                  anchorRect={anchorRect}
+                  worktreeLocalId={worktree.localId}
+                  workspaceLocalId={workspace.localId}
+                  getEntries={readDesktopPipelinePopoverEntries}
+                  subscribeEntries={subscribeDesktopPipelinePopoverEntries}
+                  status={pipelineStatus}
+                  listId={popoverListId}
+                />
+              ) : null
+            }
+            selected={null}
+            onSelectWorktree={(): void => undefined}
+            onCreateWorktree={(): Promise<undefined> =>
+              Promise.resolve(undefined)
+            }
+          />,
+        );
+      });
+
+      // Production hook merges snapshot paused above renderer-only unseen.
+      const pausedBadge = container.querySelector<HTMLElement>(
+        '[aria-label="Workflow paused"]',
+      );
+      expect(pausedBadge).not.toBeNull();
+
+      // Focusing the snapshot-backed paused badge opens the popover and
+      // hydrates workflow details on demand instead of showing "No workflow details".
+      await act(async () => {
+        pausedBadge?.dispatchEvent(
+          new FocusEvent('focusin', { bubbles: true }),
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await settle();
+
+      expect(listExecutionsMock).toHaveBeenCalledTimes(1);
+      expect(document.body.textContent).toContain('Deploy Check');
+      expect(document.body.textContent).not.toContain('No workflow details');
+
+      // Renderer unseen-failure and running still outrank snapshot paused.
+      act(() => {
+        setDesktopRowLiveKeys({
+          ...baseKeys,
+          pipelineUnseenFailed: new Set([key]),
+        });
+      });
+      expect(
+        container.querySelector('[aria-label="Workflow failed"]'),
+      ).not.toBeNull();
+      expect(
+        container.querySelector('[aria-label="Workflow paused"]'),
+      ).toBeNull();
+
+      act(() => {
+        setDesktopRowLiveKeys({
+          ...baseKeys,
+          pipelineRunning: new Set([key]),
+        });
+      });
+      expect(
+        container.querySelector('[aria-label="Workflow running"]'),
+      ).not.toBeNull();
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+      resetDesktopRowLiveKeys();
+      Object.defineProperty(window, 'pipelines', {
+        configurable: true,
+        writable: true,
+        value: previousPipelines,
+      });
+    }
+  });
 });

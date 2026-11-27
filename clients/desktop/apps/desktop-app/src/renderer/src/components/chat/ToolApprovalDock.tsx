@@ -10,6 +10,8 @@ import {
 import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
 
 const EMPTY_PENDING_APPROVALS: ApprovalRequestEvent[] = [];
+const PAIRED_COMPUTER_APPROVAL_READ_ONLY_HINT =
+  'Answer on the paired computer.';
 
 export interface ToolApprovalDockProps {
   /** Complete active-chat identity used to isolate pending approvals. */
@@ -53,10 +55,16 @@ export const ToolApprovalDock = memo(function ToolApprovalDock({
     }),
   );
   const respondToApproval = useChatStore((s) => s.respondToApproval);
+  const { chatApprovalMode, chatApprovalRespond } = useScopeCapabilities({
+    projectId,
+  });
   // Approval rules live where approval modes do: a cloud chat keeps neither,
   // so its card offers Allow once and Deny only, as the web's does.
-  const ruleScopes =
-    useScopeCapabilities({ projectId }).chatApprovalMode === true;
+  const ruleScopes = chatApprovalMode === true;
+  const readOnlyHint =
+    chatApprovalRespond === false
+      ? PAIRED_COMPUTER_APPROVAL_READ_ONLY_HINT
+      : undefined;
   const respondToSecretApproval = useChatStore(
     (s) => s.respondToSecretApproval,
   );
@@ -90,6 +98,7 @@ export const ToolApprovalDock = memo(function ToolApprovalDock({
       focusComposer={focusComposer}
       onDisplayedChange={setDisplayed}
       ruleScopes={ruleScopes}
+      {...(readOnlyHint !== undefined ? { readOnlyHint } : {})}
     />
   );
 });

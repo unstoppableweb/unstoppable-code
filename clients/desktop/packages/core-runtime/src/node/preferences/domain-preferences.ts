@@ -3,7 +3,7 @@ import {
   CLIENT_LOCAL_PREFERENCE_KEYS,
   type ClientLocalPreferenceKey,
 } from './client-local-keys';
-import type { WithStoredKeys } from './preserve-stored-keys';
+import { pickStoredKeys, type WithStoredKeys } from './preserve-stored-keys';
 
 const CHECKED_CLIENT_LOCAL_KEYS =
   CLIENT_LOCAL_PREFERENCE_KEYS satisfies readonly (keyof PreferencesData)[];
@@ -23,10 +23,5 @@ export type StoredDomainPreferences = WithStoredKeys<
 export function storedClientLocalValues(
   domain: StoredDomainPreferences,
 ): Record<string, unknown> {
-  const values: Record<string, unknown> = {};
-  for (const key of CHECKED_CLIENT_LOCAL_KEYS) {
-    if (Object.prototype.hasOwnProperty.call(domain, key))
-      values[key] = domain[key];
-  }
-  return values;
+  return pickStoredKeys(domain, CHECKED_CLIENT_LOCAL_KEYS);
 }

@@ -27,12 +27,12 @@ import {
   DialogModal,
   ErrorState,
   KeyHintFooter,
-  PickerMenuList,
-  PickerMenuOption,
-  PickerMenuOptionContent,
-  PickerMenuOptionDescription,
-  PickerMenuOptionLabel,
-  PickerMenuOptionTrailing,
+  PickerList,
+  PickerOption,
+  PickerOptionContent,
+  PickerOptionDescription,
+  PickerOptionLabel,
+  PickerOptionTrailing,
   SearchField,
   Skeleton,
 } from '@canopy/ui-shared/components';
@@ -68,11 +68,11 @@ function FileSearchOptionContent({
 }): JSX.Element {
   return (
     <>
-      <PickerMenuOptionContent>
-        <PickerMenuOptionLabel>{filename}</PickerMenuOptionLabel>
-        <PickerMenuOptionDescription>{path}</PickerMenuOptionDescription>
-      </PickerMenuOptionContent>
-      <PickerMenuOptionTrailing>{repo}</PickerMenuOptionTrailing>
+      <PickerOptionContent>
+        <PickerOptionLabel>{filename}</PickerOptionLabel>
+        <PickerOptionDescription>{path}</PickerOptionDescription>
+      </PickerOptionContent>
+      <PickerOptionTrailing>{repo}</PickerOptionTrailing>
     </>
   );
 }
@@ -91,13 +91,13 @@ function FileSearchResultsSkeleton(): JSX.Element {
       >
         <div className="px-2 py-2">
           {SAMPLE_RESULTS.map((sample) => (
-            <PickerMenuOption key={sample.path}>
+            <PickerOption key={sample.path}>
               <FileSearchOptionContent
                 filename={sample.filename}
                 path={sample.path}
                 repo={sample.repo}
               />
-            </PickerMenuOption>
+            </PickerOption>
           ))}
         </div>
       </Skeleton>
@@ -431,7 +431,7 @@ export function FileSearchPalette({
             </div>
           )}
           {!showLoading && !error && allResults.length > 0 && (
-            <PickerMenuList presentation="palette" aria-label="Files">
+            <PickerList presentation="palette" aria-label="Files">
               {results.map((result, visibleIndex) => {
                 const index = renderedVisibleStart + visibleIndex;
                 const isSelected = index === selectedIndex;
@@ -455,7 +455,7 @@ export function FileSearchPalette({
                       }
                     }}
                   >
-                    <PickerMenuOption
+                    <PickerOption
                       role="option"
                       aria-selected={isSelected}
                       active={isSelected}
@@ -489,11 +489,11 @@ export function FileSearchPalette({
                           </span>
                         }
                       />
-                    </PickerMenuOption>
+                    </PickerOption>
                   </div>
                 );
               })}
-            </PickerMenuList>
+            </PickerList>
           )}
         </div>
         <KeyHintFooter hints={pickerKeyHints('open')} />

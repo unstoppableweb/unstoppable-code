@@ -4,7 +4,7 @@ import {
   DirectoryPickerOptionRow,
   FileRootGroupRow,
   GroupedDiffStats,
-  PickerMenuList,
+  PickerList,
 } from '@canopy/ui-shared/components';
 import {
   SpecimenCell,
@@ -173,7 +173,7 @@ export function FilesAndDiffsSpecimen(): JSX.Element {
       <SpecimenPanel title="DirectoryPickerOptionRow">
         <SpecimenGrid min={260}>
           <SpecimenCell label="Unselected and selected">
-            <PickerMenuList aria-label="Working directories" className="w-full">
+            <PickerList aria-label="Working directories" className="w-full">
               <DirectoryPickerOptionRow
                 name="apps/desktop-app"
                 selected={false}
@@ -186,20 +186,17 @@ export function FilesAndDiffsSpecimen(): JSX.Element {
                 onSelect={noop}
                 data-testid="lab-directory-option-selected"
               />
-            </PickerMenuList>
+            </PickerList>
           </SpecimenCell>
           <SpecimenCell label="Long path truncates">
-            <PickerMenuList
-              aria-label="Long working directory"
-              className="w-56"
-            >
+            <PickerList aria-label="Long working directory" className="w-56">
               <DirectoryPickerOptionRow
                 name="packages/ui-shared/src/components/settings/some/deeply/nested/folder"
                 selected={false}
                 onSelect={noop}
                 data-testid="lab-directory-option-long"
               />
-            </PickerMenuList>
+            </PickerList>
           </SpecimenCell>
         </SpecimenGrid>
       </SpecimenPanel>

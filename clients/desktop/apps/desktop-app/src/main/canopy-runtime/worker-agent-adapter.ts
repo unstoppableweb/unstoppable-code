@@ -1,10 +1,8 @@
 import {
-  createWorkerAgentHelperHandlers,
   type HelperExecutionWorker,
   type WorkerAgentHelperHandlers,
 } from '@canopy/core-runtime/node/agent/helpers';
 import {
-  createWorkerAgentSignInHandlers,
   type SignInExecutionWorker,
   type WorkerAgentSignInHandlers,
 } from '@canopy/core-runtime/node/agent/sign-in';
@@ -17,12 +15,12 @@ import {
   type WorkerAgentUsageLimitsHost,
 } from '@canopy/core-runtime/node/agent/providers';
 import {
-  createWorkerAgentRunHandlers,
   type SubagentExecutionWorker,
   type TurnEventSink,
   type TurnExecutionWorker,
   type WorkerAgentRunHandlers,
 } from '@canopy/core-runtime/node/agent/turns';
+import { createWorkerAgentHandlers } from '@canopy/core-runtime/node/agent/worker-handlers';
 import { createDesktopProviderHost } from '../agent-providers/desktop-provider-host';
 import { createDesktopUsageLimitsHost } from '../agent-providers/desktop-usage-limits-host';
 
@@ -70,23 +68,6 @@ export function createWorkerAgentAdapter(options: {
         subagents: host.desktopSubagentWorker,
       };
     });
-  let loadingHelpers: Promise<WorkerAgentHelperHandlers> | undefined;
-  let loadingSignIn: Promise<WorkerAgentSignInHandlers> | undefined;
-  let loadingRuns: Promise<WorkerAgentRunHandlers> | undefined;
-  const helpers = (): Promise<WorkerAgentHelperHandlers> =>
-    (loadingHelpers ??= loadHelpers().then(createWorkerAgentHelperHandlers));
-  const signIn = (): Promise<WorkerAgentSignInHandlers> =>
-    (loadingSignIn ??= loadSignInWorker().then(
-      createWorkerAgentSignInHandlers,
-    ));
-  const runs = (): Promise<WorkerAgentRunHandlers> =>
-    (loadingRuns ??= loadRuns().then(({ turns, subagents }) =>
-      createWorkerAgentRunHandlers({
-        turns,
-        subagents,
-        sinkFor: options.sinkFor,
-      }),
-    ));
   return {
     queries: {
       ...createWorkerAgentProviderHandlers(
@@ -96,24 +77,11 @@ export function createWorkerAgentAdapter(options: {
         options.usageHost ?? createDesktopUsageLimitsHost(),
       ).queries,
     },
-    instructions: {
-      'worker.agent.helper.run': async (params, context) =>
-        (await helpers()).instructions['worker.agent.helper.run'](
-          params,
-          context,
-        ),
-      'worker.agent.signIn.run': async (params, context) =>
-        (await signIn()).instructions['worker.agent.signIn.run'](
-          params,
-          context,
-        ),
-      'worker.agent.turn.run': async (params, context) =>
-        (await runs()).instructions['worker.agent.turn.run'](params, context),
-      'worker.agent.subagent.run': async (params, context) =>
-        (await runs()).instructions['worker.agent.subagent.run'](
-          params,
-          context,
-        ),
-    },
+    instructions: createWorkerAgentHandlers({
+      loadHelpers,
+      loadSignInWorker,
+      loadRuns,
+      sinkFor: options.sinkFor,
+    }).instructions,
   };
 }

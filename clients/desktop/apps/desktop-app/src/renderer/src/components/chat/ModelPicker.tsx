@@ -94,9 +94,9 @@ import {
   MODEL_PICKER_ROW_CUE_COPY,
   modelLibraryRowLock,
   pickerChromeMenuHeightPx,
-  FloatingMenu,
-  DropdownMenuControl,
-  DropdownMenuItem,
+  Menu,
+  MenuControl,
+  MenuItem,
   ChatComposerToolbarChip,
   type ModelCatalog,
   type ModelCatalogOption,
@@ -137,9 +137,13 @@ import {
 } from '@/lib/openBillingPage';
 import { useModelCatalogStore } from '@/stores/modelCatalogStore';
 import {
+  getRendererBillingLaneAvailability,
+  getRendererBillingLaneFactsVersion,
   getRendererCodexAccountModelsKey,
   subscribeRendererBillingLaneFacts,
 } from '@/stores/billingLaneRuntime';
+import { personalGatewayRouteFor } from '@/stores/chat/defaults';
+import { unbillableBuiltInProvider } from '@/lib/unbillableModel';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { usePersonalModelGateway } from '@/hooks/useOrgModelGateway';
 import { useGatewayKeyStatus } from '@/hooks/useGatewayKeyStatus';
@@ -168,6 +172,7 @@ import {
 } from './ModelRecoveryModal';
 import { Button, Divider } from '@canopy/ui-shared/components';
 import { parseAgentRouteModelId } from '@canopy/protocol/agents';
+import { orgGatewayVendor } from '@canopy/protocol/model-gateway/vendor';
 
 // Re-exported from its new home in the pure resolver so the seven existing
 // call sites keep importing it from the picker.
@@ -466,7 +471,7 @@ function orgGatewayOrganizationId(model: ChatModel): string | undefined {
 
 /** Section key an org's own gateway rows group under in the picker menu. */
 function orgVendorKey(organizationId: string): string {
-  return `org-gateway:${organizationId}`;
+  return orgGatewayVendor(organizationId);
 }
 
 /** The execution harness a picker selection names, if it is one we run. */
@@ -834,6 +839,14 @@ function ConcreteModelPicker(props: ModelPickerProps): JSX.Element {
     getRendererCodexAccountModelsKey,
     getRendererCodexAccountModelsKey,
   );
+  // The row gate also reads whether the user's AI gateway stands in for a
+  // signed-out provider (`personalGatewayRouteFor`), which moves with the
+  // lane facts.
+  const laneFactsVersion = useSyncExternalStore(
+    subscribeRendererBillingLaneFacts,
+    getRendererBillingLaneFactsVersion,
+    getRendererBillingLaneFactsVersion,
+  );
   const gatewayCatalogStatus = useModelCatalogStore(
     (s) => s.aiGatewayCatalogStatus,
   );
@@ -980,6 +993,8 @@ function ConcreteModelPicker(props: ModelPickerProps): JSX.Element {
      */
     hiddenRows: { notBillableToCredits: number; orgGatewayOnly: number };
   } => {
+    // Re-run when lane facts move; see `laneFactsVersion`.
+    void laneFactsVersion;
     // Read purely to declare the dependency. The rows below come from the
     // MUTABLE module registries that `applySnapshot` fills, so the snapshot
     // identity — not its contents — is what tells this memo they may have
@@ -1288,6 +1303,7 @@ function ConcreteModelPicker(props: ModelPickerProps): JSX.Element {
     // could not reach the list until some unrelated prop identity changed.
     catalogSnapshot,
     codexAccountModelsKey,
+    laneFactsVersion,
     harnessAssignments,
     currentModel,
     currentProvider,
@@ -2221,6 +2237,35 @@ function ConcreteModelPicker(props: ModelPickerProps): JSX.Element {
       return 'dismiss';
     }
     if (row.gate.kind === 'hard-disabled') return 'dismiss';
+    // A built-in model this account can't pay for, which the user's own AI
+    // gateway runs: commit the gateway's copy, so the chat runs and shows
+    // the route that pays.
+    const gatewayCopy =
+      !isAgentModel(selected) &&
+      unbillableBuiltInProvider(
+        selected,
+        getRendererBillingLaneAvailability(),
+      ) !== undefined
+        ? // An explicit pick persists, so a `[1m]` row never becomes the
+          // smaller base model.
+          personalGatewayRouteFor(selected, { allowVariantFallback: false })
+            ?.model
+        : undefined;
+    if (gatewayCopy !== undefined) {
+      beginSelectionCommand();
+      // Name the harness when it isn't the chat's own, as the hosted and
+      // gateway branch below does (for example returning from OpenCode).
+      const gatewayHarness = getExecutionHarnessForModel(gatewayCopy);
+      if (
+        gatewayHarness !== undefined &&
+        gatewayHarness !== (lockedHarness ?? lockedProvider)
+      ) {
+        props.onModelChange(gatewayCopy, undefined, gatewayHarness);
+      } else {
+        props.onModelChange(gatewayCopy);
+      }
+      return 'close';
+    }
     beginSelectionCommand();
     // Cursor's copy and a native model already name where they run; only a
     // hosted or local model is told its harness.
@@ -3012,7 +3057,7 @@ function ConcreteModelPicker(props: ModelPickerProps): JSX.Element {
             active={harnessMenuOpen}
             onClick={(): void => setHarnessMenuOpen(!harnessMenuOpen)}
           />
-          <FloatingMenu
+          <Menu
             open={harnessMenuOpen}
             onOpenChange={setHarnessMenuOpen}
             anchorRef={harnessButtonRef}
@@ -3021,7 +3066,7 @@ function ConcreteModelPicker(props: ModelPickerProps): JSX.Element {
           >
             {harnessChoices.map(({ provider, gate }) => {
               return (
-                <DropdownMenuItem
+                <MenuItem
                   key={provider}
                   data-testid={`chat-harness-option-${provider}`}
                   disabled={
@@ -3032,10 +3077,10 @@ function ConcreteModelPicker(props: ModelPickerProps): JSX.Element {
                   }}
                 >
                   {getProviderLabel(provider)}
-                </DropdownMenuItem>
+                </MenuItem>
               );
             })}
-          </FloatingMenu>
+          </Menu>
         </>
       )}
       <ModelPickerMenu
@@ -3220,7 +3265,7 @@ function ConcreteModelPicker(props: ModelPickerProps): JSX.Element {
                                 </span>
                               }
                             >
-                              <DropdownMenuControl
+                              <MenuControl
                                 type="button"
                                 choice={{
                                   type: 'checkbox',
@@ -3319,7 +3364,7 @@ function ConcreteModelPicker(props: ModelPickerProps): JSX.Element {
                                 <CompactToggleIndicator
                                   checked={billing.value === 'ai-credits'}
                                 />
-                              </DropdownMenuControl>
+                              </MenuControl>
                             </HoverCard>
                           </div>
                           {billing.disabled && billing.lockedReason ? (

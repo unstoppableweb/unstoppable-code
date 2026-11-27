@@ -7,12 +7,12 @@ import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { Dot } from '../primitives/Badge';
 import { ControlButton, Button } from '../primitives/Button';
 import {
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuRowStyleProvider,
-  DropdownMenuSurface,
+  MenuItem,
+  MenuLabel,
+  MenuRowStyleProvider,
+  MenuSurface,
   QUIET_MENU_ROW_STYLE,
-} from '../primitives/DropdownMenu';
+} from '../primitives/MenuItem';
 import { LoadingSpinner } from '../primitives/LoadingSpinner';
 import { Tooltip } from '../primitives/Tooltip';
 
@@ -166,16 +166,14 @@ export function ArchivedChatsCard({
   style,
 }: ArchivedChatsCardProps): JSX.Element {
   return (
-    <DropdownMenuSurface
+    <MenuSurface
       role="group"
       aria-label={`Archived ${CHAT_UNIT_LABEL.toLowerCase()}s`}
       className={`w-80 ${className}`}
       style={style}
     >
-      <DropdownMenuRowStyleProvider value={QUIET_MENU_ROW_STYLE}>
-        <DropdownMenuLabel>
-          Archived {CHAT_UNIT_LABEL.toLowerCase()}s
-        </DropdownMenuLabel>
+      <MenuRowStyleProvider value={QUIET_MENU_ROW_STYLE}>
+        <MenuLabel>Archived {CHAT_UNIT_LABEL.toLowerCase()}s</MenuLabel>
         <div className="max-h-80 overflow-y-auto overscroll-contain">
           {items.map((item) => (
             <ArchivedChatsCardRow
@@ -188,7 +186,7 @@ export function ArchivedChatsCard({
           ))}
         </div>
         {overflowCount > 0 ? (
-          <DropdownMenuItem
+          <MenuItem
             asButton
             onClick={onShowAll}
             data-testid="chat-tab-archive-more"
@@ -196,9 +194,9 @@ export function ArchivedChatsCard({
             {/* An empty icon slot lines the label up with the chat titles. */}
             <span aria-hidden="true" className="h-4 w-4 shrink-0" />
             {overflowCount} more…
-          </DropdownMenuItem>
+          </MenuItem>
         ) : null}
-      </DropdownMenuRowStyleProvider>
-    </DropdownMenuSurface>
+      </MenuRowStyleProvider>
+    </MenuSurface>
   );
 }

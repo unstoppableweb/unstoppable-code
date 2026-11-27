@@ -25,7 +25,7 @@ import {
 import { useTerminalDrawerAttentionStore } from '@/stores/terminalDrawerAttentionStore';
 import { useWorkspaceLayoutModeStore } from '@/stores/workspaceLayoutModeStore';
 import {
-  FloatingMenu,
+  Menu,
   TitlebarIconButton,
   WorkspaceLayoutPicker,
 } from '@canopy/ui-shared';
@@ -368,7 +368,7 @@ export function WorkspaceLayoutControls({
         aria-label="Layout options"
         title="Layout options"
       />
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={menuOpen}
         closeOnSelect={false}
@@ -389,7 +389,7 @@ export function WorkspaceLayoutControls({
           }}
           onSaveDefault={saveDefault}
         />
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

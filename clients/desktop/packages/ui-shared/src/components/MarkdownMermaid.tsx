@@ -27,7 +27,7 @@ import { downloadBlob } from '../lib/download-blob';
 import { Button } from '../primitives/Button';
 import { copyTextToClipboard } from '../primitives/copy-to-clipboard';
 import { DetailMoreMenuRows, type DetailMoreMenuItem } from './DetailMoreMenu';
-import { FLOATING_MENU_GAP, FloatingMenu } from '../primitives/FloatingMenu';
+import { MENU_GAP, Menu } from '../primitives/Menu';
 import {
   MERMAID_DROPPED_STYLING_NOTE,
   MERMAID_RENDER_FAILURE,
@@ -721,13 +721,13 @@ function MarkdownMermaidComponent({
                 </Button>
               </Tooltip>
             </span>
-            <FloatingMenu
+            <Menu
               id={moreMenuId}
               open={moreOpen}
               onOpenChange={setMoreOpen}
               anchorRef={moreAnchor}
               placement="bottom-right"
-              gap={FLOATING_MENU_GAP}
+              gap={MENU_GAP}
               interaction="menu"
               aria-label="Diagram actions"
               data-testid="mermaid-more-menu"
@@ -737,7 +737,7 @@ function MarkdownMermaidComponent({
                 items={moreItems}
                 onClose={() => setMoreOpen(false)}
               />
-            </FloatingMenu>
+            </Menu>
           </>
         ) : (
           <>

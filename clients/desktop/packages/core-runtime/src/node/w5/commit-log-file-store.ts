@@ -228,6 +228,31 @@ function commitQueue(
   return queue;
 }
 
+// Per path, this process's decisions that may have changed its file.
+const changedDecisions = new Map<string, number>();
+
+/**
+ * How many of this process's decisions naming `path` applied, or may have.
+ * Monotonic; a reader compares two values to see a write land between them.
+ */
+export function w5ChangedDecisionCount(path: string): number {
+  return changedDecisions.get(path) ?? 0;
+}
+
+function mayHaveChangedFiles(outcome: W5StoreDecision['outcome']): boolean {
+  switch (outcome.status) {
+    case 'applied':
+    case 'recovery-required':
+      return true;
+    case 'failed':
+      return outcome.maybeCommitted;
+    case 'replayed':
+    case 'replay-expired':
+    case 'conflict':
+      return false;
+  }
+}
+
 /** Runs `task` in `host`'s final-decision queue, which every store on it shares. */
 export function runInW5CommitQueue<T>(
   host: W5CommitLogHostPort,
@@ -379,6 +404,9 @@ export function createW5CommitLogFileStore(
         previousFingerprint: fingerprintW5File(previousRaw),
       }));
       const report = (outcome: W5StoreDecision['outcome']): void => {
+        if (mayHaveChangedFiles(outcome))
+          for (const { path } of changes)
+            changedDecisions.set(path, w5ChangedDecisionCount(path) + 1);
         if (!bindings.onApplied) return;
         try {
           bindings.onApplied({

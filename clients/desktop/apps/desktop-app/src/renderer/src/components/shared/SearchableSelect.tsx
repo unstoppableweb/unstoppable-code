@@ -3,16 +3,15 @@ import { ControlButton } from '@canopy/ui-shared/components';
 // Extracted from `pages/AutomationsPage.tsx` so
 // `components/automations/AutomationChatTargetPicker.tsx` can reuse the exact
 // same control without importing the page (which would be a module cycle).
-import { useCallback, useRef, useState, type JSX, type ReactNode } from 'react';
+import { useRef, useState, type JSX, type ReactNode } from 'react';
 import { ChevronDownIcon } from '@canopy/ui-shared/icons';
 import {
-  FloatingPickerMenu,
-  PickList,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionDescription,
-  PickerMenuOptionLabel,
-  PickerMenuOptionLeading,
+  Picker,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionDescription,
+  PickerOptionLabel,
+  PickerOptionLeading,
   Tooltip,
 } from '@canopy/ui-shared';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
@@ -71,12 +70,6 @@ export function SearchableSelect({
 }: SearchableSelectProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLButtonElement>(null);
-  // The menu focuses its search field once it is placed (a field focused
-  // while the menu is still hidden would not take focus).
-  const searchRef = useRef<HTMLInputElement | null>(null);
-  const setSurface = useCallback((node: HTMLDivElement | null): void => {
-    searchRef.current = node?.querySelector('input') ?? null;
-  }, []);
 
   const selected = value
     ? (options.find((option) => option.id === value) ??
@@ -128,62 +121,55 @@ export function SearchableSelect({
           <ChevronDownIcon size="sm" className="shrink-0 fg-secondary" />
         </ControlButton>
       </Tooltip>
-      <FloatingPickerMenu
-        ref={setSurface}
+      <Picker
         open={open}
         onOpenChange={setOpen}
         anchorRef={anchorRef}
         {...(ownerDocument ? { ownerDocument } : {})}
         placement="bottom-left"
         minimumWidth={SEARCHABLE_SELECT_MENU_WIDTH}
-        initialFocusRef={searchRef}
         role="dialog"
         aria-label={placeholder}
         onClick={(event): void => event.stopPropagation()}
-      >
-        <PickList
-          items={items}
-          getKey={(option): string => option.id}
-          getLabel={(option): string => option.label}
-          filter={(option, query): boolean =>
-            option.id !== '' && optionMatches(option, query)
-          }
-          selectedKey={value}
-          searchLabel={searchPlaceholder}
-          listLabel={placeholder}
-          emptyLabel={emptyListMessage ?? 'No matches'}
-          listMaxHeight="md"
-          autoFocus={false}
-          onPick={(option): void => {
+        search={{
+          items,
+          getKey: (option): string => option.id,
+          getLabel: (option): string => option.label,
+          filter: (option, query): boolean =>
+            option.id !== '' && optionMatches(option, query),
+          selectedKey: value,
+          searchLabel: searchPlaceholder,
+          listLabel: placeholder,
+          emptyLabel: emptyListMessage ?? 'No matches',
+          listMaxHeight: 'md',
+          onPick: (option): void => {
             onChange(option.id);
             setOpen(false);
-          }}
-          renderItem={(option, state) => (
+          },
+          renderItem: (option, state) => (
             <>
               {option.badge ? (
-                <PickerMenuOptionLeading>
-                  {option.badge}
-                </PickerMenuOptionLeading>
+                <PickerOptionLeading>{option.badge}</PickerOptionLeading>
               ) : null}
-              <PickerMenuOptionContent>
-                <PickerMenuOptionLabel
+              <PickerOptionContent>
+                <PickerOptionLabel
                   {...(option.maskInReplay
                     ? { className: REPLAY_MASK_CLASS }
                     : {})}
                 >
                   {option.label}
-                </PickerMenuOptionLabel>
+                </PickerOptionLabel>
                 {option.subtitle ? (
-                  <PickerMenuOptionDescription>
+                  <PickerOptionDescription>
                     {option.subtitle}
-                  </PickerMenuOptionDescription>
+                  </PickerOptionDescription>
                 ) : null}
-              </PickerMenuOptionContent>
-              <PickerMenuOptionCheck selected={state.selected} />
+              </PickerOptionContent>
+              <PickerOptionCheck selected={state.selected} />
             </>
-          )}
-        />
-      </FloatingPickerMenu>
+          ),
+        }}
+      />
     </>
   );
 }

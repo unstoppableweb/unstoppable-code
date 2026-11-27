@@ -12,8 +12,8 @@ import {
 } from 'react';
 import { CheckIcon, MoreHorizontalIcon } from '../icons/AppIcons';
 import { focusMenuRow } from '../lib/input-modality';
-import { DropdownMenuItem } from '../primitives/DropdownMenu';
-import { FloatingMenu } from '../primitives/FloatingMenu';
+import { MenuItem } from '../primitives/MenuItem';
+import { Menu } from '../primitives/Menu';
 import { Tooltip } from '../primitives/Tooltip';
 import { useOverlayEscape } from '../primitives/useOverlayEscape';
 
@@ -331,7 +331,7 @@ export function ChatComposerOverflowMenu({
           <MoreHorizontalIcon />
         </ControlButton>
       </Tooltip>
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={open}
         onOpenChange={setOpen}
@@ -353,7 +353,7 @@ export function ChatComposerOverflowMenu({
         className="min-w-48"
       >
         {items.map((item, index) => (
-          <DropdownMenuItem
+          <MenuItem
             key={item.key}
             ref={(node) => {
               itemRefs.current[index] = node;
@@ -383,7 +383,7 @@ export function ChatComposerOverflowMenu({
             <span className="flex h-4 w-4 shrink-0 items-center justify-center fg-accent">
               {item.active ? <CheckIcon size="sm" /> : null}
             </span>
-          </DropdownMenuItem>
+          </MenuItem>
         ))}
         {footerSlot ? (
           <div
@@ -396,7 +396,7 @@ export function ChatComposerOverflowMenu({
             {footerSlot}
           </div>
         ) : null}
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

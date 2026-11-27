@@ -11,7 +11,8 @@ export function saveAppAdvisorPreferencePatch(
   void window.api
     .savePreferences(patch, { view: 'persisted' })
     .then((saved) => {
-      onPrefs(saved);
+      // An unconfirmed reply's domain keys are stand-ins (PreferencesSaveResult).
+      if (saved.__preferencesUnconfirmed !== true) onPrefs(saved);
       return window.api.loadPreferences();
     })
     .then((runtime) => {

@@ -1,6 +1,9 @@
 import type { Buffer } from 'node:buffer';
 import { randomBytes } from 'node:crypto';
-import { createCanopyOwnerProof } from '@canopy/core-transport';
+import {
+  createCanopyDesktopPeerProof,
+  createCanopyOwnerProof,
+} from '@canopy/core-transport';
 
 /**
  * The daemon owner credential a launcher holds (CAN-5771): one fresh secret
@@ -16,6 +19,15 @@ export interface DaemonOwnerCredential {
   spawnedPid(): number | null;
   /** `createCanopyOwnerProof` with the current secret; throws when there is none. */
   prove(connectionId: string, dataRootHash: string): string;
+  /** `createCanopyDesktopPeerProof` with the current secret; throws when there is none. */
+  provePeer(connectionId: string, dataRootHash: string): string;
+  /**
+   * The desktop peer proof for this launch's ordinary connections, only once
+   * a spawn was recorded: a launch that attached sends none.
+   */
+  peerProof(
+    dataRootHash: string,
+  ): ((connectionId: string) => string) | undefined;
 }
 
 const OWNER_SECRET_BYTES = 32;
@@ -39,6 +51,24 @@ export function createDaemonOwnerCredential(): DaemonOwnerCredential {
     prove(connectionId: string, dataRootHash: string): string {
       if (!secret) throw new Error('No daemon owner secret was created.');
       return createCanopyOwnerProof(secret, connectionId, dataRootHash);
+    },
+    provePeer(connectionId: string, dataRootHash: string): string {
+      if (!secret) throw new Error('No daemon owner secret was created.');
+      return createCanopyDesktopPeerProof(secret, connectionId, dataRootHash);
+    },
+    peerProof(
+      dataRootHash: string,
+    ): ((connectionId: string) => string) | undefined {
+      return pid === null
+        ? undefined
+        : (connectionId): string => {
+            if (!secret) throw new Error('No daemon owner secret was created.');
+            return createCanopyDesktopPeerProof(
+              secret,
+              connectionId,
+              dataRootHash,
+            );
+          };
     },
     toJSON(): never {
       throw new Error('A daemon owner credential is not serializable.');

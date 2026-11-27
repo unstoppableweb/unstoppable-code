@@ -31,6 +31,8 @@ const WRITES = {
     'core.integration.sharedConnection.disconnect',
   'organization.settings.connections.remove':
     'core.integration.sharedConnection.remove',
+  'organization.settings.connections.projects':
+    'core.integration.sharedConnection.projects.update',
 } as const;
 
 function payloadOf(error: unknown): CanopyErrorPayload | null {

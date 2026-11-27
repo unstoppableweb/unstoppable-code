@@ -8,14 +8,14 @@ import {
   ChoiceField,
   CopyDetailsButton,
   DelayedLoadingPlaceholder,
-  FloatingPickerMenu,
+  Picker,
   Notice,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-  PickerMenuSection,
-  PickerMenuSectionLabel,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
+  PickerSection,
+  PickerSectionLabel,
   RailIconButton,
   SearchField,
   Skeleton,
@@ -119,11 +119,11 @@ function RepositoryFilterMenu({
     choose: (value: Value) => void,
   ): JSX.Element => (
     <div role="group" aria-label={heading}>
-      <PickerMenuSectionLabel>{heading}</PickerMenuSectionLabel>
+      <PickerSectionLabel>{heading}</PickerSectionLabel>
       {options.map((option) => {
         const checked = option.value === current;
         return (
-          <PickerMenuOption
+          <PickerOption
             key={option.value}
             role="menuitemradio"
             aria-checked={checked}
@@ -131,11 +131,11 @@ function RepositoryFilterMenu({
             data-testid={`${testIdPrefix}-filter-${option.testId}`}
             onClick={(): void => choose(option.value)}
           >
-            <PickerMenuOptionCheck selected={checked} reserveSpace />
-            <PickerMenuOptionContent>
-              <PickerMenuOptionLabel>{option.label}</PickerMenuOptionLabel>
-            </PickerMenuOptionContent>
-          </PickerMenuOption>
+            <PickerOptionCheck selected={checked} reserveSpace />
+            <PickerOptionContent>
+              <PickerOptionLabel>{option.label}</PickerOptionLabel>
+            </PickerOptionContent>
+          </PickerOption>
         );
       })}
     </div>
@@ -163,7 +163,7 @@ function RepositoryFilterMenu({
           className="pointer-events-none absolute right-0.5 top-0.5"
         />
       )}
-      <FloatingPickerMenu
+      <Picker
         open={open}
         onOpenChange={setOpen}
         anchorRef={triggerRef}
@@ -179,12 +179,12 @@ function RepositoryFilterMenu({
           filters.visibility,
           (visibility) => onChange({ ...filters, visibility }),
         )}
-        <PickerMenuSection>
+        <PickerSection>
           {section('Status', STATUS_OPTIONS, filters.status, (status) =>
             onChange({ ...filters, status }),
           )}
-        </PickerMenuSection>
-      </FloatingPickerMenu>
+        </PickerSection>
+      </Picker>
     </div>
   );
 }

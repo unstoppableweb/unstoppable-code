@@ -14,6 +14,7 @@ import {
   orgGatewayModelId,
   type OrgGatewayModelAliases,
 } from '@canopy/execution-engine/lib/gateway-model-availability';
+import { orgGatewayVendor } from '@canopy/protocol/model-gateway/vendor';
 
 export interface OrgGatewayCatalogInput {
   personal?: boolean;
@@ -273,7 +274,7 @@ export function mergeAiGatewayModelCatalog(input: {
         label: model.label,
         family: 'custom',
         familyLabel: gateway.organizationName,
-        vendor: `org-gateway:${gateway.organizationId}`,
+        vendor: orgGatewayVendor(gateway.organizationId),
         sortOrder:
           packageSortOrderCeiling + hostedSources.length + orgSources.length,
         showMoreOnly: false,

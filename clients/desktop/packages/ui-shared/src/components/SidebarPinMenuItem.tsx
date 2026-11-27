@@ -1,8 +1,5 @@
 import type { JSX } from 'react';
-import {
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-} from '../primitives/DropdownMenu';
+import { MenuItem, MenuItemIcon } from '../primitives/MenuItem';
 import { PinIcon } from '../icons/AppIcons';
 
 export interface SidebarPinMenuItemProps {
@@ -31,17 +28,17 @@ export function SidebarPinMenuItem({
   testId,
 }: SidebarPinMenuItemProps): JSX.Element {
   return (
-    <DropdownMenuItem
+    <MenuItem
       data-testid={testId}
       onClick={(event): void => {
         event.stopPropagation();
         onToggle(!pinned);
       }}
     >
-      <DropdownMenuItemIcon>
+      <MenuItemIcon>
         <PinIcon />
-      </DropdownMenuItemIcon>
+      </MenuItemIcon>
       <span className="truncate">{pinned ? 'Unpin' : 'Pin to top'}</span>
-    </DropdownMenuItem>
+    </MenuItem>
   );
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import type { JSX } from 'react';
+import { Fragment, type JSX } from 'react';
 import type { WorktreeDiscardDescription } from '@canopy/protocol/remote-control/shell/worktree-discard';
 import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import {
@@ -13,6 +13,24 @@ import {
 } from '../primitives/ConfirmDialog';
 
 export const WORKTREE_DISCARD_DIALOG_TEST_ID = 'worktree-discard-dialog';
+
+/**
+ * Offers a line break after each separator, so a long path wraps between
+ * folder names instead of in the middle of one.
+ */
+function PathText({ path }: { readonly path: string }): JSX.Element {
+  const parts = path.split(/(?<=[/\\])/);
+  return (
+    <>
+      {parts.map((part, index) => (
+        <Fragment key={index}>
+          {index > 0 ? <wbr /> : null}
+          {part}
+        </Fragment>
+      ))}
+    </>
+  );
+}
 
 /**
  * The paths a discard deletes, or the missing sources it names: a label above
@@ -28,7 +46,7 @@ export function WorktreeDiscardPathList({
 }): JSX.Element {
   return (
     <ul
-      className="flex max-h-40 flex-col gap-1.5 overflow-y-auto"
+      className="flex max-h-40 flex-col gap-2 overflow-y-auto"
       data-testid={testId}
     >
       {rows.map((row) => (
@@ -39,14 +57,14 @@ export function WorktreeDiscardPathList({
         >
           <span className="text-xs fg-tertiary">{row.label}</span>
           <span
-            className={`${REPLAY_BLOCK_CLASS} text-xs font-mono break-all select-text fg-secondary`}
+            className={`${REPLAY_BLOCK_CLASS} text-xs font-mono wrap-anywhere select-text fg-secondary`}
           >
-            {row.path}
+            <PathText path={row.path} />
           </span>
           {row.details?.map((detail) => (
             <span
               key={detail}
-              className={`${REPLAY_BLOCK_CLASS} text-xs fg-secondary`}
+              className={`${REPLAY_BLOCK_CLASS} text-xs fg-primary`}
             >
               {detail}
             </span>
@@ -101,26 +119,31 @@ export function WorktreeDiscardDialog({
         </>
       }
       message={
-        <div className="flex flex-col gap-2">
-          <p>{copy.lead}</p>
+        <div className="flex flex-col gap-3">
+          <p className="text-pretty">{copy.lead}</p>
           {copy.targets.length > 0 ? (
             <WorktreeDiscardPathList
               rows={copy.targets}
               testId={`${WORKTREE_DISCARD_DIALOG_TEST_ID}-targets`}
             />
           ) : null}
-          {copy.onlyCopyWarning ? <p>{copy.onlyCopyWarning}</p> : null}
+          {copy.onlyCopyWarning ? (
+            <p className="text-pretty fg-primary">{copy.onlyCopyWarning}</p>
+          ) : null}
           {copy.missingSources.length > 0 ? (
             <WorktreeDiscardPathList
               rows={copy.missingSources}
               testId={`${WORKTREE_DISCARD_DIALOG_TEST_ID}-sources`}
             />
           ) : null}
-          {copy.alsoDeleted ? <p>{copy.alsoDeleted}</p> : null}
-          {copy.preserved ? <p>{copy.preserved}</p> : null}
-          <p data-testid={`${WORKTREE_DISCARD_DIALOG_TEST_ID}-disconnected`}>
-            {copy.disconnectedWarning}
-          </p>
+          {copy.disconnectedWarning ? (
+            <p
+              className="text-pretty"
+              data-testid={`${WORKTREE_DISCARD_DIALOG_TEST_ID}-disconnected`}
+            >
+              {copy.disconnectedWarning}
+            </p>
+          ) : null}
         </div>
       }
       confirmLabel={copy.confirmLabel}

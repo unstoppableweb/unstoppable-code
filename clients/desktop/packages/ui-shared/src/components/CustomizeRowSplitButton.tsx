@@ -21,12 +21,12 @@ import { SECONDARY_SURFACE_SHELL_CLASS } from '../lib/row-chips';
 import { ControlButton } from '../primitives/Button';
 import type { CustomizeRowMenuItem } from './CustomizeRowMenu';
 import {
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuLabel,
-} from '../primitives/DropdownMenu';
-import { FloatingMenu } from '../primitives/FloatingMenu';
+  MenuDivider,
+  MenuItem,
+  MenuItemIcon,
+  MenuLabel,
+} from '../primitives/MenuItem';
+import { Menu } from '../primitives/Menu';
 import type { InstalledItemStatusGlyph } from './InstalledItemStatusPicker';
 import {
   ITEM_STATE_LABEL_CLASS,
@@ -117,7 +117,7 @@ function MenuRow({
       disabled={!item.disabledReason}
       className="w-full"
     >
-      <DropdownMenuItem
+      <MenuItem
         data-testid={testId ? `${testId}-${item.id}` : undefined}
         tone={item.destructive ? 'destructive' : 'default'}
         disabled={item.disabled}
@@ -135,7 +135,7 @@ function MenuRow({
         }}
       >
         {item.label}
-      </DropdownMenuItem>
+      </MenuItem>
     </Tooltip>
   );
 }
@@ -253,7 +253,7 @@ export function CustomizeRowSplitButton({
           >
             <ChevronDownIcon size="sm" aria-hidden />
           </ControlButton>
-          <FloatingMenu
+          <Menu
             id={menuId}
             open={open}
             onOpenChange={setOpen}
@@ -267,14 +267,12 @@ export function CustomizeRowSplitButton({
           >
             {statuses.map((status, index) => (
               <Fragment key={status.heading ?? index}>
-                {index > 0 && <DropdownMenuDivider />}
-                {status.heading && (
-                  <DropdownMenuLabel>{status.heading}</DropdownMenuLabel>
-                )}
+                {index > 0 && <MenuDivider />}
+                {status.heading && <MenuLabel>{status.heading}</MenuLabel>}
                 {INSTALLED_ITEM_STATUS_ORDER.map((option) => {
                   const selected = option === status.current;
                   return (
-                    <DropdownMenuItem
+                    <MenuItem
                       key={option}
                       role="menuitemradio"
                       aria-checked={selected}
@@ -291,9 +289,9 @@ export function CustomizeRowSplitButton({
                           status.onChange(option);
                       }}
                     >
-                      <DropdownMenuItemIcon>
+                      <MenuItemIcon>
                         <ItemStateMark tone={option} />
-                      </DropdownMenuItemIcon>
+                      </MenuItemIcon>
                       <span className="min-w-0 flex-1">
                         <span className="block font-medium fg-primary">
                           {INSTALLED_ITEM_STATUS_COPY[option].label}
@@ -305,10 +303,10 @@ export function CustomizeRowSplitButton({
                           )}
                         </span>
                       </span>
-                      <DropdownMenuItemIcon>
+                      <MenuItemIcon>
                         {selected && <CheckIcon size="sm" aria-hidden />}
-                      </DropdownMenuItemIcon>
-                    </DropdownMenuItem>
+                      </MenuItemIcon>
+                    </MenuItem>
                   );
                 })}
               </Fragment>
@@ -317,9 +315,7 @@ export function CustomizeRowSplitButton({
               .filter((group) => group.length > 0)
               .map((group, index) => (
                 <Fragment key={index}>
-                  {(index > 0 || statuses.length > 0) && (
-                    <DropdownMenuDivider />
-                  )}
+                  {(index > 0 || statuses.length > 0) && <MenuDivider />}
                   {group.map((item) => (
                     <MenuRow
                       key={item.id}
@@ -330,7 +326,7 @@ export function CustomizeRowSplitButton({
                   ))}
                 </Fragment>
               ))}
-          </FloatingMenu>
+          </Menu>
         </>
       )}
     </div>

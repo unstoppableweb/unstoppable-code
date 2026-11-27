@@ -14,7 +14,7 @@ import {
   NoticeButton,
   NoticeShapeProvider,
   ChatComposerToolbar,
-  FLOATING_PICKER_GAP,
+  PICKER_GAP,
   ThinkingLevelPanelPicker,
   UsageIndicator,
   type UsageIndicatorUsage,
@@ -576,7 +576,7 @@ function GalleryComposer({
             <ComposerPlusMenu
               dataTestIdPrefix={`gallery-${spec.id}`}
               disabled={terminal}
-              gap={FLOATING_PICKER_GAP}
+              gap={PICKER_GAP}
               capsuleTrigger
               controller={composerMenu}
               commands={[]}

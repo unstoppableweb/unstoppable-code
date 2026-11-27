@@ -5,6 +5,7 @@ import {
   type JSX,
   type KeyboardEvent,
 } from 'react';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { getModelCatalogProviderLabel } from '@canopy/ui-shared';
 import { CoinsIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
@@ -282,7 +283,16 @@ function useProviderLimitLookup(
  * billed fine elsewhere — a number they could neither act on nor replenish. When
  * the org pool is covering, the chip says so and shows no number at all.
  */
-export function AiCreditsRoutingStatusBanner({
+export function AiCreditsRoutingStatusBanner(
+  props: AiCreditsRoutingStatusBannerProps,
+): JSX.Element | null {
+  if (props.target !== null && isPairedComputerId(props.target.projectId)) {
+    return null;
+  }
+  return <AiCreditsRoutingStatusBannerContent {...props} />;
+}
+
+function AiCreditsRoutingStatusBannerContent({
   target,
   active,
   turnActive,
@@ -690,6 +700,16 @@ export function AiCreditsRoutingStatusBanner({
             {formatCredits(funding.credits)} left
           </span>
           .
+        </>
+      ) : funding.kind === 'empty' ? (
+        // A known empty wallet with no pool: nothing is paying, so the card
+        // never claims the session is paid with AI Credits.
+        <>
+          {staysUntilSwitchSentence}
+          {staysUntilSwitchSentence ? ' ' : null}
+          <span data-testid="chat-input-ai-credits-empty">
+            No AI Credits left.
+          </span>
         </>
       ) : (
         // The stay sentence already says the chat bills to AI Credits, so it

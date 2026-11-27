@@ -2,16 +2,16 @@
 
 import type { RefObject, JSX } from 'react';
 import type { SubagentRecipient } from '@canopy/agent-transcript';
+import { Picker } from '../../../../primitives/Picker';
 import {
-  FloatingPickerMenu,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionDescription,
-  PickerMenuOptionLabel,
-  PickerMenuOptionLeading,
-  PickerMenuSectionLabel,
-} from '../../../../primitives/PickerMenu';
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionDescription,
+  PickerOptionLabel,
+  PickerOptionLeading,
+  PickerSectionLabel,
+} from '../../../../primitives/PickerParts';
 import { ChatIcon } from '../../../../icons/AppIcons';
 import { SubagentIcon } from '../../../../icons/SubagentIcon';
 import {
@@ -77,7 +77,7 @@ export function SubagentRecipientMenu({
 }: SubagentRecipientMenuProps): JSX.Element | null {
   if (!open) return null;
   return (
-    <FloatingPickerMenu
+    <Picker
       open={open}
       onOpenChange={onOpenChange}
       anchorRef={anchorRef}
@@ -88,9 +88,9 @@ export function SubagentRecipientMenu({
       data-testid="subagent-composer-to-menu"
     >
       <div className="flex flex-col py-1">
-        <PickerMenuSectionLabel>
+        <PickerSectionLabel>
           {SUBAGENT_COMPOSER_TO_MENU_LABEL}
-        </PickerMenuSectionLabel>
+        </PickerSectionLabel>
         {recipients.map((recipient) => {
           const allowed = canSelect?.(recipient) ?? recipient.canMessage;
           const reason = recipientUnavailableReason(
@@ -100,7 +100,7 @@ export function SubagentRecipientMenu({
           );
           const selected = recipient.id === selectedId;
           return (
-            <PickerMenuOption
+            <PickerOption
               key={recipient.id}
               role="menuitemradio"
               aria-checked={selected}
@@ -114,7 +114,7 @@ export function SubagentRecipientMenu({
               data-testid={`subagent-composer-to-option-${recipient.id}`}
               title={reason}
             >
-              <PickerMenuOptionLeading
+              <PickerOptionLeading
                 tone={recipient.kind === 'root' ? 'secondary' : 'accent'}
               >
                 {recipient.kind === 'root' ? (
@@ -122,20 +122,20 @@ export function SubagentRecipientMenu({
                 ) : (
                   <SubagentIcon size={14} />
                 )}
-              </PickerMenuOptionLeading>
-              <PickerMenuOptionContent>
-                <PickerMenuOptionLabel>{recipient.title}</PickerMenuOptionLabel>
-                <PickerMenuOptionDescription>
+              </PickerOptionLeading>
+              <PickerOptionContent>
+                <PickerOptionLabel>{recipient.title}</PickerOptionLabel>
+                <PickerOptionDescription>
                   {subagentRecipientRelationLabel(recipient)} ·{' '}
                   {recipientStatus(recipient, rootBusy)}
                   {reason ? ` · ${reason}` : ''}
-                </PickerMenuOptionDescription>
-              </PickerMenuOptionContent>
-              <PickerMenuOptionCheck selected={selected} />
-            </PickerMenuOption>
+                </PickerOptionDescription>
+              </PickerOptionContent>
+              <PickerOptionCheck selected={selected} />
+            </PickerOption>
           );
         })}
       </div>
-    </FloatingPickerMenu>
+    </Picker>
   );
 }

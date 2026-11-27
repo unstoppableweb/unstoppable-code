@@ -159,6 +159,12 @@ export interface CuratedMcpServerEntry {
   categories: string[];
   /** Whether the entry belongs in the "Popular" section (client-side sections). */
   popular: boolean;
+  /**
+   * An editorial pick Customize marks as recommended. Independent of
+   * `popular` and `platformOAuth`: it says nothing about sign-in or vendor
+   * approval. Absent means not recommended.
+   */
+  recommended?: boolean;
   /** Ascending sort weight within a section (lower sorts first). */
   sortOrder: number;
   /**
@@ -403,6 +409,8 @@ export function isCuratedMcpServerEntry(
     isOptionalString(value.privacyPolicyUrl) &&
     isStringArray(value.categories) &&
     typeof value.popular === 'boolean' &&
+    (value.recommended === undefined ||
+      typeof value.recommended === 'boolean') &&
     isFiniteNumber(value.sortOrder) &&
     typeof value.updatedAt === 'string'
   );
@@ -493,6 +501,87 @@ export function curatedMcpDesktopOnly(
   entry: CuratedMcpConnectionFields,
 ): boolean {
   return entry.availability === 'desktop' || curatedMcpProviderOnly(entry);
+}
+
+/**
+ * The comparable form of an MCP endpoint: an `https:` URL without credentials,
+ * its host lowercased and default port dropped by the URL parser, one trailing
+ * slash removed from a non-root path, the query kept exactly and any fragment
+ * dropped. Anything else (another scheme, credentials, an unparsable string)
+ * has none, so it can never match a catalog endpoint.
+ */
+function canonicalMcpEndpoint(url: string): string | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(url.trim());
+  } catch {
+    return undefined;
+  }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password)
+    return undefined;
+  const path =
+    parsed.pathname.length > 1 && parsed.pathname.endsWith('/')
+      ? parsed.pathname.slice(0, -1)
+      : parsed.pathname;
+  return `https://${parsed.host}${path}${parsed.search}`;
+}
+
+/**
+ * Whether `url` could ever match a catalog endpoint for account binding: an
+ * `https:` URL without credentials. Anything else never reaches an account,
+ * whatever the catalog holds.
+ */
+export function isAccountMcpCatalogEndpoint(url: string): boolean {
+  return canonicalMcpEndpoint(url) !== undefined;
+}
+
+/**
+ * The catalog connector whose account connections an MCP server at `url` may
+ * use: the one entry whose endpoint, or one of its endpoint choices, is the
+ * same URL ({@link canonicalMcpEndpoint}). A server a third-party plugin
+ * declares is matched this way, since such a plugin names no catalog key. The
+ * match is by the exact upstream, so a declaration can never send an account's
+ * requests anywhere the catalog does not already send them. Entries only the
+ * desktop can connect ({@link curatedMcpDesktopOnly}) have no account
+ * connections and never match; neither does a URL that two entries share,
+ * whether or not either is desktop-only.
+ * An account connection reports its upstream hostname but not its port or
+ * path, so an entry that lists more than one endpoint on the matched hostname
+ * never matches either: which of them an account uses can't be told apart.
+ */
+export function accountMcpCatalogKeyForUrl(
+  entries: readonly CuratedMcpServerEntry[],
+  url: string,
+): string | undefined {
+  const target = canonicalMcpEndpoint(url);
+  if (target === undefined) return undefined;
+  // Uniqueness is checked across the whole catalog, desktop-only entries
+  // included, before a desktop-only match is refused.
+  const matched: CuratedMcpServerEntry[] = [];
+  for (const entry of entries) {
+    const endpoints = [
+      entry.url,
+      ...(entry.urlOptions ?? []).map((option) => option.url),
+    ];
+    const canonical = endpoints.map(canonicalMcpEndpoint);
+    if (!canonical.includes(target)) continue;
+    // By hostname, ports aside: an account reports only its hostname.
+    const hostname = new URL(target).hostname;
+    const onHost = new Set(
+      canonical.filter(
+        (endpoint): endpoint is string =>
+          endpoint !== undefined && new URL(endpoint).hostname === hostname,
+      ),
+    );
+    if (onHost.size !== 1) return undefined;
+    matched.push(entry);
+  }
+  const [only] = matched;
+  return matched.length === 1 &&
+    only !== undefined &&
+    !curatedMcpDesktopOnly(only)
+    ? only.key
+    : undefined;
 }
 
 // ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ import {
 } from 'react';
 import { MoreHorizontalIcon } from '../icons/AppIcons';
 import { ActionMenuRowStyle } from '../primitives/ActionMenuItems';
-import { FloatingMenu } from '../primitives/FloatingMenu';
+import { Menu } from '../primitives/Menu';
 import { SidebarNavRow } from './SidebarNavRow';
 import { SIDEBAR_LIST_ICON_CLASSNAME } from '../primitives/sidebar-item-classes';
 import { Tooltip } from '../primitives/Tooltip';
@@ -82,7 +82,7 @@ export function SidebarMoreControl({
           More
         </SidebarNavRow>
       )}
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={open}
         onOpenChange={onOpenChange}
@@ -95,7 +95,7 @@ export function SidebarMoreControl({
         {/* The destinations take the action-menu rows (small text, tertiary
             icons), like every other row menu. */}
         <ActionMenuRowStyle>{children}</ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
     </>
   );
   return landmarkLabel ? (

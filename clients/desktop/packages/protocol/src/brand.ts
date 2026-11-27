@@ -238,6 +238,29 @@ export interface BrandWebMobileApps {
   appStoreUrl?: string;
   /** Google Play listing URL. Must be https. */
   playStoreUrl?: string;
+  /**
+   * Android application id published in Digital Asset Links, e.g.
+   * `com.example.app`. Declared together with
+   * {@link BrandWebMobileApps.androidCertFingerprints} and
+   * {@link BrandWebMobileApps.androidAppLinkHosts}; a brand without them
+   * publishes no asset links and verifies no https sign-in return.
+   *
+   * OPTIONAL, so existing packs stay valid without a
+   * {@link BrandSchemaVersion} bump (CAN-7958).
+   */
+  androidPackage?: string;
+  /**
+   * Public SHA-256 fingerprints of the app-signing certificates, upper-case
+   * colon-separated hex. For a Play-distributed app this is the Play signing
+   * certificate, not the upload key.
+   */
+  androidCertFingerprints?: string[];
+  /**
+   * Exact hosts that publish the asset links and accept the app's https
+   * sign-in return. May name a retired host that is no longer in
+   * `web.hostnames` but that installed releases still return through.
+   */
+  androidAppLinkHosts?: string[];
 }
 
 export interface BrandWebMarketingLink {
@@ -299,6 +322,23 @@ export interface BrandWebMarketing {
    * {@link BrandWebMarketing.copyrightHolder}.
    */
   sourceRepository?: BrandSourceRepository;
+  /**
+   * The marketing site's canonical https origin, e.g. `https://example.com`
+   * (CAN-7958). The support silo, the one-command Linux installer, discovery
+   * and the alias-host redirect use it. A request on one of the brand's other
+   * `web.hostnames` that asks for a marketing page is redirected here. When
+   * omitted, nothing is redirected and those surfaces use the request origin
+   * or are omitted.
+   *
+   * OPTIONAL, for the same reason given on
+   * {@link BrandWebMarketing.copyrightHolder}.
+   */
+  canonicalOrigin?: string;
+  /**
+   * Homebrew cask the download page and install guide name, as
+   * `<owner>/<tap>/<cask>`. Omitted: the download page shows no Homebrew row.
+   */
+  homebrewCask?: string;
 }
 
 /** Public client source repository declared by a marketing brand. */
@@ -418,6 +458,21 @@ export interface BrandCore {
     description: string;
     /** Optional mobile app store listings; see {@link BrandWebMobileApps}. */
     mobileApps?: BrandWebMobileApps;
+    // Contact addresses (CAN-7958). Outside `marketing` because Terms and
+    // Privacy still render when the marketing site is off. Each is optional;
+    // a brand without one omits that contact line.
+    /** Inbox the help center points visitors at. */
+    supportEmail?: string;
+    /** Contact named by the Terms of Service. */
+    legalEmail?: string;
+    /** Contact named by the Privacy Policy. */
+    privacyEmail?: string;
+    /**
+     * Sales demo scheduler the simple landing (a brand without `marketing`)
+     * links to; https. A marketing brand's landing uses
+     * {@link BrandWebMarketing.demoUrl} instead. Omitted: no demo link.
+     */
+    demoUrl?: string;
     /** Optional brand-owned marketing surface and corporate destinations. */
     marketing?: BrandWebMarketing;
   };
@@ -607,6 +662,70 @@ function isUpperSnake(value: unknown): value is string {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
+}
+
+const EMAIL_ADDRESS_REGEX = /^[^\s@<>()]+@[^\s@<>()]+\.[^\s@<>()]+$/;
+const ANDROID_PACKAGE_REGEX =
+  /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
+const SHA256_FINGERPRINT_REGEX = /^[0-9A-F]{2}(:[0-9A-F]{2}){31}$/;
+const HOSTNAME_REGEX =
+  /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+
+function isEmailAddress(value: unknown): value is string {
+  return typeof value === 'string' && EMAIL_ADDRESS_REGEX.test(value);
+}
+
+function isStringArrayMatching(value: unknown, pattern: RegExp): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((entry) => typeof entry === 'string' && pattern.test(entry))
+  );
+}
+
+/**
+ * The Android Digital Asset Links fields (CAN-7958) are declared together or
+ * not at all: a package without a certificate or a host publishes nothing
+ * verifiable.
+ */
+function validateAndroidAppLinks(
+  mobileApps: Record<string, unknown>,
+  errors: string[],
+): void {
+  const { androidPackage, androidCertFingerprints, androidAppLinkHosts } =
+    mobileApps;
+  const declared = [
+    androidPackage,
+    androidCertFingerprints,
+    androidAppLinkHosts,
+  ].filter((value) => value !== undefined).length;
+  if (declared === 0) return;
+  pushIf(
+    errors,
+    declared !== 3,
+    'web.mobileApps.androidPackage, androidCertFingerprints and androidAppLinkHosts must be declared together',
+  );
+  pushIf(
+    errors,
+    androidPackage !== undefined &&
+      !(
+        typeof androidPackage === 'string' &&
+        ANDROID_PACKAGE_REGEX.test(androidPackage)
+      ),
+    'web.mobileApps.androidPackage must be an Android application id',
+  );
+  pushIf(
+    errors,
+    androidCertFingerprints !== undefined &&
+      !isStringArrayMatching(androidCertFingerprints, SHA256_FINGERPRINT_REGEX),
+    'web.mobileApps.androidCertFingerprints must be upper-case colon-separated SHA-256 fingerprints',
+  );
+  pushIf(
+    errors,
+    androidAppLinkHosts !== undefined &&
+      !isStringArrayMatching(androidAppLinkHosts, HOSTNAME_REGEX),
+    'web.mobileApps.androidAppLinkHosts must be lower-case hostnames',
+  );
 }
 
 function toUnknownRecord(value: unknown): Record<string, unknown> | undefined {
@@ -1269,8 +1388,25 @@ export function validateBrandCore(
           declared === 0,
           'web.mobileApps must declare at least one store URL',
         );
+        validateAndroidAppLinks(mobileApps, errors);
       }
     }
+    for (const field of ['supportEmail', 'legalEmail', 'privacyEmail']) {
+      const value = web[field];
+      pushIf(
+        errors,
+        value !== undefined && !isEmailAddress(value),
+        `web.${field} must be an email address when provided`,
+      );
+    }
+    pushIf(
+      errors,
+      web.demoUrl !== undefined &&
+        !(
+          typeof web.demoUrl === 'string' && web.demoUrl.startsWith('https://')
+        ),
+      'web.demoUrl must be an https:// URL when provided',
+    );
   }
 
   const release = record.release as Record<string, unknown> | undefined;

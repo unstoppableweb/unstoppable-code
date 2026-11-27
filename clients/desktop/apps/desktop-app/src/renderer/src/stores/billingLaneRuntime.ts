@@ -147,3 +147,28 @@ export function getRendererCodexAccountModels(): ReadonlySet<string> | null {
 export function getRendererCodexAccountModelsKey(): string {
   return currentCodexAccountModelsKey;
 }
+
+let currentOllamaReadyModels: readonly string[] | undefined;
+let currentOllamaReadyModelsKey: string | undefined;
+
+/**
+ * The installed Ollama models this app can select, in the shared order
+ * (`selectableOllamaModels`). `undefined` is UNKNOWN (no answer yet, or a
+ * window that never reads Ollama) and leaves the lane resolver as it was;
+ * `[]` is a settled "Ollama cannot run anything". Feeds both billing
+ * readiness and the Ollama-only default, so the two always agree. Compared by
+ * content, so an unchanged list never bumps the version.
+ */
+export function setRendererOllamaReadyModels(
+  models: readonly string[] | undefined,
+): void {
+  const key = models === undefined ? undefined : models.join('\n');
+  if (key === currentOllamaReadyModelsKey) return;
+  currentOllamaReadyModels = models;
+  currentOllamaReadyModelsKey = key;
+  bumpLaneFactsVersion();
+}
+
+export function getRendererOllamaReadyModels(): readonly string[] | undefined {
+  return currentOllamaReadyModels;
+}

@@ -315,6 +315,7 @@ export const INTERFACE_RELAY_ALLOWLIST: InterfaceRelayAllowlist = {
       'core.integration.providerKey.set',
       'core.integration.sharedConnection.connect',
       'core.integration.sharedConnection.disconnect',
+      'core.integration.sharedConnection.projects.update',
       'core.integration.sharedConnection.reconnect',
       'core.integration.sharedConnection.remove',
       'core.integration.sharedConnection.session.issue',

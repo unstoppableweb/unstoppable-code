@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import {
   getTrackedPlan,
   importTrackedPlan,
@@ -2269,7 +2270,10 @@ function applySdkSystemEventToData(
 }
 
 function runMutationSideEffects(result: ActivityMutationResult): void {
-  if (result.startPolling) {
+  if (
+    result.startPolling &&
+    !isPairedComputerId(result.startPolling.projectId)
+  ) {
     // A task running again outlives the stop its earlier ending scheduled.
     const key = pollingKey(result.startPolling);
     clearTimeout(delayedStopTimers.get(key));
@@ -2281,7 +2285,7 @@ function runMutationSideEffects(result: ActivityMutationResult): void {
       });
   }
 
-  if (result.stopPolling) {
+  if (result.stopPolling && !isPairedComputerId(result.stopPolling.projectId)) {
     const key = pollingKey(result.stopPolling);
     const existing = delayedStopTimers.get(key);
     if (existing) {
@@ -2293,7 +2297,10 @@ function runMutationSideEffects(result: ActivityMutationResult): void {
     });
   }
 
-  if (result.delayedStopPolling) {
+  if (
+    result.delayedStopPolling &&
+    !isPairedComputerId(result.delayedStopPolling.projectId)
+  ) {
     const delayedStopPolling = result.delayedStopPolling;
     const key = pollingKey(delayedStopPolling);
     const existing = delayedStopTimers.get(key);

@@ -2452,25 +2452,67 @@ function commandTargetsProtectedFile(
   const recursiveForcedRemoval =
     recursiveForcedRemoveOperations(check.command).length > 0;
   return (
-    check.resolvedPaths?.some((resolvedPath) =>
-      ctx.protectedFileWritePaths?.some((protectedPath) => {
-        const relation = protectedFileRelation(
-          resolvedPath,
-          protectedPath,
-          ctx.pathCaseInsensitive,
-        );
-        return (
-          relation === 'exact' ||
-          (recursiveForcedRemoval && relation === 'ancestor')
-        );
-      }),
-    ) === true
+    check.resolvedPaths?.some((resolvedPath) => {
+      const relation = protectedPathRelation(resolvedPath, ctx);
+      return (
+        relation === 'exact' ||
+        (recursiveForcedRemoval && relation === 'ancestor')
+      );
+    }) === true
+  );
+}
+
+/**
+ * How the absolute `path` relates to the context's protected entries: one it
+ * names (`exact`) beats a folder above one (`ancestor`). A path at or below a
+ * `protectedFileExemptPaths` folder relates to none.
+ */
+function protectedPathRelation(
+  path: string,
+  ctx: ApprovalEvaluationContext,
+): 'exact' | 'ancestor' | undefined {
+  if (
+    ctx.protectedFileExemptPaths?.some((folder) =>
+      isPathAtOrBelowPattern(path, folder, ctx.pathCaseInsensitive),
+    )
+  ) {
+    return undefined;
+  }
+  let relation: 'ancestor' | undefined;
+  for (const protectedPath of ctx.protectedFileWritePaths ?? []) {
+    const next = protectedFileRelation(
+      path,
+      protectedPath,
+      ctx.pathCaseInsensitive,
+    );
+    if (next === 'exact') return 'exact';
+    relation ??= next;
+  }
+  return relation;
+}
+
+function isPathAtOrBelowPattern(
+  path: string,
+  folderPattern: string,
+  pathCaseInsensitive = false,
+): boolean {
+  const candidate = normalizeAbsolutePath(path, pathCaseInsensitive);
+  const folder = normalizeAbsolutePath(folderPattern, pathCaseInsensitive);
+  return (
+    candidate !== null &&
+    folder !== null &&
+    candidate.root === folder.root &&
+    candidate.segments.length >= folder.segments.length &&
+    folder.segments.every((segment, index) =>
+      tokenWildcardMatches(segment, candidate.segments[index], false),
+    )
   );
 }
 
 /**
  * Whether the absolute `path` is a file the protected entry names, or a
- * folder above one. Entry segments match as `*` wildcards.
+ * folder above one. Entry segments match as `*` wildcards, and a final `**`
+ * segment names the folder before it and everything below it.
  */
 function protectedFileRelation(
   path: string,
@@ -2482,20 +2524,24 @@ function protectedFileRelation(
     protectedPath,
     pathCaseInsensitive,
   );
+  if (!candidate || !protectedFile) return undefined;
+  const subtree =
+    protectedFile.segments[protectedFile.segments.length - 1] === '**';
+  const named = subtree
+    ? protectedFile.segments.slice(0, -1)
+    : protectedFile.segments;
   if (
-    !candidate ||
-    !protectedFile ||
     candidate.root !== protectedFile.root ||
-    candidate.segments.length > protectedFile.segments.length ||
-    !candidate.segments.every((segment, index) =>
-      tokenWildcardMatches(protectedFile.segments[index], segment, false),
-    )
+    (!subtree && candidate.segments.length > named.length) ||
+    !candidate.segments
+      .slice(0, named.length)
+      .every((segment, index) =>
+        tokenWildcardMatches(named[index], segment, false),
+      )
   ) {
     return undefined;
   }
-  return candidate.segments.length === protectedFile.segments.length
-    ? 'exact'
-    : 'ancestor';
+  return candidate.segments.length >= named.length ? 'exact' : 'ancestor';
 }
 
 interface NormalizedAbsolutePath {
@@ -2599,16 +2645,8 @@ function readTargetsProtectedFile(
   const target = check.resolvedReadPath;
   if (target === undefined) return false;
   const traverses = check.toolName === 'Glob' || check.toolName === 'Grep';
-  return (
-    ctx.protectedFileWritePaths?.some((path) => {
-      const relation = protectedFileRelation(
-        target,
-        path,
-        ctx.pathCaseInsensitive,
-      );
-      return relation === 'exact' || (traverses && relation === 'ancestor');
-    }) === true
-  );
+  const relation = protectedPathRelation(target, ctx);
+  return relation === 'exact' || (traverses && relation === 'ancestor');
 }
 
 /**
@@ -2671,20 +2709,17 @@ export function evaluateApproval(
   if (
     ctx.mode !== 'full-access' &&
     ((check.kind === 'file-write' &&
-      ctx.protectedFileWritePaths?.some((path) =>
-        check.isGrant
-          ? fileGrantMayContainProtectedFile(
+      (check.isGrant
+        ? ctx.protectedFileWritePaths?.some((path) =>
+            fileGrantMayContainProtectedFile(
               check.resolvedPath ?? check.path,
               path,
               ctx.workspaceRoot,
               ctx.pathCaseInsensitive ?? false,
-            )
-          : protectedFileRelation(
-              check.resolvedPath ?? check.path,
-              path,
-              ctx.pathCaseInsensitive,
-            ) === 'exact',
-      )) ||
+            ),
+          ) === true
+        : protectedPathRelation(check.resolvedPath ?? check.path, ctx) ===
+          'exact')) ||
       (check.kind === 'command' && commandTargetsProtectedFile(check, ctx)) ||
       (check.kind === 'tool' && readTargetsProtectedFile(check, ctx)))
   ) {

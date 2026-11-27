@@ -7,8 +7,8 @@
  * never hides a failed first load. Each failure the open picker shows is
  * recorded once, and a retry still running records nothing. A load for a
  * scope the host has left never replaces the current scope's failure, and
- * only the latest load for a scope decides whether its failure shows and
- * when its Try again stops running.
+ * only the latest load for a scope decides whether its failure shows. A
+ * scope shows as loading only while one of its own loads runs (CAN-7506).
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -20,9 +20,12 @@ import type {
 import { setSurfacedErrorRecorder } from '@canopy/ui-shared/lib';
 import { RemoteControlPluginsPicker } from '../RemoteControlPluginsPicker';
 import {
+  isPluginCatalogLoading,
   pluginCatalogFailureAfterLoad,
-  pluginCatalogLoadingAfterLoad,
+  pluginCatalogLoadsAfterSettle,
+  pluginCatalogLoadsAfterStart,
   type PluginCatalogLoadScope,
+  type PluginCatalogScopeLoads,
 } from '../plugin-catalog-load-scope';
 
 (
@@ -355,8 +358,14 @@ describe("the host's catalog load outcome (CAN-7473)", () => {
     }).toEqual({ shown: current, error: true, retry: true, cleared: null });
   });
 
-  it('keeps Trying again on when an older load settles while a newer one runs', () => {
-    const loading = pluginCatalogLoadingAfterLoad(true, false);
+  it('keeps Trying again on while a newer load for the same scope runs, and off once both settle', () => {
+    const current = scope('current');
+    const both = pluginCatalogLoadsAfterStart(
+      pluginCatalogLoadsAfterStart([], current),
+      current,
+    );
+    const olderSettled = pluginCatalogLoadsAfterSettle(both, current);
+    const loading = isPluginCatalogLoading(olderSettled, current);
     render({
       catalog: null,
       loading,
@@ -368,7 +377,70 @@ describe("the host's catalog load outcome (CAN-7473)", () => {
       busy: byTestId('remote-control-plugins-load-retry')?.getAttribute(
         'aria-busy',
       ),
-      settled: pluginCatalogLoadingAfterLoad(true, true),
+      settled: isPluginCatalogLoading(
+        pluginCatalogLoadsAfterSettle(olderSettled, current),
+        current,
+      ),
     }).toEqual({ loading: true, busy: 'true', settled: false });
+  });
+});
+
+describe("the host's loading state per scope (CAN-7506)", () => {
+  const scope = (worktreeLocalId: string): PluginCatalogLoadScope => ({
+    client: 'computer',
+    sessionId: 'chat',
+    workspaceLocalId: 'workspace',
+    worktreeLocalId,
+  });
+  const none: readonly PluginCatalogScopeLoads<PluginCatalogLoadScope>[] = [];
+
+  it("keeps the new scope loading, with no empty copy, when the left scope's load settles", () => {
+    const left = scope('left');
+    const current = scope('current');
+    const leftSettled = pluginCatalogLoadsAfterSettle(
+      pluginCatalogLoadsAfterStart(
+        pluginCatalogLoadsAfterStart(none, left),
+        current,
+      ),
+      left,
+    );
+    const loading = isPluginCatalogLoading(leftSettled, current);
+    render({ catalog: null, loading });
+    expect({
+      loading,
+      emptyCopy: text().includes('No plugins are available'),
+    }).toEqual({ loading: true, emptyCopy: false });
+  });
+
+  it('shows no loading in a scope where nothing runs, before or after the left scope settles', () => {
+    const left = scope('left');
+    const current = scope('current');
+    const leftRunning = pluginCatalogLoadsAfterStart(none, left);
+    const whileRunning = isPluginCatalogLoading(leftRunning, current);
+    render({ catalog: null, loading: whileRunning });
+    expect({
+      whileRunning,
+      emptyCopy: text().includes('No plugins are available from Canopy.'),
+      afterSettle: isPluginCatalogLoading(
+        pluginCatalogLoadsAfterSettle(leftRunning, left),
+        current,
+      ),
+    }).toEqual({ whileRunning: false, emptyCopy: true, afterSettle: false });
+  });
+
+  it('shows loading again on returning to a scope whose load still runs', () => {
+    const left = scope('left');
+    const current = scope('current');
+    const running = pluginCatalogLoadsAfterStart(
+      pluginCatalogLoadsAfterStart(none, left),
+      current,
+    );
+    expect({
+      away: isPluginCatalogLoading(
+        pluginCatalogLoadsAfterSettle(running, current),
+        left,
+      ),
+      back: isPluginCatalogLoading(running, left),
+    }).toEqual({ away: true, back: true });
   });
 });

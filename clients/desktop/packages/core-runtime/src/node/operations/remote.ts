@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
 
 import {
+  CanopyErrorPayloadSchema,
   OPERATION_LEDGER_ERROR_CODES,
   OPERATION_LEDGER_LIMITS,
   OperationLedgerErrorSchema,
   isTerminalOperationStatus,
+  isUnknownKeyedWriteOutcome,
   type CORE_OPERATION_LEDGER_INSTRUCTION_DEFINITIONS,
   type CORE_OPERATION_LEDGER_QUERY_DEFINITIONS,
   type CORE_OPERATION_LEDGER_STREAM_DEFINITIONS,
@@ -19,6 +21,7 @@ import {
 
 import {
   OperationLedgerError,
+  OperationLedgerOutcomeUnknownError,
   OperationLedgerRefusedError,
 } from './ledger/errors';
 import type {
@@ -105,21 +108,32 @@ const AWAITING_PAGE = 500;
 const LIST_PAGE = 500;
 
 /** A remote failure as the in-process ledger would raise it. */
-function fromRemote(error: unknown): unknown {
+function fromRemote(error: unknown, sent?: string): unknown {
   if (
     error instanceof OperationLedgerRefusedError ||
-    error instanceof OperationLedgerError
+    error instanceof OperationLedgerError ||
+    error instanceof OperationLedgerOutcomeUnknownError
   )
     return error;
-  const payload =
+  const raw =
     typeof error === 'object' && error !== null && 'payload' in error
-      ? OperationLedgerErrorSchema.safeParse(error.payload)
-      : null;
+      ? error.payload
+      : undefined;
+  const payload =
+    raw === undefined ? null : OperationLedgerErrorSchema.safeParse(raw);
   const details = payload?.success ? payload.data.details : undefined;
   if (
     payload?.success &&
+    payload.data.code === OPERATION_LEDGER_ERROR_CODES.unavailable &&
+    details &&
+    'failure' in details
+  )
+    return new OperationLedgerError(details.failure, payload.data.message);
+  if (
+    payload?.success &&
     payload.data.code === OPERATION_LEDGER_ERROR_CODES.refused &&
-    details
+    details &&
+    'refusal' in details
   )
     return new OperationLedgerRefusedError(
       details.refusal,
@@ -133,10 +147,41 @@ function fromRemote(error: unknown): unknown {
           : {}),
       },
     );
+  // A sent write that the ledger itself didn't answer may have landed.
+  if (sent !== undefined) {
+    const answer =
+      raw === undefined ? null : CanopyErrorPayloadSchema.safeParse(raw);
+    if (
+      !answer?.success ||
+      isUnknownKeyedWriteOutcome(answer.data) ||
+      isLostReply(answer.data)
+    )
+      return new OperationLedgerOutcomeUnknownError(sent, error);
+  }
   return new OperationLedgerError(
     'STORAGE_UNAVAILABLE',
     'The operation ledger could not be reached.',
     error,
+  );
+}
+
+/**
+ * A reply lost after dispatch to a disconnect, a deadline or the client's
+ * shutdown at capacity. Core-client keeps a same-request retry for the
+ * ledger's inherent writes and rewrites it to never for the others
+ * (`forDefinition`), and the shared keyed check reads either as the core's
+ * own answer. The ledger's own refusals carry its codes and are read first.
+ */
+const LOST_REPLY_KINDS: ReadonlySet<CanopyErrorPayload['kind']> = new Set([
+  'unavailable',
+  'deadline_exceeded',
+  'resource_exhausted',
+]);
+
+function isLostReply(payload: CanopyErrorPayload): boolean {
+  return (
+    LOST_REPLY_KINDS.has(payload.kind) &&
+    !payload.code?.startsWith('core.operationLedger.')
   );
 }
 
@@ -316,6 +361,11 @@ export class RemoteOperationService implements OperationServicePort {
     };
   }
 
+  /**
+   * A lost reply rejects as an unknown outcome, keyed or not: the receipt
+   * can't tell this caller's admission from a concurrent one with the same
+   * key, so the caller decides.
+   */
   async admit(
     request: Parameters<OperationService['admit']>[0],
   ): ReturnType<OperationService['admit']> {
@@ -535,12 +585,19 @@ export class RemoteOperationService implements OperationServicePort {
     operationId: string,
     terminal: Parameters<OperationService['finish']>[1],
   ): Promise<OperationRecord> {
-    return (
-      await this.instruct('core.operationLedger.finish', {
-        operationId,
-        terminal,
-      })
-    ).operation;
+    const send = async (): Promise<OperationRecord> =>
+      (
+        await this.instruct('core.operationLedger.finish', {
+          operationId,
+          terminal,
+        })
+      ).operation;
+    try {
+      return await send();
+    } catch (error) {
+      if (!(error instanceof OperationLedgerOutcomeUnknownError)) throw error;
+      return this.settleUnknownFinish(operationId, terminal, send, error);
+    }
   }
 
   /**
@@ -553,11 +610,19 @@ export class RemoteOperationService implements OperationServicePort {
     terminal: Parameters<OperationService['finish']>[1],
   ): Promise<OperationRecord | null> {
     return this.orRecord('finish', async () => {
-      const { operation } = await this.instruct(
-        'core.operationLedger.finishOrRecord',
-        { operationId, terminal },
-      );
-      return operation;
+      const send = async (): Promise<OperationRecord | null> =>
+        (
+          await this.instruct('core.operationLedger.finishOrRecord', {
+            operationId,
+            terminal,
+          })
+        ).operation;
+      try {
+        return await send();
+      } catch (error) {
+        if (!(error instanceof OperationLedgerOutcomeUnknownError)) throw error;
+        return this.settleUnknownFinish(operationId, terminal, send, error);
+      }
     });
   }
 
@@ -1166,6 +1231,38 @@ export class RemoteOperationService implements OperationServicePort {
     }
   }
 
+  private async settleUnknownFinish<T extends OperationRecord | null>(
+    operationId: string,
+    terminal: Parameters<OperationService['finish']>[1],
+    send: () => Promise<T>,
+    unknown: OperationLedgerOutcomeUnknownError,
+  ): Promise<T | OperationRecord> {
+    const current = await this.recover(() => this.get(operationId), unknown);
+    if (!current || !isTerminalOperationStatus(current.status)) return send();
+    if (current.status === terminal.status) return current;
+    throw new OperationLedgerRefusedError(
+      'invalid-state',
+      `Operation ${operationId} already finished as ${current.status}.`,
+      { operationId },
+    );
+  }
+
+  /**
+   * A read that settles a lost reply. The reply is usually lost because the
+   * connection went down, so the read fails too; then the write stays
+   * unknown, never "nothing recorded".
+   */
+  private async recover<T>(
+    read: () => Promise<T>,
+    unknown: OperationLedgerOutcomeUnknownError,
+  ): Promise<T> {
+    try {
+      return await read();
+    } catch {
+      throw unknown;
+    }
+  }
+
   private async orRecord(
     context: 'finish' | 'transition',
     write: () => Promise<OperationRecord | null>,
@@ -1218,14 +1315,14 @@ export class RemoteOperationService implements OperationServicePort {
     params: CanopySchemaInput<Instructions[N]['params']>,
   ): Promise<CanopySchemaOutput<Instructions[N]['result']>> {
     const transport = await this.connected();
-    return this.request(() => transport.instruction(name, params));
+    return this.request(() => transport.instruction(name, params), name);
   }
 
-  private async request<T>(call: () => Promise<T>): Promise<T> {
+  private async request<T>(call: () => Promise<T>, sent?: string): Promise<T> {
     try {
       return await call();
     } catch (error) {
-      throw fromRemote(error);
+      throw fromRemote(error, sent);
     }
   }
 }

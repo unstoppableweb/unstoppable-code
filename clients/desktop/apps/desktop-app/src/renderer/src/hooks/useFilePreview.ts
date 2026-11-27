@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useContext, useEffect, useState } from 'react';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import type { FilePreviewResponse } from '@canopy/desktop-shared/types';
 import { cloudAttachmentPreview } from '@/cloud-chats/cloud-chat-attachments';
+import { ChatMarkdownFileTargetContext } from '@/components/chat/chat-markdown-file-target';
 
 export type FilePreviewState =
   | { readonly status: 'loading' }
@@ -17,8 +19,15 @@ export function useFilePreview(
   enabled = true,
 ): FilePreviewState {
   const [state, setState] = useState<FilePreviewState>({ status: 'loading' });
+  const chatTarget = useContext(ChatMarkdownFileTargetContext);
+  const isPairedScope =
+    chatTarget !== null && isPairedComputerId(chatTarget.projectId);
   useEffect(() => {
     if (!enabled) return undefined;
+    if (isPairedScope) {
+      setState({ status: 'failed' });
+      return undefined;
+    }
     // A cloud chat's attachment is never read through main.
     const cloud = cloudAttachmentPreview(absolutePath);
     if (cloud !== undefined) {
@@ -38,6 +47,6 @@ export function useFilePreview(
     return (): void => {
       cancelled = true;
     };
-  }, [absolutePath, enabled]);
+  }, [absolutePath, enabled, isPairedScope]);
   return state;
 }

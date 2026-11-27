@@ -39,6 +39,7 @@ import { normalizeChatCustomTitle } from '@/lib/chatTabLabel';
 import { getProviderLabel } from '@/lib/providerLabels';
 import type { ForkedPanelTabBinding } from '@canopy/desktop-shared/panels/fork-layout';
 import { withWorktreeRelocationInstruction } from '@canopy/desktop-shared/lib/pending-system-instructions';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { isCloudTaskDeleted } from '../web-core/task-deletions';
 import { flushPendingChatDraftWrites } from '@/lib/chatDraftStorage';
@@ -266,8 +267,8 @@ import {
 } from './revisioned';
 import type { ChatCommandDisposition } from '../revisioned-commands';
 import {
+  chatApprovalAuthorityKey,
   chatBackendFor,
-  chatBackends,
   ignoreUnavailable,
   isCapabilityUnavailable,
   localChatBackend,
@@ -496,22 +497,22 @@ function replacementTabCommand(
   };
 }
 
-/** One scope's live approval requests, or every backend's without a scope. */
+/** One scope's live approval requests from the authority that owns it. */
 const loadActiveApprovalRequests = async (
-  scope?: ChatBackendScope,
+  scope: ChatBackendScope,
 ): Promise<ApprovalRequestEvent[] | undefined> => {
-  const backends =
-    scope === undefined ? chatBackends() : [chatBackendFor(scope)];
+  // Paired-computer approvals reconcile atomically inside the paired backend's
+  // fenced snapshot sync (on connect, reconnect, and getState), so hydration
+  // must not replay an earlier pre-hydration snapshot over live cancellations.
+  if (isPairedComputerId(scope.projectId)) return undefined;
   const lists = await Promise.all(
-    backends.map(
+    [chatBackendFor(scope)].map(
       (backend) =>
-        backend.approvals.pendingRequests?.().catch(() => undefined) ??
+        backend.approvals.pendingRequests?.(scope).catch(() => undefined) ??
         Promise.resolve(undefined),
     ),
   );
-  return lists.some((list) => list === undefined)
-    ? undefined
-    : lists.flatMap((list) => list ?? []);
+  return lists[0];
 };
 
 function recoverRevisionedPendingApprovals(
@@ -1082,6 +1083,7 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
 
     if (
       acknowledgedChatId &&
+      !isPairedComputerId(projectId) &&
       isScopeRevisionedLive(get(), projectId, worktreeId)
     ) {
       void Promise.all([
@@ -1154,7 +1156,7 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
     if (options?.deferTabLoad !== true) {
       void get().loadTabs();
     }
-    if (isCoworkChatTarget(projectId)) {
+    if (isCoworkChatTarget(projectId) || isPairedComputerId(projectId)) {
       void window.api.github.setForegroundWorktree({
         projectId: null,
         worktreeId: null,
@@ -1177,7 +1179,11 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
     // startup routing because there are no Bot sidebar workspaces. Web core
     // selections are excluded too: startup restores before the cloud connects, and main
     // never holds a web core id (CAN-6175 D1).
-    if (!isBotProjectId(projectId) && !isWebCoreScope(projectId)) {
+    if (
+      !isBotProjectId(projectId) &&
+      !isWebCoreScope(projectId) &&
+      !isPairedComputerId(projectId)
+    ) {
       void window.api.savePreferences({
         lastSelectedWorktreeProjectId: projectId,
         lastSelectedWorktreeId: worktreeId,
@@ -1253,9 +1259,11 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
             // tab. Calling it also covers a local starter that another startup
             // surface inserted after the empty snapshot landed; the setup above
             // already ensures it.
-            await get().ensureWorktreeHasChatTab(sel, {
-              preserveActiveTab: true,
-            });
+            if (!isPairedComputerId(sel.projectId)) {
+              await get().ensureWorktreeHasChatTab(sel, {
+                preserveActiveTab: true,
+              });
+            }
           }
         } finally {
           loadingKeys.delete(key);
@@ -2020,7 +2028,22 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
 
     try {
       const modelDefaults = await get().ensureModelDefaultsLoaded();
-      const activeApprovalRequests = await loadActiveApprovalRequests();
+      // Read approvals lazily per authority (and per paired device) so a slow
+      // or unresponsive peer never stalls hydration of unrelated worktrees.
+      const approvalRequestsByAuthority = new Map<
+        string,
+        Promise<ApprovalRequestEvent[] | undefined>
+      >();
+      const getApprovalRequestsFor = (
+        scope: ChatBackendScope,
+      ): Promise<ApprovalRequestEvent[] | undefined> => {
+        const authorityKey = chatApprovalAuthorityKey(scope);
+        const existing = approvalRequestsByAuthority.get(authorityKey);
+        if (existing) return existing;
+        const pending = loadActiveApprovalRequests(scope);
+        approvalRequestsByAuthority.set(authorityKey, pending);
+        return pending;
+      };
 
       const queuedByWorktreeKey = new Map<
         string,
@@ -2060,7 +2083,7 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
                     set,
                     wt.projectId,
                     wt.worktreeId,
-                    activeApprovalRequests,
+                    getApprovalRequestsFor(wt),
                   );
                 }
                 loadingKeys.delete(key);
@@ -2068,6 +2091,7 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
               }
             }
             try {
+              const activeApprovalRequestsPromise = getApprovalRequestsFor(wt);
               const [file, active, queueSnapshots] = await Promise.all([
                 chatBackendFor(wt).chat.loadTabs({
                   projectId: wt.projectId,
@@ -2087,6 +2111,8 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
                     })
                   : Promise.resolve<ChatQueueUpdatedEvent[]>([]),
               ]);
+              const activeApprovalRequests =
+                await activeApprovalRequestsPromise;
               const queuedByChatId = new Map(
                 queueSnapshots.map((snapshot) => [
                   snapshot.chatId,
@@ -2465,7 +2491,12 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
     // The shared-container recipient scope is read-only: its chats are
     // projected from the published revision by main, and a share with no
     // chats must stay empty rather than gain a local starter chat.
-    if (target.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID) {
+    // Paired-computer scopes also never materialize a local starter tab:
+    // tab creation is deferred to CAN-7907 and rejected by the paired backend.
+    if (
+      target.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID ||
+      isPairedComputerId(target.projectId)
+    ) {
       return;
     }
     // Branch-from registers its destination before the eager hydration effect
@@ -5817,14 +5848,18 @@ ${summary}
       // main repository serializes their arrival for the scope.
       void Promise.all([
         dispatchRevisionedTabActivation(get, sel, tabId),
-        get().dispatchChatCommand(sel, {
-          type: 'chat.mark_read',
-          chatId: tabId,
-        }),
-        get().dispatchChatCommand(sel, {
-          type: 'chat.dismiss_attention',
-          chatId: tabId,
-        }),
+        ...(isPairedComputerId(sel.projectId)
+          ? []
+          : [
+              get().dispatchChatCommand(sel, {
+                type: 'chat.mark_read',
+                chatId: tabId,
+              }),
+              get().dispatchChatCommand(sel, {
+                type: 'chat.dismiss_attention',
+                chatId: tabId,
+              }),
+            ]),
       ]);
     }
 

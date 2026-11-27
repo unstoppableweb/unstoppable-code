@@ -1,4 +1,6 @@
-import type { JSX } from 'react';
+import { useContext, type JSX } from 'react';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
+import { ChatMarkdownFileTargetContext } from '@/components/chat/chat-markdown-file-target';
 import { useAttachmentHover } from '@/hooks/useAttachmentHover';
 import { AttachmentPreviewPopover } from '@/components/shared/AttachmentPreviewPopover';
 import { getFilenameFromPath } from '@/lib/file-type';
@@ -21,7 +23,12 @@ export function MessageAttachments({
     popoverMouseLeave,
   } = useAttachmentHover();
 
-  if (!attachmentPaths || attachmentPaths.length === 0) {
+  const chatTarget = useContext(ChatMarkdownFileTargetContext);
+  if (
+    (chatTarget !== null && isPairedComputerId(chatTarget.projectId)) ||
+    !attachmentPaths ||
+    attachmentPaths.length === 0
+  ) {
     return null;
   }
 

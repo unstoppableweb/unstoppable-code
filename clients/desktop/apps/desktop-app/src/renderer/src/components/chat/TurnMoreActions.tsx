@@ -1,9 +1,9 @@
 import { useState, type JSX } from 'react';
 import type { SharedRunMetadata } from '@canopy/desktop-shared/types';
 import {
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
+  MenuDivider,
+  MenuItem,
+  MenuItemIcon,
   TurnMoreMenu,
 } from '@canopy/ui-shared/components';
 import { GitBranchLineIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -53,18 +53,18 @@ export function TurnMoreActions({
     <>
       <TurnMoreMenu open={open} onOpenChange={setOpen}>
         {onBranch !== undefined && (
-          <DropdownMenuItem
+          <MenuItem
             data-testid="turn-more-branch"
             onClick={(): void => {
               setOpen(false);
               onBranch();
             }}
           >
-            <DropdownMenuItemIcon>
+            <MenuItemIcon>
               <GitBranchLineIcon aria-hidden="true" />
-            </DropdownMenuItemIcon>
+            </MenuItemIcon>
             Branch into a new worktree
-          </DropdownMenuItem>
+          </MenuItem>
         )}
         {share !== undefined && (
           <ShareSessionControl
@@ -85,9 +85,7 @@ export function TurnMoreActions({
         )}
         {feedback !== undefined && (
           <>
-            {(onBranch !== undefined || share !== undefined) && (
-              <DropdownMenuDivider />
-            )}
+            {(onBranch !== undefined || share !== undefined) && <MenuDivider />}
             <TurnFeedbackControlHost
               target={feedback.target}
               userMessageId={feedback.userMessageId}

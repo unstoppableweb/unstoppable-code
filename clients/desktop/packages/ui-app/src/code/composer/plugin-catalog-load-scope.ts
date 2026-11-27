@@ -46,13 +46,62 @@ export function pluginCatalogFailureAfterLoad<
     : shown;
 }
 
+/** The catalog loads still running for one scope (CAN-7506). */
+export interface PluginCatalogScopeLoads<Scope extends PluginCatalogLoadScope> {
+  scope: Scope;
+  count: number;
+}
+
+/** The running loads once a load for `scope` starts. */
+export function pluginCatalogLoadsAfterStart<
+  Scope extends PluginCatalogLoadScope,
+>(
+  loads: readonly PluginCatalogScopeLoads<Scope>[],
+  scope: Scope,
+): readonly PluginCatalogScopeLoads<Scope>[] {
+  const found = loads.some((entry) =>
+    isSamePluginCatalogLoadScope(entry.scope, scope),
+  );
+  return found
+    ? loads.map((entry) =>
+        isSamePluginCatalogLoadScope(entry.scope, scope)
+          ? { scope: entry.scope, count: entry.count + 1 }
+          : entry,
+      )
+    : [...loads, { scope, count: 1 }];
+}
+
+/** The running loads once a load for `scope` settles, however it ended. */
+export function pluginCatalogLoadsAfterSettle<
+  Scope extends PluginCatalogLoadScope,
+>(
+  loads: readonly PluginCatalogScopeLoads<Scope>[],
+  scope: Scope,
+): readonly PluginCatalogScopeLoads<Scope>[] {
+  const entry = loads.find((candidate) =>
+    isSamePluginCatalogLoadScope(candidate.scope, scope),
+  );
+  if (entry !== undefined && entry.count > 1) {
+    return loads.map((candidate) =>
+      candidate === entry
+        ? { scope: candidate.scope, count: candidate.count - 1 }
+        : candidate,
+    );
+  }
+  return loads.filter((candidate) => candidate !== entry);
+}
+
 /**
- * Whether the picker still shows its catalog as loading once a load settles.
- * A superseded load leaves the newer load's spinner on.
+ * Whether the composer shows the picker's catalog as loading for `current`:
+ * only a load for that scope counts, so a scope the composer has left never
+ * ends or starts its spinner.
  */
-export function pluginCatalogLoadingAfterLoad(
-  loading: boolean,
-  latest: boolean,
+export function isPluginCatalogLoading<Scope extends PluginCatalogLoadScope>(
+  loads: readonly PluginCatalogScopeLoads<Scope>[],
+  current: Scope,
 ): boolean {
-  return latest ? false : loading;
+  return loads.some(
+    (entry) =>
+      entry.count > 0 && isSamePluginCatalogLoadScope(entry.scope, current),
+  );
 }

@@ -11,18 +11,30 @@ import {
   realpathSync,
   rmSync,
 } from 'node:fs';
+import { access, copyFile, rm } from 'node:fs/promises';
 import { dirname, join, posix, resolve, sep } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync, type SQLOutputValue } from 'node:sqlite';
 
 import {
   createNamespaceBackupRecord,
   namespaceBackupPathError,
   type NamespaceBackupRecord,
 } from '../../../storage/backup-record';
+import { storageRecordsFolder } from '../../../storage/owner-records';
 import { STORAGE_OWNERSHIP } from '../../../storage/storage-ownership.generated';
+import type {
+  StorageOwnershipRow,
+  StorageTransitionOwner,
+} from '../../../storage/writer-authority';
+import {
+  persistNamespaceBackupRecord,
+  readOwnerFlipRecord,
+  writeOwnerFlipRecord,
+} from '../../storage-records';
 import {
   OPERATION_LEDGER_SCHEMA_VERSION,
   openOperationLedgerDatabase,
+  openOperationLedgerDatabaseReadOnly,
 } from './database';
 import { OperationLedgerError } from './errors';
 import type { OperationLedger } from './ledger';
@@ -245,6 +257,24 @@ export const RESTORED_TABLES = [
   'sqlite_sequence',
 ] as const;
 
+function migrateStagedCopy(db: DatabaseSync, staging: string): void {
+  db.prepare('ATTACH DATABASE ? AS staged').run(staging);
+  let version: unknown;
+  try {
+    version = db
+      .prepare(
+        `SELECT value FROM staged.operation_meta WHERE key = 'schema_version'`,
+      )
+      .get()?.value;
+  } catch {
+    version = undefined;
+  } finally {
+    db.exec('DETACH DATABASE staged');
+  }
+  if (version === '1' || version === '2')
+    openOperationLedgerDatabase(staging, 0).close();
+}
+
 /**
  * The rollback migration a backup record names. Verifies a private staged
  * copy against the record, then replaces the ledger's contents with it in
@@ -293,6 +323,7 @@ export function restoreOperationLedgerBackup(
         'BACKUP_UNVERIFIED',
         'The backup copy does not match its record.',
       );
+    migrateStagedCopy(db, staging);
     db.prepare('ATTACH DATABASE ? AS backup').run(staging);
     try {
       const integrity = db.prepare('PRAGMA backup.integrity_check').get();
@@ -333,6 +364,210 @@ export function restoreOperationLedgerBackup(
     }
   } finally {
     db.close();
-    rmSync(staging, { force: true });
+    for (const suffix of ['', '-wal', '-shm'])
+      rmSync(`${staging}${suffix}`, { force: true });
   }
+}
+
+export interface OperationLedgerReturnOptions {
+  readonly owner?: StorageTransitionOwner;
+  readonly dataRoot: string;
+  readonly databasePath: string;
+  readonly isOutsideCheckouts: (dataRootRelativePath: string) => boolean;
+  readonly syncDirectory: (path: string) => Promise<'flushed' | 'unsupported'>;
+  readonly acceptNewerLoss?: 'person-confirmed';
+  readonly ownership?: readonly StorageOwnershipRow[];
+  readonly clock?: () => number;
+}
+
+const RETURNABLE: readonly StorageTransitionOwner[] = ['legacy', 'daemon'];
+
+async function flushOwnerRecords(
+  options: OperationLedgerReturnOptions,
+): Promise<void> {
+  const folder = join(
+    options.dataRoot,
+    ...storageRecordsFolder(OPERATION_LEDGER_NAMESPACE).split('/'),
+  );
+  for (const path of [folder, dirname(folder), options.dataRoot])
+    if ((await options.syncDirectory(path)) !== 'flushed')
+      throw new OperationLedgerError(
+        'STORAGE_UNAVAILABLE',
+        "The operation ledger's owner record could not be confirmed flushed.",
+      );
+}
+
+async function ledgerExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === 'ENOENT'
+    )
+      return false;
+    throw error;
+  }
+}
+
+function tagged(value: SQLOutputValue): unknown {
+  if (value === null) return ['null'];
+  if (typeof value === 'bigint') return ['integer', value.toString()];
+  if (typeof value === 'number')
+    return [Number.isInteger(value) ? 'integer' : 'real', value];
+  if (ArrayBuffer.isView(value))
+    return [
+      'blob',
+      Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString(
+        'hex',
+      ),
+    ];
+  return ['text', value];
+}
+
+function tableDigest(db: DatabaseSync): string {
+  const hash = createHash('sha256');
+  for (const table of RESTORED_TABLES) {
+    hash.update(`${table}\n`);
+    const order = table === 'sqlite_sequence' ? 'name' : 'rowid';
+    const where = table === 'operation_meta' ? ` WHERE key <> 'ledger_id'` : '';
+    for (const row of db
+      .prepare(`SELECT * FROM ${table}${where} ORDER BY ${order}`)
+      .all())
+      hash.update(`${JSON.stringify(Object.values(row).map(tagged))}\n`);
+  }
+  return hash.digest('hex');
+}
+
+function isEmptyLedger(db: DatabaseSync): boolean {
+  return RESTORED_TABLES.filter(
+    (table) => table !== 'operation_meta' && table !== 'sqlite_sequence',
+  ).every(
+    (table) =>
+      db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()?.count === 0,
+  );
+}
+
+async function sameContents(
+  record: NamespaceBackupRecord,
+  options: { readonly dataRoot: string; readonly databasePath: string },
+): Promise<boolean> {
+  const folder = dirname(options.databasePath);
+  const staged = join(folder, `.return-live-${randomUUID()}.sqlite`);
+  const scratch = join(folder, `.return-check-${randomUUID()}.sqlite`);
+  try {
+    let live = openOperationLedgerDatabaseReadOnly(options.databasePath);
+    let liveDigest: string;
+    try {
+      const version = live
+        .prepare(
+          `SELECT value FROM operation_meta WHERE key = 'schema_version'`,
+        )
+        .get()?.value;
+      if (version === '1' || version === '2') {
+        live.prepare('VACUUM INTO ?').run(staged);
+        live.close();
+        live = openOperationLedgerDatabase(staged, 0);
+      } else if (version !== String(OPERATION_LEDGER_SCHEMA_VERSION))
+        return false;
+      if (isEmptyLedger(live)) return true;
+      liveDigest = tableDigest(live);
+    } finally {
+      if (live.isOpen) live.close();
+    }
+    await copyFile(resolveInside(options.dataRoot, record.backupPath), scratch);
+    const copy = openOperationLedgerDatabase(scratch, 0);
+    try {
+      return tableDigest(copy) === liveDigest;
+    } finally {
+      copy.close();
+    }
+  } finally {
+    for (const path of [staged, scratch])
+      for (const suffix of ['', '-wal', '-shm'])
+        await rm(`${path}${suffix}`, { force: true });
+  }
+}
+
+const DAEMON_COPY =
+  /^backups\/operation-ledger\/\d{8}T\d{6}Z-[0-9a-f]{8}-[0-9a-f]{4}\.sqlite$/;
+
+export async function discardUncitedOperationLedgerCopy(
+  dataRoot: string,
+  backupPath: string,
+): Promise<void> {
+  if (!DAEMON_COPY.test(backupPath))
+    throw new OperationLedgerError(
+      'BACKUP_UNVERIFIED',
+      'Only a copy the background service named can be discarded.',
+    );
+  const target = resolveInside(dataRoot, backupPath);
+  for (const suffix of ['', '-wal', '-shm'])
+    await rm(`${target}${suffix}`, { force: true });
+}
+
+export async function returnOperationLedger(
+  record: NamespaceBackupRecord,
+  options: OperationLedgerReturnOptions,
+): Promise<void> {
+  const { owner } = options;
+  if (owner === undefined || !RETURNABLE.includes(owner))
+    throw new OperationLedgerError(
+      'STORAGE_UNAVAILABLE',
+      'Name the owner to return the operation ledger to: the app or the background service.',
+    );
+  const read = await readOwnerFlipRecord(
+    options.dataRoot,
+    OPERATION_LEDGER_NAMESPACE,
+  );
+  if (read.kind === 'unreadable')
+    throw new OperationLedgerError(
+      'STORAGE_UNAVAILABLE',
+      "The operation ledger's owner record can't be read, so nothing was restored.",
+    );
+  if (read.kind === 'record' && !RETURNABLE.includes(read.record.toOwner))
+    throw new OperationLedgerError(
+      'STORAGE_UNAVAILABLE',
+      `The operation ledger's owner record names ${read.record.toOwner}, so nothing was restored.`,
+    );
+  if (
+    options.acceptNewerLoss !== 'person-confirmed' &&
+    (await ledgerExists(options.databasePath)) &&
+    !(await sameContents(record, options))
+  )
+    throw new OperationLedgerError(
+      'NEWER_STATE',
+      'The operation ledger changed since this backup. Nothing was restored.',
+    );
+  restoreOperationLedgerBackup(record, options);
+  if (read.kind === 'record' && read.record.toOwner === owner) {
+    await flushOwnerRecords(options);
+    return;
+  }
+  const writes = {
+    syncDirectory: options.syncDirectory,
+    isOutsideCheckouts: options.isOutsideCheckouts,
+    ownership: options.ownership,
+  };
+  await persistNamespaceBackupRecord(options.dataRoot, record, writes);
+  await writeOwnerFlipRecord(
+    options.dataRoot,
+    {
+      namespaceId: OPERATION_LEDGER_NAMESPACE,
+      fromOwner:
+        read.kind === 'record'
+          ? read.record.toOwner
+          : owner === 'legacy'
+            ? 'daemon'
+            : 'legacy',
+      toOwner: owner,
+      workPackage: read.kind === 'record' ? read.record.workPackage : 'W6',
+      backupDigest: record.verifiedBy.digest,
+      flippedAt: new Date((options.clock ?? Date.now)()).toISOString(),
+    },
+    writes,
+  );
 }

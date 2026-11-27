@@ -19,8 +19,8 @@ import {
   DialogModal,
   EmptyState,
   ErrorBanner,
-  FLOATING_MENU_GAP,
-  FloatingMenu,
+  MENU_GAP,
+  Menu,
   Notice,
   PrivateMemoryCard,
   PageSearchField,
@@ -1600,12 +1600,12 @@ function ProjectActions({
       >
         <MoreHorizontalIcon size={16} aria-hidden="true" />
       </Button>
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={setOpen}
         anchorRef={anchorRef}
         placement="bottom-right"
-        gap={FLOATING_MENU_GAP}
+        gap={MENU_GAP}
         interaction="menu"
         aria-label={`Actions for ${project.name}`}
         className="w-44"
@@ -1615,13 +1615,13 @@ function ProjectActions({
             items={items}
             onSelect={(item): void => {
               setOpen(false);
-              // Hand focus back to the trigger, as a FloatingMenu pick does.
+              // Hand focus back to the trigger, as a Menu pick does.
               anchorRef.current?.focus({ preventScroll: true });
               item.onSelect?.();
             }}
           />
         </ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
     </>
   );
 }

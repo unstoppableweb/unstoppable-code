@@ -151,6 +151,9 @@ test('a local-only build reaches no host but loopback through workspace, worktre
     ).toBeVisible();
     await expect(window.getByTestId('settings-local-only-build')).toBeVisible();
     expect(await window.evaluate(() => window.api.localOnlyBuild)).toBe(true);
+    // The profiles are exclusive at run time: a local-only launch never
+    // reports the self-host profile (preload member api.selfHostBuild) too.
+    expect(await window.evaluate(() => window.api.selfHostBuild)).toBe(false);
     await driver.closeSettings();
     // No account gate: neither the blocking sign-in gate nor the guest
     // upgrade prompt.

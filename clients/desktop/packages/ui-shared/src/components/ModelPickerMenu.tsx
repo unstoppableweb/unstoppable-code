@@ -52,32 +52,28 @@ import {
   type IconSize,
 } from '../icons/AppIcons';
 import {
-  DropdownMenuControl,
-  DropdownMenuItem,
-  type DropdownMenuSurfaceShell,
-} from '../primitives/DropdownMenu';
-import {
-  COMPOSER_ROW_MENU_GAP,
-  FLOATING_PICKER_GAP,
-  FloatingMenu,
-} from '../primitives/FloatingMenu';
+  MenuControl,
+  MenuItem,
+  type MenuSurfaceShell,
+} from '../primitives/MenuItem';
+import { COMPOSER_ROW_MENU_GAP, PICKER_GAP, Menu } from '../primitives/Menu';
 import { ModelGroupHeader } from './ModelGroupHeader';
 import { NestedMenuFlyout } from '../primitives/NestedMenuFlyout';
 import { OverlayScrollArea } from '../primitives/OverlayScrollArea';
 import {
-  PickerMenuList,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionDescription,
-  PickerMenuOptionLabel,
-  PickerMenuOptionLeading,
+  PickerList,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionDescription,
+  PickerOptionLabel,
+  PickerOptionLeading,
   MenuSearchInput,
   menuSearchKeyHandler,
-  PickerMenuSampleOption,
-  type PickerMenuOptionTrailingSlots,
-  type PickerMenuSampleLabelWidth,
-} from '../primitives/PickerMenu';
+  PickerSampleOption,
+  type PickerOptionTrailingSlots,
+  type PickerSampleLabelWidth,
+} from '../primitives/PickerParts';
 import { Button } from '../primitives/Button';
 import { Fact, FactList } from '../primitives/FactList';
 import { HoverCard } from '../primitives/HoverCard';
@@ -92,6 +88,7 @@ import { Tooltip } from '../primitives/Tooltip';
 import { CompactToggleIndicator } from '../primitives/ToggleSwitch';
 
 import { ModelProviderIcon } from '../icons/ModelProviderIcon';
+import { isOrgGatewayVendor } from '@canopy/protocol/model-gateway/vendor';
 
 const PICKER_CHROME_SLOT_PX = 36;
 const PICKER_CHROME_GAP_PX = 1;
@@ -228,7 +225,7 @@ const SEARCH_ENTRY_ROW_SELECTOR =
 /** Label bar widths for the three hosted-model placeholder rows. */
 const GATEWAY_PLACEHOLDER_WIDTHS = [
   28, 22, 34,
-] as const satisfies readonly PickerMenuSampleLabelWidth[];
+] as const satisfies readonly PickerSampleLabelWidth[];
 
 /** Ink of the single list's `$` marker for AI Credits-only rows. */
 const EXTRA_CHARGE_TEXT_CLASS = 'fg-destructive';
@@ -692,11 +689,19 @@ function ModelRowDetail({
 }): JSX.Element {
   const vendor = option.vendor?.trim();
   const familyLabel = option.familyLabel?.trim();
-  const provider = vendor
-    ? getModelVendorLabel(vendor)
-    : familyLabel
+  // An AI gateway row's vendor is `org-gateway:<organization id>` on desktop
+  // and `org-gateway` on the web, neither of them a name; its family label is
+  // the gateway's own name. Funding marks the row on both.
+  const gatewayRow =
+    isOrgGatewayVendor(vendor) || option.funding === 'org-gateway';
+  const provider =
+    gatewayRow && familyLabel
       ? familyLabel
-      : getModelCatalogProviderLabel(option.provider);
+      : vendor
+        ? getModelVendorLabel(vendor)
+        : familyLabel
+          ? familyLabel
+          : getModelCatalogProviderLabel(option.provider);
   const context = formatModelContextWindow(option.contextWindow);
   const glyphProvider = vendor && vendor.length > 0 ? vendor : option.provider;
   const rows: { label: string; value: string; glyph?: string }[] = [
@@ -1286,7 +1291,7 @@ export function ModelPickerMenu({
        * never out-ranked by a mouse resting elsewhere.
        *
        * Keyed on focus actually moving rather than on a list of keys that move
-       * it: `FloatingMenu` also moves focus by typeahead (any printable
+       * it: `Menu` also moves focus by typeahead (any printable
        * character), and an earlier attempt to enumerate its keys missed that —
        * twice. A modifier press moves no focus, so it fires nothing here and
        * the resting row keeps its detail.
@@ -2164,7 +2169,7 @@ export function ModelPickerMenu({
             </span>
           }
         >
-          <PickerMenuOption
+          <PickerOption
             // An actionable reason is a command, not a radio choice: clicking
             // it goes to the fix rather than selecting Auto.
             role={autoActionable ? 'menuitem' : 'menuitemradio'}
@@ -2186,22 +2191,18 @@ export function ModelPickerMenu({
           >
             {/* Selected reads as the tinted leading icon, the same language
                 the harness rows use, rather than a check mark. */}
-            <PickerMenuOptionLeading
-              tone={autoSelected ? 'accent' : 'tertiary'}
-            >
+            <PickerOptionLeading tone={autoSelected ? 'accent' : 'tertiary'}>
               <AutoModelIcon
                 size="sm"
                 data-testid={`${testIdPrefix}-option-auto-icon`}
               />
-            </PickerMenuOptionLeading>
-            <PickerMenuOptionContent>
-              <PickerMenuOptionLabel>
-                {MODEL_PICKER_AUTO_LABEL}
-              </PickerMenuOptionLabel>
-              <PickerMenuOptionDescription>
+            </PickerOptionLeading>
+            <PickerOptionContent>
+              <PickerOptionLabel>{MODEL_PICKER_AUTO_LABEL}</PickerOptionLabel>
+              <PickerOptionDescription>
                 {autoOption.unavailableReason ?? MODEL_PICKER_AUTO_DESCRIPTION}
-              </PickerMenuOptionDescription>
-            </PickerMenuOptionContent>
+              </PickerOptionDescription>
+            </PickerOptionContent>
             {autoActionable ? (
               // The hint sits on the label's baseline, 1px under the row's
               // center; the 2px top margin moves the arrow's center there.
@@ -2211,7 +2212,7 @@ export function ModelPickerMenu({
                 data-testid={`${testIdPrefix}-option-auto-action-icon`}
               />
             ) : null}
-          </PickerMenuOption>
+          </PickerOption>
         </Tooltip>
       </div>
     ) : null;
@@ -2219,7 +2220,7 @@ export function ModelPickerMenu({
   const workspaceDefaultOption =
     allowWorkspaceDefault && onSelectWorkspaceDefault ? (
       <div role="group" className="pb-0.5">
-        <PickerMenuOption
+        <PickerOption
           role="menuitemradio"
           aria-checked={currentModel === undefined}
           selected={currentModel === undefined}
@@ -2229,17 +2230,15 @@ export function ModelPickerMenu({
             closeMenu();
           }}
         >
-          <PickerMenuOptionLeading>
+          <PickerOptionLeading>
             {currentModel === undefined ? (
               <CheckMark className="fg-accent" />
             ) : null}
-          </PickerMenuOptionLeading>
-          <PickerMenuOptionContent>
-            <PickerMenuOptionLabel>
-              {workspaceDefaultLabel}
-            </PickerMenuOptionLabel>
-          </PickerMenuOptionContent>
-        </PickerMenuOption>
+          </PickerOptionLeading>
+          <PickerOptionContent>
+            <PickerOptionLabel>{workspaceDefaultLabel}</PickerOptionLabel>
+          </PickerOptionContent>
+        </PickerOption>
       </div>
     ) : null;
 
@@ -2268,7 +2267,7 @@ export function ModelPickerMenu({
         const label = getModelCatalogProviderLabel(harness.id);
         const signIn = harness.connectVia === 'sign-in';
         return (
-          <PickerMenuOption
+          <PickerOption
             key={harness.id}
             role="menuitem"
             tone="secondary"
@@ -2283,16 +2282,16 @@ export function ModelPickerMenu({
               harnessTabs?.onConnectHarness?.(harness.id);
             }}
           >
-            <PickerMenuOptionLeading tone="secondary">
+            <PickerOptionLeading tone="secondary">
               <ModelProviderIcon provider={harness.id} central size="md" />
-            </PickerMenuOptionLeading>
-            <PickerMenuOptionContent>
-              <PickerMenuOptionLabel>{label}</PickerMenuOptionLabel>
-            </PickerMenuOptionContent>
+            </PickerOptionLeading>
+            <PickerOptionContent>
+              <PickerOptionLabel>{label}</PickerOptionLabel>
+            </PickerOptionContent>
             <span className="shrink-0 text-xs fg-accent">
               {signIn ? 'Sign in' : 'Connect'}
             </span>
-          </PickerMenuOption>
+          </PickerOption>
         );
       })}
     </div>
@@ -2313,7 +2312,7 @@ export function ModelPickerMenu({
       {catalogStatus.status === 'loading' ? (
         <Skeleton loading label="Loading more models">
           {GATEWAY_PLACEHOLDER_WIDTHS.map((width) => (
-            <PickerMenuSampleOption key={width} labelWidth={width} />
+            <PickerSampleOption key={width} labelWidth={width} />
           ))}
         </Skeleton>
       ) : (
@@ -2363,7 +2362,7 @@ export function ModelPickerMenu({
               </span>
             }
           >
-            <DropdownMenuControl
+            <MenuControl
               type="button"
               tabIndex={-1}
               hidden={hidden}
@@ -2385,7 +2384,7 @@ export function ModelPickerMenu({
               presentation="model-picker-experimental"
             >
               <ExperimentIcon size="sm" aria-hidden="true" />
-            </DropdownMenuControl>
+            </MenuControl>
           </Tooltip>
         ) : undefined
       }
@@ -2965,7 +2964,7 @@ export function ModelPickerMenu({
         railTabCount: railTabs.length,
       })
     : undefined;
-  const menuSurfaceShell: DropdownMenuSurfaceShell = harnessTabs
+  const menuSurfaceShell: MenuSurfaceShell = harnessTabs
     ? pickerChrome
       ? highlightSelection
         ? 'model-picker-highlight'
@@ -3019,7 +3018,7 @@ export function ModelPickerMenu({
       : undefined;
   const renderMenuSurface = (children: ReactNode): JSX.Element => {
     return (
-      <FloatingMenu
+      <Menu
         id={resolvedMenuId}
         open={open}
         onOpenChange={(next): void => {
@@ -3049,7 +3048,7 @@ export function ModelPickerMenu({
         // empty state). The default menu scroll viewport would nest another
         // scroller and prevent flex-1 from resolving against the fixed height.
         interaction={harnessTabs ? 'manual' : undefined}
-        gap={menuAlignRef ? COMPOSER_ROW_MENU_GAP : FLOATING_PICKER_GAP}
+        gap={menuAlignRef ? COMPOSER_ROW_MENU_GAP : PICKER_GAP}
         data-canopy-browser-native-overlay="true"
         data-testid={`${testIdPrefix}-menu`}
         aria-label="Model options"
@@ -3073,7 +3072,7 @@ export function ModelPickerMenu({
         style={menuSurfaceStyle}
       >
         {children}
-      </FloatingMenu>
+      </Menu>
     );
   };
 
@@ -3124,7 +3123,7 @@ export function ModelPickerMenu({
                       <span className="pointer-events-none absolute right-0 top-1/2 h-6 w-0.5 -translate-y-1/2 rounded-l bg-accent" />
                     ) : null;
                   const tabButton = (
-                    <DropdownMenuControl
+                    <MenuControl
                       key={pickerChrome ? undefined : tab.id}
                       type="button"
                       aria-label={
@@ -3160,7 +3159,7 @@ export function ModelPickerMenu({
                     >
                       {tab.icon}
                       {pickerChrome ? null : indicator}
-                    </DropdownMenuControl>
+                    </MenuControl>
                   );
                   const labelledTabButton = (
                     <Tooltip
@@ -3403,7 +3402,7 @@ export function ModelPickerMenu({
                   <p className="text-s fg-tertiary">No models match</p>
                 </div>
               ) : (
-                <PickerMenuList
+                <PickerList
                   ref={harnessListRef}
                   edgeFadeSize={8}
                   role="presentation"
@@ -3682,7 +3681,7 @@ export function ModelPickerMenu({
                         </div>
                       ))
                     : null}
-                </PickerMenuList>
+                </PickerList>
               )}
               <ModelPickerFooter gap={footerGap}>
                 {footer?.({ closeMenu, dismissMenu })}
@@ -4006,7 +4005,7 @@ function ModelPickerOption({
   useEffect((): void => {
     setReasonRevealed(false);
   }, [state.disabled, state.unavailableReason]);
-  const trailingSlots: PickerMenuOptionTrailingSlots = leadingFavorite
+  const trailingSlots: PickerOptionTrailingSlots = leadingFavorite
     ? trailingHarnessSlot
       ? 'one'
       : hasSettings && !state.disabled
@@ -4064,11 +4063,11 @@ function ModelPickerOption({
       {leadingFavorite ? (
         <span aria-hidden="true" className="size-4 shrink-0" />
       ) : selected && pickerChrome && !highlightSelection ? (
-        <PickerMenuOptionLeading tone="accent">
-          <PickerMenuOptionCheck selected />
-        </PickerMenuOptionLeading>
+        <PickerOptionLeading tone="accent">
+          <PickerOptionCheck selected />
+        </PickerOptionLeading>
       ) : (
-        <PickerMenuOptionLeading
+        <PickerOptionLeading
           tone={selected && !pickerChrome ? 'accent' : 'tertiary'}
           style={
             highlightSelection && selected && pickerChrome
@@ -4082,12 +4081,12 @@ function ModelPickerOption({
         >
           {leadingIcon ??
             (selected && !highlightSelection ? <CheckMark /> : null)}
-        </PickerMenuOptionLeading>
+        </PickerOptionLeading>
       )}
-      <PickerMenuOptionContent
+      <PickerOptionContent
         className={reasonRevealed ? '!overflow-visible' : ''}
       >
-        <PickerMenuOptionLabel
+        <PickerOptionLabel
           data-testid={
             uniformTestIds
               ? `${testIdPrefix}-option-label`
@@ -4110,7 +4109,7 @@ function ModelPickerOption({
           ) : (
             option.label
           )}
-        </PickerMenuOptionLabel>
+        </PickerOptionLabel>
         {state.disabled ? (
           <span
             id={reasonId}
@@ -4128,7 +4127,7 @@ function ModelPickerOption({
             {state.unavailableReason ?? 'unavailable'}
           </span>
         ) : null}
-      </PickerMenuOptionContent>
+      </PickerOptionContent>
       {autoState?.actionable ? (
         // The hint sits on the label's baseline, 1px under the row's
         // center; the 2px top margin moves the arrow's center there.
@@ -4248,7 +4247,7 @@ function ModelPickerOption({
               {rowContent}
             </LockedModelRow>
           ) : (
-            <PickerMenuOption
+            <PickerOption
               ref={rowRef}
               {...rowProps}
               // An Auto row whose reason has a fix is a command, not a choice.
@@ -4265,7 +4264,7 @@ function ModelPickerOption({
             >
               {rowContent}
               {extraCharge}
-            </PickerMenuOption>
+            </PickerOption>
           )}
           {state.disabled ? (
             <span aria-live="polite" className="sr-only">
@@ -4399,7 +4398,7 @@ function ModelPickerOption({
       {/* Other tabs keep hidden copies of a row under the same menu key; only
           the visible copy may open its menu. */}
       {billingOpen && hasSettings && !hidden ? (
-        <FloatingMenu
+        <Menu
           open
           nested
           anchorRef={billingTriggerRef}
@@ -4423,7 +4422,7 @@ function ModelPickerOption({
             <>
               <p className="px-2 py-1 text-xs fg-tertiary">Harness</p>
               {settingsHarnesses.map((harness) => (
-                <DropdownMenuItem
+                <MenuItem
                   key={harness}
                   role="menuitemradio"
                   aria-checked={currentHarness === harness}
@@ -4443,9 +4442,9 @@ function ModelPickerOption({
                       : getModelCatalogProviderLabel(harness)}
                   </span>
                   {currentHarness === harness ? (
-                    <PickerMenuOptionCheck selected />
+                    <PickerOptionCheck selected />
                   ) : null}
-                </DropdownMenuItem>
+                </MenuItem>
               ))}
               {billingPreference && onBillingChange ? (
                 <ModelSettingsSeparator />
@@ -4456,7 +4455,7 @@ function ModelPickerOption({
             <>
               <p className="px-2 py-1 text-xs fg-tertiary">Usage billing</p>
               {(['subscription', 'credits'] as const).map((payment) => (
-                <DropdownMenuItem
+                <MenuItem
                   key={payment}
                   role="menuitemradio"
                   aria-checked={billingPreference.payment === payment}
@@ -4472,15 +4471,15 @@ function ModelPickerOption({
                       : `${billingHarnessLabel ?? getModelCatalogProviderLabel(option.provider)} subscription`
                     : 'AI Credits'}
                   {billingPreference.payment === payment ? (
-                    <PickerMenuOptionCheck selected />
+                    <PickerOptionCheck selected />
                   ) : null}
-                </DropdownMenuItem>
+                </MenuItem>
               ))}
               {billingFallback &&
               billingPreference.payment === 'subscription' ? (
                 <>
                   <ModelSettingsSeparator />
-                  <DropdownMenuItem
+                  <MenuItem
                     role="menuitemcheckbox"
                     aria-checked={billingPreference.fallback}
                     data-testid={`${testIdPrefix}-billing-fallback-${option.id}`}
@@ -4501,12 +4500,12 @@ function ModelPickerOption({
                         checked={billingPreference.fallback}
                       />
                     </span>
-                  </DropdownMenuItem>
+                  </MenuItem>
                 </>
               ) : null}
             </>
           ) : null}
-        </FloatingMenu>
+        </Menu>
       ) : null}
       {tooltipVisible && !pickerChrome && rowRef.current ? (
         <HoverCard

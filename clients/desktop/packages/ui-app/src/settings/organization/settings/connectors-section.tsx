@@ -15,6 +15,8 @@ import {
   Divider,
   EmptyStateRow,
   ErrorBanner,
+  Notice,
+  NoticeButton,
   OverlayScrollArea,
   PageSearchField,
   PageSearchRow,
@@ -34,6 +36,11 @@ import type {
   SharedConnectionCatalogEntry,
   SharedConnectionStartResult,
 } from '@canopy/protocol/canopy-core';
+import { ConnectionProjectsDialog } from './connection-projects-dialog';
+import {
+  connectionProjectsSummary,
+  type ConnectionProjectsSummary,
+} from './connection-projects-model';
 import { ConnectionUsageCard } from './connection-usage-card';
 import {
   matchesCatalogSearch,
@@ -113,6 +120,16 @@ export function ConnectorsSection({
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [query, setQuery] = useState('');
   const generation = useRef(0);
+  /** The connection whose projects are being chosen. */
+  const [choosingId, setChoosingId] = useState<string | null>(null);
+  /** A connection just connected and in no project yet, offered sharing. */
+  const [promptId, setPromptId] = useState<string | null>(null);
+  /**
+   * The connection this page's last connect started, named by the server:
+   * once it is connected, and in no project yet, it is offered sharing.
+   * Never another admin's connection, which the list also shows.
+   */
+  const startedConnectionId = useRef<string | null>(null);
 
   const reload = useCallback((): void => {
     setLoadAttempt((attempt) => attempt + 1);
@@ -131,6 +148,17 @@ export function ConnectorsSection({
           connections: result.connections,
           catalog: result.catalog ?? [],
         });
+        const started = result.connections.find(
+          (connection) => connection.id === startedConnectionId.current,
+        );
+        if (started !== undefined && started.status !== 'pending') {
+          startedConnectionId.current = null;
+          if (
+            started.status === 'connected' &&
+            connectionProjectsSummary(started).kind === 'none'
+          )
+            setPromptId(started.id);
+        }
         // Connect and reconnect leave the row pending until the sign-in
         // completes; once none is pending there is nothing left to finish.
         if (
@@ -186,13 +214,20 @@ export function ConnectorsSection({
     if (confirming === null) return;
     if (confirming.kind === 'connect')
       void run(`connect ${confirming.entry.name}`, async () => {
-        followStart(
-          await client.write('organization.settings.connections.connect', {
+        const started = await client.write(
+          'organization.settings.connections.connect',
+          {
             organizationId: orgId,
             serverKey: confirming.entry.serverKey,
             idempotencyKey: crypto.randomUUID(),
-          }),
+          },
         );
+        // A server from before `connectionId` names it only when no
+        // sign-in was needed; without either, nothing is offered.
+        startedConnectionId.current =
+          started.connection?.id ?? started.connectionId ?? null;
+        setPromptId(null);
+        followStart(started);
       });
     else if (confirming.kind === 'disconnect')
       void run(`disconnect ${confirming.connection.name}`, async () => {
@@ -248,6 +283,16 @@ export function ConnectorsSection({
     );
   }
 
+  const choosing =
+    state.connections.find((connection) => connection.id === choosingId) ??
+    null;
+  const prompted =
+    state.connections.find(
+      (connection) =>
+        connection.id === promptId &&
+        connection.status === 'connected' &&
+        connectionProjectsSummary(connection).kind === 'none',
+    ) ?? null;
   const searching = query.trim() !== '';
   const connections = state.connections.filter((connection) =>
     matchesConnectionSearch(connection, query),
@@ -259,6 +304,43 @@ export function ConnectorsSection({
 
   return (
     <div className="flex flex-col gap-10" data-testid="organization-connectors">
+      {/* Just connected and in no project yet: offer the next step here,
+          where the person already is, rather than on another tab. */}
+      {prompted !== null && (
+        <Notice
+          intent="positive"
+          title={
+            <>
+              <span className={REPLAY_MASK_CLASS}>{prompted.name}</span> is
+              connected
+            </>
+          }
+          data-testid="organization-connectors-share-prompt"
+          actions={
+            <>
+              <NoticeButton
+                variant="secondary"
+                onClick={() => setPromptId(null)}
+                data-testid="organization-connectors-share-prompt-later"
+              >
+                Later
+              </NoticeButton>
+              <NoticeButton
+                variant="primary"
+                onClick={() => {
+                  setPromptId(null);
+                  setChoosingId(prompted.id);
+                }}
+                data-testid="organization-connectors-share-prompt-choose"
+              >
+                Choose projects
+              </NoticeButton>
+            </>
+          }
+        >
+          Choose the projects that can use it.
+        </Notice>
+      )}
       {/* A refresh that failed after the first load: the rows below may be
           out of date, so say so and offer to read again. */}
       <ErrorBanner
@@ -300,7 +382,7 @@ export function ConnectorsSection({
         <div className="flex flex-col gap-10">
           <SettingsCard
             title="Shared connections"
-            subtitle="Tools connected as the organization. People on a project you add one to can use it without seeing its sign-in."
+            subtitle="Tools connected as the organization. People on the projects that use one can use it without seeing its sign-in."
             testId="organization-connectors-connections"
           >
             {state.connections.length === 0 ? (
@@ -320,6 +402,11 @@ export function ConnectorsSection({
                     key={connection.id}
                     connection={connection}
                     disabled={busy}
+                    onChooseProjects={() => {
+                      setActionError(null);
+                      setPromptId(null);
+                      setChoosingId(connection.id);
+                    }}
                     onReconnect={() => reconnect(connection)}
                     onDisconnect={() => {
                       setActionError(null);
@@ -336,7 +423,7 @@ export function ConnectorsSection({
           </SettingsCard>
           <SettingsCard
             title="Connect a tool"
-            subtitle="Sign in as the organization, then add the connection to a project from that project’s settings."
+            subtitle="Sign in as the organization, then choose the projects that can use it."
             testId="organization-connectors-catalog"
           >
             {signingIn && signInUrl !== null && (
@@ -419,6 +506,14 @@ export function ConnectorsSection({
           dataTestId={`organization-connectors-confirm-${confirming.kind}`}
         />
       )}
+      {choosing !== null && (
+        <ConnectionProjectsDialog
+          organizationId={orgId}
+          connection={choosing}
+          onClose={() => setChoosingId(null)}
+          onSaved={reload}
+        />
+      )}
       <ConnectionUsageCard organizationId={orgId} />
     </div>
   );
@@ -482,8 +577,8 @@ function ConfirmMessage({
     return (
       <div className="flex flex-col gap-2">
         <p>
-          The organization will hold this connection. People on the projects you
-          add it to can use it, and nobody sees its sign-in.
+          The organization will hold this connection. Next, you&apos;ll choose
+          the projects that can use it. Nobody sees its sign-in.
         </p>
         {confirming.entry.identityKind === 'user' && (
           <p data-testid="organization-connectors-acts-as-you">
@@ -519,21 +614,53 @@ function ConfirmMessage({
   );
 }
 
+/** Where a connection is used, as its row says it. */
+function ProjectsSummaryText({
+  summary,
+}: {
+  summary: ConnectionProjectsSummary;
+}): JSX.Element {
+  switch (summary.kind) {
+    case 'every':
+      // A default, never "every project": private projects can switch it
+      // off without being named, so the named exceptions are only those an
+      // admin can see.
+      return summary.excluded !== undefined && summary.excluded.length > 0 ? (
+        <>
+          On by default for projects, except{' '}
+          <MaskedNameList names={summary.excluded} />.
+        </>
+      ) : (
+        <>On by default for projects, including new ones.</>
+      );
+    case 'some':
+      return (
+        <>
+          Used in <MaskedNameList names={summary.projects} />.
+        </>
+      );
+    case 'none':
+      return <>Not in any project yet.</>;
+  }
+}
+
 function ConnectionRow({
   connection,
   disabled,
+  onChooseProjects,
   onReconnect,
   onDisconnect,
   onRemove,
 }: {
   connection: OrganizationConnection;
   disabled: boolean;
+  onChooseProjects: () => void;
   onReconnect: () => void;
   onDisconnect: () => void;
   onRemove: () => void;
 }): JSX.Element {
   const status = sharedConnectionStatus(connection.status);
-  const used = connection.projects.length > 0;
+  const summary = connectionProjectsSummary(connection);
   const expired = connection.status === 'needsSignIn';
   const testKey = connection.id;
   return (
@@ -576,25 +703,37 @@ function ConnectionRow({
             <span
               data-testid={`organization-connector-reconnect-prompt-${testKey}`}
             >
-              {used ? (
+              {summary.kind === 'every' ? (
+                'Its sign-in expired, so it stopped working wherever it’s used.'
+              ) : summary.kind === 'some' ? (
                 <>
                   Its sign-in expired, so it stopped working in{' '}
-                  <MaskedNameList names={connection.projects} />.
+                  <MaskedNameList names={summary.projects} />.
                 </>
               ) : (
                 'Its sign-in expired.'
               )}
             </span>
-          ) : used ? (
-            <>
-              Used in <MaskedNameList names={connection.projects} />.
-            </>
           ) : (
-            'Not in any project yet. Add it from a project’s settings.'
+            <span data-testid={`organization-connector-projects-${testKey}`}>
+              <ProjectsSummaryText summary={summary} />
+            </span>
           )}
         </p>
       </div>
       <div className="flex shrink-0 items-center gap-2">
+        {/* Pending until its sign-in completes: nothing to share yet. */}
+        {connection.status !== 'pending' && (
+          <Button
+            size="compact"
+            variant="secondary"
+            disabled={disabled}
+            onClick={onChooseProjects}
+            data-testid={`organization-connector-choose-projects-${testKey}`}
+          >
+            Choose projects
+          </Button>
+        )}
         {connection.status === 'connected' ? (
           <Button
             size="compact"
@@ -659,6 +798,7 @@ function ConnectorsSkeleton(): JSX.Element {
         <ConnectionRow
           connection={SAMPLE_CONNECTION}
           disabled
+          onChooseProjects={noop}
           onReconnect={noop}
           onDisconnect={noop}
           onRemove={noop}
@@ -666,6 +806,7 @@ function ConnectorsSkeleton(): JSX.Element {
         <ConnectionRow
           connection={{ ...SAMPLE_CONNECTION, id: 'sample-2' }}
           disabled
+          onChooseProjects={noop}
           onReconnect={noop}
           onDisconnect={noop}
           onRemove={noop}

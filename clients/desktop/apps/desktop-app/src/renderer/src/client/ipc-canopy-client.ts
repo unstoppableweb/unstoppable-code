@@ -41,10 +41,17 @@ import { scopedFileOperationsFor } from '@/lib/files/workspace-file-source';
 import type { RemoteIpcTransport } from '@canopy/protocol/remote-control';
 import { REMOTE_IPC_CHANNELS } from '@canopy/protocol/remote-control/channels';
 import { subscribeToChatEvents } from '@/lib/chatEventFanout';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isWebCoreScope } from '@/lib/chat-authority';
+import { pairedComputerScopeCapabilities } from '@/lib/paired-computer-scope-capabilities';
+import {
+  pairedComputerHasCapability,
+  usePairedComputerConnectionStore,
+} from '@/stores/chat/paired-computer/connection-store';
+import { isOneWindowEnabled } from '@/stores/oneWindowStore';
 import { cloudProjectIsCowork } from '@/cloud-chats/cloud-project-kind';
 import { isCoworkChatTarget } from '@/lib/cowork';
-import { isLocalOnlyBuild } from '@/lib/local-only-build';
+import { isLocalOnlyBuild, isSelfHostBuild } from '@/lib/local-only-build';
 import { resolveIpcAppError } from '@/lib/ipc-app-error';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
 import {
@@ -112,16 +119,34 @@ export function createDesktopCapabilities(
   > = {},
   hostedSettings: Pick<CanopyCapabilities, 'accountOrganizationSettings'> = {},
   localOnlyBuild = isLocalOnlyBuild(),
+  selfHostBuild = isSelfHostBuild(),
 ): CanopyCapabilities {
   const capabilities = createNormalDesktopCapabilities(
     platform,
     organizationOperations,
     hostedSettings,
   );
-  return localOnlyBuild
-    ? { ...capabilities, ...LOCAL_ONLY_DESKTOP_CAPABILITY_OVERRIDES }
+  // Local-only wins when a caller passes both: the profiles are exclusive at
+  // run time, and local-only turns off a superset.
+  if (localOnlyBuild) {
+    return { ...capabilities, ...LOCAL_ONLY_DESKTOP_CAPABILITY_OVERRIDES };
+  }
+  return selfHostBuild
+    ? { ...capabilities, ...SELF_HOST_DESKTOP_CAPABILITY_OVERRIDES }
     : capabilities;
 }
+
+/**
+ * What a self-host build (docs/local-only-build.md) turns off: remote images
+ * and agent visual CDN assets, which the egress guard blocks, and telemetry
+ * sharing, since PostHog is off so Privacy has no controls. Every cloud
+ * capability stays on: it reaches the configured self-hosted server.
+ */
+const SELF_HOST_DESKTOP_CAPABILITY_OVERRIDES = {
+  remoteImages: false,
+  agentVisualRemoteAssets: false,
+  telemetrySharing: false,
+} as const satisfies Partial<CanopyCapabilities>;
 
 /**
  * What a local-only build (docs/local-only-build.md) turns off: every
@@ -230,12 +255,16 @@ function createNormalDesktopCapabilities(
     // Local chats run in the local core, which serves each of these. A cloud
     // chat scope answers them from `webCoreScopeCapabilities` instead.
     chatApprovalMode: true,
+    chatApprovalRespond: true,
+    chatModelChange: true,
+    chatTabCreation: true,
     chatThinkingLevel: true,
     chatFastMode: true,
     chatTabFork: true,
     chatRootTabLifecycle: true,
     chatPluginSelections: true,
     chatQueueEdits: true,
+    chatQueueCancel: true,
     chatResetToPoint: true,
     chatAttachments: true,
     chatFileMentions: true,
@@ -703,7 +732,9 @@ export function createDesktopCanopyClient(
     capabilitiesFor: (localId: string): CanopyCapabilities =>
       isWebCoreScope(localId)
         ? cloudScopeCapabilities(client.capabilities, localId)
-        : client.capabilities,
+        : isPairedComputerId(localId)
+          ? pairedScopeCapabilities(client.capabilities, localId)
+          : client.capabilities,
     // Older hosts have no bridge; blocked remote lists mean no arms.
     listWorkEntryAutoDelete: () =>
       window.api.workEntryAutoDelete?.list() ?? Promise.resolve([]),
@@ -756,6 +787,23 @@ function cloudScopeCapabilities(
     delegationTranscriptReads: webCoreServesDelegationPages(),
     delegationStop: webCoreServesDelegationStop(),
     cloudSubagentPanels: webCoreServesSubagentPanels(),
+  });
+}
+
+function pairedScopeCapabilities(
+  host: CanopyCapabilities,
+  projectId: string,
+): CanopyCapabilities {
+  if (!isOneWindowEnabled()) {
+    return pairedComputerScopeCapabilities(host, {
+      composer: false,
+      send: false,
+    });
+  }
+  const connection = usePairedComputerConnectionStore.getState();
+  return pairedComputerScopeCapabilities(host, {
+    composer: pairedComputerHasCapability(connection, projectId, 'composer'),
+    send: pairedComputerHasCapability(connection, projectId, 'send'),
   });
 }
 

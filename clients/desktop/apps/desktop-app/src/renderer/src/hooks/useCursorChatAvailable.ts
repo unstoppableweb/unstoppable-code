@@ -7,13 +7,22 @@ import { subscribePreferencesUpdated } from '@/lib/preferences-events';
  * The last answer any mount read. A picker mounted later starts from it, so a
  * connected user does not see "Connect Cursor" while the new read is pending.
  */
-let lastKnownAvailable = false;
+let lastKnownAvailable: boolean | undefined;
 
-export function useCursorChatAvailable(enabled: boolean): boolean {
+/**
+ * Tri-state availability (installed and on): `undefined` until the first
+ * status read settles, so billing readiness never treats a pending read as
+ * "not set up". The harness flag being off settles `false` straight away.
+ */
+export function useCursorChatAvailability(
+  enabled: boolean,
+): boolean | undefined {
   const cursorHarnessEnabled = useFeatureFlagsStore((state) =>
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key),
   );
-  const [available, setAvailable] = useState(lastKnownAvailable);
+  const [available, setAvailable] = useState<boolean | undefined>(
+    lastKnownAvailable,
+  );
   useEffect(() => {
     if (!enabled || !cursorHarnessEnabled) return;
     let mounted = true;
@@ -52,5 +61,10 @@ export function useCursorChatAvailable(enabled: boolean): boolean {
       offHost();
     };
   }, [enabled, cursorHarnessEnabled]);
-  return enabled && cursorHarnessEnabled && available;
+  if (!enabled || !cursorHarnessEnabled) return false;
+  return available;
+}
+
+export function useCursorChatAvailable(enabled: boolean): boolean {
+  return useCursorChatAvailability(enabled) === true;
 }

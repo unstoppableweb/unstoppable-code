@@ -19,16 +19,19 @@ import {
   CloseMediumIcon,
 } from '../../icons/AppIcons';
 import type { PanelTabModel } from '../../panels/registry-types';
-import { PickListSearch, usePickListKeys } from '../../primitives/PickList';
-import { FloatingMenu } from '../../primitives/FloatingMenu';
 import {
-  PickerMenuList,
-  PickerMenuOption,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-  PickerMenuOptionLeading,
-  PickerMenuSearchHeader,
-} from '../../primitives/PickerMenu';
+  PickerSearchCombobox,
+  usePickerSearchKeys,
+} from '../../primitives/PickerSearch';
+import { Menu } from '../../primitives/Menu';
+import {
+  PickerList,
+  PickerOption,
+  PickerOptionContent,
+  PickerOptionLabel,
+  PickerOptionLeading,
+  PickerSearchHeader,
+} from '../../primitives/PickerParts';
 import { TitlebarIconButton } from '../TitlebarIconButton';
 import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
 
@@ -137,7 +140,7 @@ export function PanelTabListButton({
     };
     reveal();
     // Once more after the menu has been placed and given its final height
-    // (FloatingMenu settles both after this effect), so a row near the end
+    // (Menu settles both after this effect), so a row near the end
     // of a long list is not left below the fold.
     const view = listRef.current?.ownerDocument.defaultView;
     let frame = view?.requestAnimationFrame(() => {
@@ -178,7 +181,7 @@ export function PanelTabListButton({
     },
     onPick: select,
   };
-  const onKeyDown = usePickListKeys(keyboard);
+  const onKeyDown = usePickerSearchKeys(keyboard);
 
   return (
     // Its own root, like the `+` root, so the row spaces both controls the
@@ -204,7 +207,7 @@ export function PanelTabListButton({
         data-testid={`panel-tab-list-${groupId}`}
         onClick={(): void => changeOpen(!open)}
       />
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={changeOpen}
         anchorRef={anchorRef}
@@ -226,8 +229,8 @@ export function PanelTabListButton({
           data-keyboard-moved={keyboardMoved || undefined}
         >
           {searchable ? (
-            <PickerMenuSearchHeader>
-              <PickListSearch
+            <PickerSearchHeader>
+              <PickerSearchCombobox
                 ref={searchRef}
                 type="search"
                 value={query}
@@ -247,9 +250,9 @@ export function PanelTabListButton({
                   searchRef.current?.focus();
                 }}
               />
-            </PickerMenuSearchHeader>
+            </PickerSearchHeader>
           ) : null}
-          <PickerMenuList
+          <PickerList
             presentation="scrolling-tabs"
             ref={listRef}
             id={listId}
@@ -269,7 +272,7 @@ export function PanelTabListButton({
               const closable = canCloseTab ? canCloseTab(tab) : true;
               const selected = tab.panelId === activePanelId;
               return (
-                // The shared menu row (PickerMenuOption, nested 8px corners)
+                // The shared menu row (PickerOption, nested 8px corners)
                 // in a row group, so the end slot's close button can sit
                 // beside it rather than inside its button.
                 <div
@@ -279,7 +282,7 @@ export function PanelTabListButton({
                   className="canopy-panel-tab-list-row group/model-row relative w-full rounded-md"
                   onPointerMove={(): void => setHighlight(index)}
                 >
-                  <PickerMenuOption
+                  <PickerOption
                     id={rowId(tab.panelId)}
                     role="option"
                     aria-selected={selected}
@@ -292,19 +295,19 @@ export function PanelTabListButton({
                     onMouseDown={(event): void => event.preventDefault()}
                     onClick={(): void => select(tab.panelId)}
                   >
-                    <PickerMenuOptionLeading tone="tertiary">
+                    <PickerOptionLeading tone="tertiary">
                       <PanelTabListRowContext.Provider value>
                         {renderIcon(tab)}
                       </PanelTabListRowContext.Provider>
-                    </PickerMenuOptionLeading>
-                    <PickerMenuOptionContent>
-                      <PickerMenuOptionLabel>
+                    </PickerOptionLeading>
+                    <PickerOptionContent>
+                      <PickerOptionLabel>
                         <span className="canopy-panel-tab-list-title">
                           {renderLabel(tab)}
                         </span>
-                      </PickerMenuOptionLabel>
-                    </PickerMenuOptionContent>
-                  </PickerMenuOption>
+                      </PickerOptionLabel>
+                    </PickerOptionContent>
+                  </PickerOption>
                   {/* One slot at the row's end for every status: the current
                       tab's ✓, the unread dot, or a running spinner (the
                       glyph hands it here, panels.css). Hover, or a keyboard
@@ -365,9 +368,9 @@ export function PanelTabListButton({
                 </div>
               );
             })}
-          </PickerMenuList>
+          </PickerList>
         </div>
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

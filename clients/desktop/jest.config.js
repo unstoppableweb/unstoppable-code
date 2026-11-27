@@ -156,6 +156,7 @@ const config = {
     __CANOPY_POSTHOG_STUB_URL__: undefined,
     __CANOPY_E2E__: false,
     __CANOPY_LOCAL_ONLY__: false,
+    __CANOPY_SELF_HOST__: false,
     __CANOPY_DESKTOP_SIDEBAR_SHADOW__: false,
     __CANOPY_DESKTOP_SHARED_SIDEBAR__: false,
     __CANOPY_OLLAMA_ENABLED__: true,

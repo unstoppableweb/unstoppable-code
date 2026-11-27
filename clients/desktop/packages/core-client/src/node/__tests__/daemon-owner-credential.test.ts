@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -141,5 +142,100 @@ describe('daemon owner credential (CAN-5771)', () => {
     );
     expect(migrationRotate).not.toHaveBeenCalled();
     await migrationLaunch.ports.supervisor.terminateDaemon(migrated, signal);
+  });
+});
+
+describe('desktop peer proof (CAN-7201)', () => {
+  const verifierFor = (
+    secretHex: string,
+    dataRootHash = DATA_ROOT_HASH,
+  ): ReturnType<typeof createCanopyOwnerProofVerifier> =>
+    createCanopyOwnerProofVerifier({
+      secret: Buffer.from(secretHex, 'hex'),
+      dataRootHash,
+    });
+
+  it('keeps peer proofs and owner proofs apart', () => {
+    const credential = createDaemonOwnerCredential();
+    const secret = credential.rotate();
+    const verifier = verifierFor(secret);
+    const peer = credential.provePeer('connection-1', DATA_ROOT_HASH);
+    const owner = credential.prove('connection-1', DATA_ROOT_HASH);
+    expect(peer === owner).toBe(false);
+    expect(verifier.verifyPeer('connection-1', peer)).toBe(true);
+    expect(verifier.verify('connection-1', peer)).toBe(false);
+    expect(verifier.verifyPeer('connection-1', owner)).toBe(false);
+  });
+
+  it('binds a peer proof to its connection and data root', () => {
+    const credential = createDaemonOwnerCredential();
+    const secret = credential.rotate();
+    const peer = credential.provePeer('connection-1', DATA_ROOT_HASH);
+    expect(verifierFor(secret).verifyPeer('connection-2', peer)).toBe(false);
+    expect(
+      verifierFor(secret, 'c'.repeat(64)).verifyPeer('connection-1', peer),
+    ).toBe(false);
+    expect(verifierFor(secret).verifyPeer('', peer)).toBe(false);
+  });
+
+  it('refuses near misses through a timing-safe comparison', () => {
+    const credential = createDaemonOwnerCredential();
+    const verifier = verifierFor(credential.rotate());
+    const peer = credential.provePeer('connection-1', DATA_ROOT_HASH);
+    const flipped = `${peer.slice(0, -1)}${peer.endsWith('A') ? 'B' : 'A'}`;
+    for (const proof of [flipped, peer.slice(1), `${peer}A`, '', 'x'])
+      expect(verifier.verifyPeer('connection-1', proof)).toBe(false);
+    const compare = jest.spyOn(crypto, 'timingSafeEqual');
+    try {
+      expect(verifier.verifyPeer('connection-1', flipped)).toBe(false);
+      expect(verifier.verifyPeer('connection-1', peer)).toBe(true);
+      expect(compare).toHaveBeenCalledTimes(2);
+    } finally {
+      compare.mockRestore();
+    }
+  });
+
+  it('never puts the secret in a proof, and a disposed verifier refuses', () => {
+    const credential = createDaemonOwnerCredential();
+    const secret = credential.rotate();
+    const peer = credential.provePeer('connection-1', DATA_ROOT_HASH);
+    const encoded = Buffer.from(secret, 'hex').toString('base64url');
+    // Booleans only, so a failure never prints the secret.
+    expect(peer.includes(secret) || peer.includes(encoded)).toBe(false);
+    expect(peer).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const verifier = verifierFor(secret);
+    expect(() => JSON.stringify(verifier)).toThrow(
+      'An owner proof verifier is not serializable.',
+    );
+    verifier.dispose();
+    expect(verifier.verifyPeer('connection-1', peer)).toBe(false);
+  });
+
+  it('throws before any secret exists', () => {
+    expect(() =>
+      createDaemonOwnerCredential().provePeer('connection-1', DATA_ROOT_HASH),
+    ).toThrow('No daemon owner secret was created.');
+  });
+});
+
+describe('desktop peer proof wiring (CAN-7201)', () => {
+  it('offers a peer proof only once this launch recorded a spawn', () => {
+    const credential = createDaemonOwnerCredential();
+    expect(credential.peerProof(DATA_ROOT_HASH)).toBeUndefined();
+    const secret = credential.rotate();
+    // Rotated for a spawn that has not happened, or attached: none.
+    expect(credential.peerProof(DATA_ROOT_HASH)).toBeUndefined();
+    credential.recordSpawn({ pid: 4321 });
+    const prove = credential.peerProof(DATA_ROOT_HASH);
+    if (!prove) throw new Error('Expected a peer proof after a spawn.');
+    const proof = prove('connection-1');
+    const verifier = createCanopyOwnerProofVerifier({
+      secret: Buffer.from(secret, 'hex'),
+      dataRootHash: DATA_ROOT_HASH,
+    });
+    expect(verifier.verifyPeer('connection-1', proof)).toBe(true);
+    expect(verifier.verify('connection-1', proof)).toBe(false);
+    credential.rotate();
+    expect(credential.peerProof(DATA_ROOT_HASH)).toBeUndefined();
   });
 });

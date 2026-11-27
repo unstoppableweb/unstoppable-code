@@ -3,11 +3,11 @@ import type { PrPickerOption } from '@/stores/navigationStore';
 import {
   DialogModal,
   KeyHintFooter,
-  PickList,
-  PickerMenuOptionContent,
-  PickerMenuOptionDescription,
-  PickerMenuOptionLabel,
-  PickerMenuOptionTrailing,
+  PickerSearchList,
+  PickerOptionContent,
+  PickerOptionDescription,
+  PickerOptionLabel,
+  PickerOptionTrailing,
   PullRequestStateBadge,
 } from '@canopy/ui-shared/components';
 import { pickerKeyHints } from '@canopy/ui-shared/lib/shortcuts';
@@ -19,7 +19,7 @@ interface PrPickerProps {
   onClose: () => void;
 }
 
-// Stable across renders: PickList keys its active-row reset on them.
+// Stable across renders: PickerSearchList keys its active-row reset on them.
 function optionKey(option: PrPickerOption): string {
   return `${option.repoId}-${option.prNumber}`;
 }
@@ -53,27 +53,27 @@ export function PrPicker({ options, onClose }: PrPickerProps): JSX.Element {
     >
       {/* Session replay records the results. */}
       <div className="flex min-h-0 flex-1 flex-col px-4 pb-2">
-        <PickList
+        <PickerSearchList
           items={options}
           getKey={optionKey}
           getLabel={optionLabel}
           filter={prPickerOptionMatches}
           renderItem={(option) => (
             <>
-              <PickerMenuOptionContent>
-                <PickerMenuOptionLabel
+              <PickerOptionContent>
+                <PickerOptionLabel
                   // Keep prefix/value text nodes: merging them changes native shaping/clipping.
                   meta={<>#{option.prNumber}</>}
                 >
                   {option.repoName}
-                </PickerMenuOptionLabel>
-                <PickerMenuOptionDescription>
+                </PickerOptionLabel>
+                <PickerOptionDescription>
                   {option.prTitle}
-                </PickerMenuOptionDescription>
-              </PickerMenuOptionContent>
-              <PickerMenuOptionTrailing>
+                </PickerOptionDescription>
+              </PickerOptionContent>
+              <PickerOptionTrailing>
                 <PullRequestStateBadge state={option.prState} />
-              </PickerMenuOptionTrailing>
+              </PickerOptionTrailing>
             </>
           )}
           onPick={chooseOption}

@@ -53,7 +53,7 @@ import {
 } from './w5-destructive-recovery';
 import { sendToAllWindows } from './window-send';
 import { createWorkspace } from './workspace-creation';
-import { WorkspaceCreationRefusedError } from './workspace-creation-refusal';
+import { WorkspaceCreationRefusedError } from '@canopy/core-runtime/node/workspace/create-orchestration';
 import {
   deleteWorkspace,
   WorkspaceDeletionRefusedError,

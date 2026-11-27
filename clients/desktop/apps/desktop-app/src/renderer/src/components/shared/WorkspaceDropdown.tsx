@@ -13,17 +13,17 @@ import {
   Button,
   ProjectlessChatOption,
   PROJECTLESS_CHAT_OPTION_KEY,
-  FloatingPickerMenu,
-  PickerMenuFooter,
-  PickerMenuList,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-  PickerMenuOptionLeading,
-  PickerMenuSearchHeader,
-  PickListSearch,
-  PickerMenuState,
+  Picker,
+  PickerFooter,
+  PickerList,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
+  PickerOptionLeading,
+  PickerSearchHeader,
+  PickerSearchCombobox,
+  PickerState,
   PickerTrigger,
   PickerTriggerChevron,
   Tooltip,
@@ -559,7 +559,7 @@ export function WorkspaceDropdown({
         </span>
       )}
 
-      <FloatingPickerMenu
+      <Picker
         id={popupId}
         open={isOpen}
         onOpenChange={setIsOpen}
@@ -573,8 +573,8 @@ export function WorkspaceDropdown({
         aria-label="Choose project"
         data-testid={`${testIdPrefix}-popover`}
       >
-        <PickerMenuSearchHeader>
-          <PickListSearch
+        <PickerSearchHeader>
+          <PickerSearchCombobox
             ref={searchRef}
             value={query}
             onChange={(event) => handleSearchChange(event.target.value)}
@@ -600,9 +600,9 @@ export function WorkspaceDropdown({
                   : `${testIdPrefix}-option-${activeWorkspace.id}`
             }
           />
-        </PickerMenuSearchHeader>
+        </PickerSearchHeader>
 
-        <PickerMenuList
+        <PickerList
           ref={listRef}
           id={`${testIdPrefix}-listbox`}
           aria-label="Select project"
@@ -611,9 +611,9 @@ export function WorkspaceDropdown({
             // Nothing listed and nothing searched: "New project" below is the
             // whole menu, so no absence message above it.
             listedRows.length === 0 && !query.trim() ? null : (
-              <PickerMenuState data-testid={`${testIdPrefix}-empty`}>
+              <PickerState data-testid={`${testIdPrefix}-empty`}>
                 No projects match
-              </PickerMenuState>
+              </PickerState>
             )
           ) : (
             filtered.map((workspace, index) => {
@@ -643,7 +643,7 @@ export function WorkspaceDropdown({
                 );
               }
               return (
-                <PickerMenuOption
+                <PickerOption
                   key={workspace.id}
                   role="option"
                   id={`${testIdPrefix}-option-${workspace.id}`}
@@ -659,11 +659,11 @@ export function WorkspaceDropdown({
                   active={isActive}
                   selected={isSelected}
                 >
-                  <PickerMenuOptionLeading tone="primary">
+                  <PickerOptionLeading tone="primary">
                     <EntrySwatch entry={workspace} />
-                  </PickerMenuOptionLeading>
-                  <PickerMenuOptionContent>
-                    <PickerMenuOptionLabel>
+                  </PickerOptionLeading>
+                  <PickerOptionContent>
+                    <PickerOptionLabel>
                       <span className="flex min-w-0 items-center gap-1.5">
                         <span
                           className={`${POSTHOG_REPLAY_MASK_CLASS} truncate`}
@@ -672,18 +672,18 @@ export function WorkspaceDropdown({
                         </span>
                         <CloudMark entry={workspace} />
                       </span>
-                    </PickerMenuOptionLabel>
-                  </PickerMenuOptionContent>
-                  <PickerMenuOptionCheck selected={isSelected} />
-                </PickerMenuOption>
+                    </PickerOptionLabel>
+                  </PickerOptionContent>
+                  <PickerOptionCheck selected={isSelected} />
+                </PickerOption>
               );
             })
           )}
-        </PickerMenuList>
+        </PickerList>
 
         {onAddWorkspace && (
-          <PickerMenuFooter>
-            <PickerMenuOption
+          <PickerFooter>
+            <PickerOption
               onClick={handleAddWorkspace}
               onMouseEnter={() => {
                 clearActiveOptionScrollIntent();
@@ -692,19 +692,17 @@ export function WorkspaceDropdown({
               data-testid={`${testIdPrefix}-add`}
               tone="accent"
             >
-              <PickerMenuOptionLeading>
+              <PickerOptionLeading>
                 <PlusMediumIcon />
-              </PickerMenuOptionLeading>
-              <PickerMenuOptionContent>
-                <PickerMenuOptionLabel>
-                  {addWorkspaceLabel}
-                </PickerMenuOptionLabel>
-              </PickerMenuOptionContent>
-              <PickerMenuOptionCheck selected={pending !== undefined} />
-            </PickerMenuOption>
-          </PickerMenuFooter>
+              </PickerOptionLeading>
+              <PickerOptionContent>
+                <PickerOptionLabel>{addWorkspaceLabel}</PickerOptionLabel>
+              </PickerOptionContent>
+              <PickerOptionCheck selected={pending !== undefined} />
+            </PickerOption>
+          </PickerFooter>
         )}
-      </FloatingPickerMenu>
+      </Picker>
     </div>
   );
 }

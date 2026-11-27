@@ -1570,17 +1570,20 @@ describe('daemon branch-list route equivalence', () => {
     await list(routeFor({ selectable: undefined, platform: 'darwin' }));
     await list(routeFor({ selectable: undefined, platform: 'linux' }));
     expect(query).toHaveBeenCalledTimes(3);
-    // CAN-4729: worktree health qualifies on macOS and Linux only.
-    expect(READ_ROUTE_TABLE['git.worktree.health.get']).toMatchObject({
-      darwin: { kind: 'eligible' },
-      win32: { kind: 'blocked', until: 'CAN-4732' },
-      linux: { kind: 'eligible' },
-    });
+    // CAN-4729: worktree health and the diff read qualify on macOS and Linux only.
+    for (const operation of [
+      'git.worktree.health.get',
+      'git.diff.get',
+    ] as const)
+      expect(READ_ROUTE_TABLE[operation]).toMatchObject({
+        darwin: { kind: 'eligible' },
+        win32: { kind: 'blocked', until: 'CAN-4732' },
+        linux: { kind: 'eligible' },
+      });
     for (const operation of [
       'git.remote.get',
       'git.executable.get',
       'git.status.get',
-      'git.diff.get',
     ] as const)
       for (const disposition of Object.values(READ_ROUTE_TABLE[operation]))
         expect(disposition.kind).toBe('blocked');

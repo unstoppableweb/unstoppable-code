@@ -31,6 +31,10 @@ import {
   type ModelLibraryAccess,
 } from '@canopy/protocol/models';
 import type { RemoteControlChatProviderAvailability } from '@canopy/protocol/remote-control/shell';
+import {
+  ORG_GATEWAY_VENDOR_PREFIX,
+  isOrgGatewayVendor,
+} from '@canopy/protocol/model-gateway/vendor';
 
 export interface RemoteControlModelPickerProps {
   /** Custom Agents run only in local and paired-desktop scopes. */
@@ -41,6 +45,11 @@ export interface RemoteControlModelPickerProps {
   readonly menuAlignRef?: RefObject<HTMLElement | null>;
   readonly triggerTooltip?: string | null;
   readonly disabled?: boolean;
+  /**
+   * Keeps the picker menu openable for browsing while disabling every model
+   * selection row with this explanation (e.g. paired-computer read-only mode).
+   */
+  readonly readOnlyReason?: string;
   /** Opens the menu whenever it changes, as a host keyboard shortcut does. */
   readonly openSignal?: number;
   readonly catalog: ModelCatalog;
@@ -119,15 +128,10 @@ const CODEX_SORT_ORDER = 200;
 const OWN_GATEWAY_SORT_ORDER = 250;
 /** Section for rows served by the user's or organization's own gateway. */
 const OWN_GATEWAY_VENDOR = 'org-gateway';
-/** A desktop gateway row's vendor: `org-gateway:<organization id>`. */
-const ORG_GATEWAY_VENDOR_PREFIX = 'org-gateway:';
 
 /** A row served by the owner's or an organization's own AI gateway. */
 function isOwnGatewayRow(option: ModelCatalogOption): boolean {
-  return (
-    option.funding === 'org-gateway' ||
-    option.vendor?.startsWith(ORG_GATEWAY_VENDOR_PREFIX) === true
-  );
+  return option.funding === 'org-gateway' || isOrgGatewayVendor(option.vendor);
 }
 const OWN_GATEWAY_LABEL = 'AI gateway';
 /** The person's own API key rows follow an own gateway, before AI Credits. */
@@ -218,6 +222,7 @@ function managedSetupReason(
 export function RemoteControlModelPicker({
   openSignal,
   disabled,
+  readOnlyReason,
   statusRow = false,
   compact = false,
   menuAlignRef,
@@ -730,6 +735,7 @@ export function RemoteControlModelPicker({
       selection?: ModelPickerSelectionContext,
     ): void => {
       const route = resolveRoute(option, selection);
+      if (readOnlyReason !== undefined) return;
       const state = getRouteState(route, selection);
       if (state.disabled) return;
       if (state.locked) {
@@ -739,13 +745,16 @@ export function RemoteControlModelPicker({
       if (supportsChoices) onSelect(route.id, optionHarness(route));
       else onSelect(route.id);
     },
-    [resolveRoute, getRouteState, supportsChoices, onSelect],
+    [readOnlyReason, resolveRoute, getRouteState, supportsChoices, onSelect],
   );
   const getOptionState = useCallback(
     (
       option: ModelCatalogOption,
       selection?: ModelPickerSelectionContext,
     ): ModelPickerOptionState => {
+      if (readOnlyReason !== undefined) {
+        return { disabled: true, unavailableReason: readOnlyReason };
+      }
       const state = getRouteState(presentRoute(option, selection), selection);
       if (!state.locked || option.kind !== 'agent') return state;
       return {
@@ -756,7 +765,7 @@ export function RemoteControlModelPicker({
         },
       };
     },
-    [getRouteState, presentRoute, selectRoute],
+    [getRouteState, presentRoute, readOnlyReason, selectRoute],
   );
   // Whether anything outside the user's own gateways can run here; when not,
   // the picker opens on the gateway (CAN-6444).
@@ -776,6 +785,13 @@ export function RemoteControlModelPicker({
   });
   const effectiveAutoOption = useMemo<ModelPickerAutoOption | undefined>(() => {
     if (!autoOption || autoOption.unavailableReason) return autoOption;
+    if (readOnlyReason !== undefined) {
+      return {
+        ...autoOption,
+        unavailableReason: readOnlyReason,
+        unavailableAction: undefined,
+      };
+    }
     if (
       (selectedHarness ?? selectedRuntimeOption?.harness ?? providerType) ===
       'opencode'
@@ -848,6 +864,7 @@ export function RemoteControlModelPicker({
         };
   }, [
     autoOption,
+    readOnlyReason,
     selectedHarness,
     rawSelectedModelId,
     providerType,

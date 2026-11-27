@@ -11,10 +11,7 @@ import {
   type OperationTerminalStatus,
 } from '@canopy/protocol/canopy-core';
 
-import {
-  CanopyOperationError,
-  canopyUnavailableError,
-} from '../../runtime/errors';
+import { CanopyOperationError } from '../../runtime/errors';
 import type {
   CanopyDispatcherHandlerMap,
   CanopyDispatcherInstructionHandlerMap,
@@ -80,8 +77,18 @@ function translate(error: unknown): unknown {
           : { kind: 'never' },
     });
   }
-  if (error instanceof OperationLedgerError)
-    return canopyUnavailableError('Operation records are unavailable.');
+  if (error instanceof OperationLedgerError) {
+    const transient =
+      error.code === 'STORAGE_UNAVAILABLE' ||
+      error.code === 'WRITER_UNAVAILABLE';
+    return new CanopyOperationError({
+      kind: transient ? 'unavailable' : 'failed_precondition',
+      code: OPERATION_LEDGER_ERROR_CODES.unavailable,
+      message: 'Operation records are unavailable.',
+      details: { failure: error.code },
+      retry: transient ? { kind: 'same_request' } : { kind: 'never' },
+    });
+  }
   return error;
 }
 

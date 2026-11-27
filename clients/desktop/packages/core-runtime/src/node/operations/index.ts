@@ -29,6 +29,7 @@ export {
 } from './remote';
 export {
   OperationLedgerError,
+  OperationLedgerOutcomeUnknownError,
   OperationLedgerRefusedError,
   type OperationLedgerErrorCode,
   type OperationLedgerRefusal,

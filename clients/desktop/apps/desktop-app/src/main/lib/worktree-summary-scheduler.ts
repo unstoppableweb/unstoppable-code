@@ -369,10 +369,10 @@ export async function generateDesktopWorktreeSummary(
     // would refuse the helper (CAN-7062). Skip before opening an audit entry,
     // so repeated runs add none; the stored summary stays as it was and the
     // next run after sign-in generates it.
-    const { isNoBillingSourceRefusalCached } =
+    const { isHelperNoBillingSourceRefusalCached } =
       await import('../agents/no-billing-source-refusal');
     if (
-      isNoBillingSourceRefusalCached(
+      isHelperNoBillingSourceRefusalCached(
         { model: preferences.worktreeSummaryModel, projectId },
         requireProviderForModel(preferences.worktreeSummaryModel),
       )

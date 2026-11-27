@@ -5,13 +5,13 @@ import {
   type BranchOption,
 } from '../lib/branch-options';
 import {
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionDescription,
-  PickerMenuOptionLabel,
-  PickerMenuOptionLeading,
-  PickerMenuOptionTrailing,
-} from '../primitives/PickerMenu';
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionDescription,
+  PickerOptionLabel,
+  PickerOptionLeading,
+  PickerOptionTrailing,
+} from '../primitives/PickerParts';
 import { Tooltip } from '../primitives/Tooltip';
 
 /** Local-only branch provenance tooltip. */
@@ -54,22 +54,20 @@ export function BranchPickerOptionContent({
   const displayName = branch.isRemote ? `origin/${branch.name}` : branch.name;
   return (
     <>
-      <PickerMenuOptionLeading>
+      <PickerOptionLeading>
         <BranchIcon
           size="md"
           data-testid={`${testIdPrefix}-option-icon-branch-${branch.name}`}
         />
-      </PickerMenuOptionLeading>
-      <PickerMenuOptionContent>
-        <PickerMenuOptionLabel title={displayName}>
-          {displayName}
-        </PickerMenuOptionLabel>
-      </PickerMenuOptionContent>
+      </PickerOptionLeading>
+      <PickerOptionContent>
+        <PickerOptionLabel title={displayName}>{displayName}</PickerOptionLabel>
+      </PickerOptionContent>
       {selected ? (
-        <PickerMenuOptionCheck selected />
+        <PickerOptionCheck selected />
       ) : (
         provenance && (
-          <PickerMenuOptionTrailing aria-label={provenanceLabel} interactive>
+          <PickerOptionTrailing aria-label={provenanceLabel} interactive>
             <Tooltip label={provenanceLabel} placement="right" tone="inverse">
               <span
                 className="inline-flex h-4 w-4 shrink-0 items-center justify-center [&>svg]:!h-4 [&>svg]:!w-4"
@@ -78,7 +76,7 @@ export function BranchPickerOptionContent({
                 {provenance === 'local' ? <MacbookIcon /> : <GlobeIcon />}
               </span>
             </Tooltip>
-          </PickerMenuOptionTrailing>
+          </PickerOptionTrailing>
         )
       )}
     </>
@@ -100,18 +98,18 @@ export function WorktreePickerOptionContent({
 }: WorktreePickerOptionContentProps): JSX.Element {
   return (
     <>
-      <PickerMenuOptionLeading>
+      <PickerOptionLeading>
         <BranchIcon size="md" />
-      </PickerMenuOptionLeading>
-      <PickerMenuOptionContent>
-        <PickerMenuOptionLabel title={label}>{label}</PickerMenuOptionLabel>
+      </PickerOptionLeading>
+      <PickerOptionContent>
+        <PickerOptionLabel title={label}>{label}</PickerOptionLabel>
         {description ? (
-          <PickerMenuOptionDescription title={description}>
+          <PickerOptionDescription title={description}>
             {description}
-          </PickerMenuOptionDescription>
+          </PickerOptionDescription>
         ) : null}
-      </PickerMenuOptionContent>
-      <PickerMenuOptionCheck selected={selected} />
+      </PickerOptionContent>
+      <PickerOptionCheck selected={selected} />
     </>
   );
 }

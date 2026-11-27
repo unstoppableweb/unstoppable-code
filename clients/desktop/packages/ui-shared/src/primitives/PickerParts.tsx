@@ -3,7 +3,6 @@
 import {
   forwardRef,
   type ButtonHTMLAttributes,
-  type CSSProperties,
   type HTMLAttributes,
   type InputHTMLAttributes,
   type ComponentPropsWithoutRef,
@@ -19,87 +18,8 @@ import {
 import { Button, DROPDOWN_TRIGGER_INTERACTION_CLASS } from './Button';
 import { COARSE_HIT_AREA_CLASS } from './control-button-shared';
 import { useContextMenuPlacement } from './context-menu-placement';
-import {
-  FLOATING_PICKER_GAP,
-  FloatingMenu,
-  type FloatingMenuProps,
-} from './FloatingMenu';
 import { OverlayScrollArea } from './OverlayScrollArea';
 import { SKELETON_KEEP } from './Skeleton';
-
-type PickerMenuStyle = CSSProperties & {
-  '--canopy-picker-minimum-width'?: string;
-  '--canopy-picker-maximum-width'?: string;
-  '--canopy-picker-trigger-width'?: string;
-};
-
-export interface FloatingPickerMenuProps extends Omit<
-  FloatingMenuProps,
-  'gap'
-> {
-  /**
-   * Distance from the trigger. Pickers default to 8px; a field-attached
-   * dropdown (the shared `Select`) sits 4px from its field.
-   */
-  readonly gap?: number;
-  /** Optional domain-driven minimum within the shared max/viewport cap. */
-  readonly minimumWidth?: string;
-  /** Optional domain-driven maximum; defaults to the shared 20rem (320px) cap. */
-  readonly maximumWidth?: string;
-}
-
-/**
- * Canonical picker shell. Width follows the longest option between a shared
- * trigger-aware 160px minimum and the 320px/viewport cap. Tabbed or richer
- * pickers may declare a deliberate minimum (or a slightly wider maximum) without
- * bypassing the viewport bound; longer labels grow the shell until its cap.
- * Searchable composites retain manual keyboard ownership while FloatingMenu
- * owns portals, collision placement, motion, and dismissal.
- */
-export const FloatingPickerMenu = forwardRef<
-  HTMLDivElement,
-  FloatingPickerMenuProps
->(function FloatingPickerMenu(
-  {
-    anchorRef,
-    open,
-    className = '',
-    interaction = 'manual',
-    maximumWidth,
-    minimumWidth,
-    style,
-    gap = FLOATING_PICKER_GAP,
-    ...props
-  },
-  ref,
-): JSX.Element {
-  const pickerStyle: PickerMenuStyle = {
-    ...(minimumWidth ? { '--canopy-picker-minimum-width': minimumWidth } : {}),
-    ...(maximumWidth ? { '--canopy-picker-maximum-width': maximumWidth } : {}),
-    // A closed menu renders nothing; measuring then would force a layout on
-    // every render of every closed picker in a list.
-    '--canopy-picker-trigger-width': `${
-      open ? (anchorRef.current?.getBoundingClientRect().width ?? 0) : 0
-    }px`,
-    ...style,
-  };
-
-  return (
-    <FloatingMenu
-      {...props}
-      ref={ref}
-      open={open}
-      anchorRef={anchorRef}
-      gap={gap}
-      interaction={interaction}
-      shell="picker"
-      className={className}
-      style={pickerStyle}
-    />
-  );
-});
-
-FloatingPickerMenu.displayName = 'FloatingPickerMenu';
 
 export type PickerTriggerVariant = 'capsule' | 'field';
 
@@ -295,13 +215,10 @@ export function PickerTriggerChevron({
   );
 }
 
-export const PickerMenuSearchHeader = forwardRef<
+export const PickerSearchHeader = forwardRef<
   HTMLDivElement,
   HTMLAttributes<HTMLDivElement>
->(function PickerMenuSearchHeader(
-  { className = '', ...props },
-  ref,
-): JSX.Element {
+>(function PickerSearchHeader({ className = '', ...props }, ref): JSX.Element {
   return (
     <div
       {...props}
@@ -311,7 +228,7 @@ export const PickerMenuSearchHeader = forwardRef<
   );
 });
 
-PickerMenuSearchHeader.displayName = 'PickerMenuSearchHeader';
+PickerSearchHeader.displayName = 'PickerSearchHeader';
 
 /**
  * The text size of a picker's rows and search field. Early access (the host
@@ -319,11 +236,11 @@ PickerMenuSearchHeader.displayName = 'PickerMenuSearchHeader';
  * as its row menus, so a project or branch picker and a right-click menu read
  * as one family; other hosts keep the body size.
  */
-function usePickerMenuTextClassName(): 'text-xs' | 'text-s' {
+function usePickerTextClassName(): 'text-xs' | 'text-s' {
   return useContextMenuPlacement() === 'cursor' ? 'text-xs' : 'text-s';
 }
 
-export const PickerMenuSearchInput = forwardRef<
+export const PickerSearchInput = forwardRef<
   HTMLInputElement,
   InputHTMLAttributes<HTMLInputElement> & {
     /**
@@ -332,12 +249,12 @@ export const PickerMenuSearchInput = forwardRef<
      */
     onClear?: () => void;
   }
->(function PickerMenuSearchInput(
+>(function PickerSearchInput(
   { className = '', type = 'text', onClear, ...props },
   ref,
 ): JSX.Element {
-  const textClassName = usePickerMenuTextClassName();
-  // Same px-2 / gap-2 / 16px leading rail as PickerMenuOption so the
+  const textClassName = usePickerTextClassName();
+  // Same px-2 / gap-2 / 16px leading rail as PickerOption so the
   // magnifying glass lines up with row icons and the caret with labels.
   return (
     <div
@@ -396,7 +313,7 @@ export const PickerMenuSearchInput = forwardRef<
   );
 });
 
-PickerMenuSearchInput.displayName = 'PickerMenuSearchInput';
+PickerSearchInput.displayName = 'PickerSearchInput';
 
 /** The search field in a menu that moves DOM focus onto matching rows. */
 export function menuSearchKeyHandler(
@@ -442,12 +359,12 @@ export function menuSearchKeyHandler(
 
 export const MenuSearchInput = forwardRef<
   HTMLInputElement,
-  Omit<ComponentPropsWithoutRef<typeof PickerMenuSearchInput>, 'onKeyDown'> & {
+  Omit<ComponentPropsWithoutRef<typeof PickerSearchInput>, 'onKeyDown'> & {
     readonly itemSelector: string;
   }
 >(function MenuSearchInput({ itemSelector, ...props }, ref): JSX.Element {
   return (
-    <PickerMenuSearchInput
+    <PickerSearchInput
       {...props}
       ref={ref}
       onKeyDown={menuSearchKeyHandler(itemSelector)}
@@ -455,10 +372,10 @@ export const MenuSearchInput = forwardRef<
   );
 });
 
-export const PickerMenuTabList = forwardRef<
+export const PickerTabList = forwardRef<
   HTMLDivElement,
   HTMLAttributes<HTMLDivElement>
->(function PickerMenuTabList(
+>(function PickerTabList(
   { className = '', role = 'tablist', ...props },
   ref,
 ): JSX.Element {
@@ -472,9 +389,9 @@ export const PickerMenuTabList = forwardRef<
   );
 });
 
-PickerMenuTabList.displayName = 'PickerMenuTabList';
+PickerTabList.displayName = 'PickerTabList';
 
-export interface PickerMenuTabProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+export interface PickerTabProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   active?: boolean;
   /**
    * The tab the arrow keys are resting on while focus stays in the search
@@ -483,8 +400,8 @@ export interface PickerMenuTabProps extends ButtonHTMLAttributes<HTMLButtonEleme
   highlighted?: boolean;
 }
 
-export const PickerMenuTab = forwardRef<HTMLButtonElement, PickerMenuTabProps>(
-  function PickerMenuTab(
+export const PickerTab = forwardRef<HTMLButtonElement, PickerTabProps>(
+  function PickerTab(
     {
       active = false,
       highlighted = false,
@@ -509,7 +426,7 @@ export const PickerMenuTab = forwardRef<HTMLButtonElement, PickerMenuTabProps>(
   },
 );
 
-PickerMenuTab.displayName = 'PickerMenuTab';
+PickerTab.displayName = 'PickerTab';
 
 const NATIVE_PICKER_LIST_CLASS_NAMES = {
   palette: 'p-2',
@@ -520,7 +437,7 @@ const NATIVE_PICKER_LIST_CLASS_NAMES = {
     'canopy-panel-tab-list-rows min-h-0 overflow-y-auto outline-none',
 } as const;
 
-type PickerMenuListProps = HTMLAttributes<HTMLDivElement> & {
+type PickerListProps = HTMLAttributes<HTMLDivElement> & {
   /**
    * Which surface edges the list cancels padding on. `right` keeps a 4px
    * inset on the leading edge, for a list beside a rail divider.
@@ -534,8 +451,8 @@ type PickerMenuListProps = HTMLAttributes<HTMLDivElement> & {
   presentation?: keyof typeof NATIVE_PICKER_LIST_CLASS_NAMES;
 };
 
-export const PickerMenuList = forwardRef<HTMLDivElement, PickerMenuListProps>(
-  function PickerMenuList(
+export const PickerList = forwardRef<HTMLDivElement, PickerListProps>(
+  function PickerList(
     {
       className = '',
       role = 'listbox',
@@ -579,7 +496,7 @@ export const PickerMenuList = forwardRef<HTMLDivElement, PickerMenuListProps>(
             : `overflow-x-hidden ${className}`
         }
         contentClassName="px-1"
-        // Full-bleed scroll (cancels DropdownMenuSurface `p-1`) so in-list
+        // Full-bleed scroll (cancels MenuSurface `p-1`) so in-list
         // section dividers can -mx-1 to the surface edge without being clipped
         // by overflow-x:hidden. Content `px-1` restores the row inset; the rail
         // sits on the surface edge (thumb still 2px in via OverlayScrollArea).
@@ -592,20 +509,20 @@ export const PickerMenuList = forwardRef<HTMLDivElement, PickerMenuListProps>(
   },
 );
 
-PickerMenuList.displayName = 'PickerMenuList';
+PickerList.displayName = 'PickerList';
 
 /**
  * Row ink. `accent` marks an action row (Connect GitHub, New project) and
  * carries into the leading rail; `secondary` quiets a plain choice list.
  */
-export type PickerMenuOptionTone = 'primary' | 'secondary' | 'accent';
+export type PickerOptionTone = 'primary' | 'secondary' | 'accent';
 
-export interface PickerMenuOptionProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+export interface PickerOptionProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   active?: boolean;
   /** Distinguishes a keyboard-active option from the neutral hover surface. */
   activeTone?: 'neutral' | 'accent';
   selected?: boolean;
-  tone?: PickerMenuOptionTone;
+  tone?: PickerOptionTone;
   /**
    * A row the user can still activate to learn why it cannot be chosen (a
    * locked model): it reads as unavailable, secondary ink at half opacity
@@ -624,30 +541,29 @@ export interface PickerMenuOptionProps extends ButtonHTMLAttributes<HTMLButtonEl
    * `group/model-row` wrapper is hovered or focused, for a control that only
    * shows then.
    */
-  trailingSlots?: PickerMenuOptionTrailingSlots;
+  trailingSlots?: PickerOptionTrailingSlots;
   /** Tint the row while its `group/model-row` wrapper is hovered. */
   rowHoverSurface?: boolean;
 }
 
-export type PickerMenuOptionTrailingSlots =
+export type PickerOptionTrailingSlots =
   | 'none'
   | 'one'
   | 'two'
   | 'one-on-row-hover'
   | 'two-on-row-hover';
 
-const TRAILING_SLOT_CLASS_NAMES: Record<PickerMenuOptionTrailingSlots, string> =
-  {
-    none: '',
-    one: ' pr-9',
-    two: ' pr-16.5',
-    'one-on-row-hover':
-      ' pr-2 group-hover/model-row:pr-9 group-focus-within/model-row:pr-9 [@media(hover:none)]:pr-9',
-    'two-on-row-hover':
-      ' pr-9 group-hover/model-row:pr-16.5 group-focus-within/model-row:pr-16.5 [@media(hover:none)]:pr-16.5',
-  };
+const TRAILING_SLOT_CLASS_NAMES: Record<PickerOptionTrailingSlots, string> = {
+  none: '',
+  one: ' pr-9',
+  two: ' pr-16.5',
+  'one-on-row-hover':
+    ' pr-2 group-hover/model-row:pr-9 group-focus-within/model-row:pr-9 [@media(hover:none)]:pr-9',
+  'two-on-row-hover':
+    ' pr-9 group-hover/model-row:pr-16.5 group-focus-within/model-row:pr-16.5 [@media(hover:none)]:pr-16.5',
+};
 
-const OPTION_TONE_CLASS_NAMES: Record<PickerMenuOptionTone, string> = {
+const OPTION_TONE_CLASS_NAMES: Record<PickerOptionTone, string> = {
   primary: 'fg-primary',
   secondary: 'fg-secondary',
   accent: 'fg-accent',
@@ -663,63 +579,62 @@ const OPTION_UNAVAILABLE_CLASS_NAME =
  * control-disabled ink: the picker keeps every row and explains why one is
  * unavailable (DESIGN.md), which a faded row cannot do.
  */
-export const PickerMenuOption = forwardRef<
-  HTMLButtonElement,
-  PickerMenuOptionProps
->(function PickerMenuOption(
-  {
-    active = false,
-    activeTone = 'neutral',
-    className = '',
-    selected = false,
-    tone = 'primary',
-    unavailable = false,
-    trailingControl = false,
-    trailingSlots = 'none',
-    rowHoverSurface = false,
-    type = 'button',
-    ...props
+export const PickerOption = forwardRef<HTMLButtonElement, PickerOptionProps>(
+  function PickerOption(
+    {
+      active = false,
+      activeTone = 'neutral',
+      className = '',
+      selected = false,
+      tone = 'primary',
+      unavailable = false,
+      trailingControl = false,
+      trailingSlots = 'none',
+      rowHoverSurface = false,
+      type = 'button',
+      ...props
+    },
+    ref,
+  ): JSX.Element {
+    const textClassName = usePickerTextClassName();
+    const accentActive = active && !selected && activeTone === 'accent';
+    const interactionClassName = accentActive
+      ? 'bg-accent-subtle fg-accent-strong hover:bg-accent-subtle focus-visible:bg-accent-subtle'
+      : 'hover:bg-subtle focus-visible:bg-subtle';
+    return (
+      <button
+        {...props}
+        ref={ref}
+        type={type}
+        data-active={active || undefined}
+        data-selected={selected ? 'true' : undefined}
+        data-tone={tone === 'primary' ? undefined : tone}
+        className={`canopy-picker-menu-option group/picker-option focus-ring flex min-h-8 pointer-coarse:min-h-11 w-full min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left ${textClassName} font-normal transition-colors ${interactionClassName} disabled:cursor-not-allowed disabled:fg-quaternary disabled:opacity-100 disabled:hover:bg-transparent ${
+          accentActive
+            ? unavailable
+              ? 'cursor-not-allowed opacity-50'
+              : ''
+            : unavailable
+              ? OPTION_UNAVAILABLE_CLASS_NAME
+              : OPTION_TONE_CLASS_NAMES[tone]
+        }${trailingControl ? ' pr-10' : ''}${TRAILING_SLOT_CLASS_NAMES[trailingSlots]}${
+          rowHoverSurface ? ' group-hover/model-row:bg-subtle' : ''
+        } ${active && !selected && !accentActive ? 'bg-subtle' : ''} ${className}`}
+      />
+    );
   },
-  ref,
-): JSX.Element {
-  const textClassName = usePickerMenuTextClassName();
-  const accentActive = active && !selected && activeTone === 'accent';
-  const interactionClassName = accentActive
-    ? 'bg-accent-subtle fg-accent-strong hover:bg-accent-subtle focus-visible:bg-accent-subtle'
-    : 'hover:bg-subtle focus-visible:bg-subtle';
-  return (
-    <button
-      {...props}
-      ref={ref}
-      type={type}
-      data-active={active || undefined}
-      data-selected={selected ? 'true' : undefined}
-      data-tone={tone === 'primary' ? undefined : tone}
-      className={`canopy-picker-menu-option group/picker-option focus-ring flex min-h-8 pointer-coarse:min-h-11 w-full min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left ${textClassName} font-normal transition-colors ${interactionClassName} disabled:cursor-not-allowed disabled:fg-quaternary disabled:opacity-100 disabled:hover:bg-transparent ${
-        accentActive
-          ? unavailable
-            ? 'cursor-not-allowed opacity-50'
-            : ''
-          : unavailable
-            ? OPTION_UNAVAILABLE_CLASS_NAME
-            : OPTION_TONE_CLASS_NAMES[tone]
-      }${trailingControl ? ' pr-10' : ''}${TRAILING_SLOT_CLASS_NAMES[trailingSlots]}${
-        rowHoverSurface ? ' group-hover/model-row:bg-subtle' : ''
-      } ${active && !selected && !accentActive ? 'bg-subtle' : ''} ${className}`}
-    />
-  );
-});
+);
 
-PickerMenuOption.displayName = 'PickerMenuOption';
+PickerOption.displayName = 'PickerOption';
 
-export type PickerMenuOptionLeadingTone =
+export type PickerOptionLeadingTone =
   | 'quaternary'
   | 'tertiary'
   | 'secondary'
   | 'primary'
   | 'accent';
 
-const LEADING_TONE_CLASS_NAMES: Record<PickerMenuOptionLeadingTone, string> = {
+const LEADING_TONE_CLASS_NAMES: Record<PickerOptionLeadingTone, string> = {
   quaternary: 'fg-quaternary',
   tertiary: 'fg-tertiary',
   secondary: 'fg-secondary',
@@ -731,22 +646,22 @@ const LEADING_TONE_CLASS_NAMES: Record<PickerMenuOptionLeadingTone, string> = {
 const FOLLOWS_ROW_CLASS_NAME =
   'group-data-[tone=accent]/picker-option:fg-accent group-disabled/picker-option:fg-quaternary';
 
-export interface PickerMenuOptionLeadingProps extends HTMLAttributes<HTMLSpanElement> {
+export interface PickerOptionLeadingProps extends HTMLAttributes<HTMLSpanElement> {
   /**
    * Resting ink. `secondary` for a settings glyph that should read as a
    * control; `primary` for a swatch drawn in the row's own ink; `accent` for
    * the selected mark of a row that is not itself an accent row. An accent
    * row and a disabled row override it through the group.
    */
-  tone?: PickerMenuOptionLeadingTone;
+  tone?: PickerOptionLeadingTone;
 }
 
 /** Fixed 16px leading rail shared by project, worktree, and branch rows. */
-export function PickerMenuOptionLeading({
+export function PickerOptionLeading({
   className = '',
   tone = 'tertiary',
   ...props
-}: PickerMenuOptionLeadingProps): JSX.Element {
+}: PickerOptionLeadingProps): JSX.Element {
   return (
     <span
       {...props}
@@ -756,7 +671,7 @@ export function PickerMenuOptionLeading({
   );
 }
 
-export function PickerMenuOptionContent({
+export function PickerOptionContent({
   className = '',
   ...props
 }: HTMLAttributes<HTMLSpanElement>): JSX.Element {
@@ -768,7 +683,7 @@ export function PickerMenuOptionContent({
   );
 }
 
-export interface PickerMenuOptionLabelProps extends HTMLAttributes<HTMLSpanElement> {
+export interface PickerOptionLabelProps extends HTMLAttributes<HTMLSpanElement> {
   /**
    * `inherit` takes the row's ink. `quiet` rests one step lighter (primary at
    * 80%) without dropping to secondary: the model list's label ink, which
@@ -779,13 +694,13 @@ export interface PickerMenuOptionLabelProps extends HTMLAttributes<HTMLSpanEleme
   readonly meta?: ReactNode;
 }
 
-export function PickerMenuOptionLabel({
+export function PickerOptionLabel({
   className = '',
   tone = 'inherit',
   meta,
   ...props
-}: PickerMenuOptionLabelProps): JSX.Element {
-  const textClassName = usePickerMenuTextClassName();
+}: PickerOptionLabelProps): JSX.Element {
+  const textClassName = usePickerTextClassName();
   const labelClassName = `canopy-picker-menu-option-label block truncate ${textClassName} leading-4${tone === 'quiet' ? ' fg-primary/80' : ''} ${className}`;
   if (meta == null || typeof meta === 'boolean' || meta === '') {
     return <span {...props} className={labelClassName} />;
@@ -800,7 +715,7 @@ export function PickerMenuOptionLabel({
   );
 }
 
-export function PickerMenuOptionDescription({
+export function PickerOptionDescription({
   className = '',
   ...props
 }: HTMLAttributes<HTMLSpanElement>): JSX.Element {
@@ -812,7 +727,7 @@ export function PickerMenuOptionDescription({
   );
 }
 
-export interface PickerMenuOptionTrailingProps extends HTMLAttributes<HTMLSpanElement> {
+export interface PickerOptionTrailingProps extends HTMLAttributes<HTMLSpanElement> {
   /** `tertiary` for a count the row reports; the default is the quiet badge ink. */
   tone?: 'quaternary' | 'tertiary';
   /**
@@ -822,12 +737,12 @@ export interface PickerMenuOptionTrailingProps extends HTMLAttributes<HTMLSpanEl
   interactive?: boolean;
 }
 
-export function PickerMenuOptionTrailing({
+export function PickerOptionTrailing({
   className = '',
   tone = 'quaternary',
   interactive = false,
   ...props
-}: PickerMenuOptionTrailingProps): JSX.Element {
+}: PickerOptionTrailingProps): JSX.Element {
   return (
     <span
       {...props}
@@ -844,7 +759,7 @@ export function PickerMenuOptionTrailing({
  * with the check. Pass `reserveSpace` for leading checkbox rails that must not
  * jump on toggle.
  */
-export function PickerMenuOptionCheck({
+export function PickerOptionCheck({
   selected,
   reserveSpace = false,
   className = '',
@@ -869,7 +784,7 @@ export function PickerMenuOptionCheck({
   );
 }
 
-export function PickerMenuSectionLabel({
+export function PickerSectionLabel({
   className = '',
   ...props
 }: HTMLAttributes<HTMLDivElement>): JSX.Element {
@@ -881,10 +796,10 @@ export function PickerMenuSectionLabel({
   );
 }
 
-export const PickerMenuSection = forwardRef<
+export const PickerSection = forwardRef<
   HTMLDivElement,
   HTMLAttributes<HTMLDivElement>
->(function PickerMenuSection({ className = '', ...props }, ref): JSX.Element {
+>(function PickerSection({ className = '', ...props }, ref): JSX.Element {
   return (
     <div
       {...props}
@@ -894,12 +809,12 @@ export const PickerMenuSection = forwardRef<
   );
 });
 
-PickerMenuSection.displayName = 'PickerMenuSection';
+PickerSection.displayName = 'PickerSection';
 
-export const PickerMenuFooter = forwardRef<
+export const PickerFooter = forwardRef<
   HTMLDivElement,
   HTMLAttributes<HTMLDivElement>
->(function PickerMenuFooter({ className = '', ...props }, ref): JSX.Element {
+>(function PickerFooter({ className = '', ...props }, ref): JSX.Element {
   return (
     <div
       {...props}
@@ -909,9 +824,9 @@ export const PickerMenuFooter = forwardRef<
   );
 });
 
-PickerMenuFooter.displayName = 'PickerMenuFooter';
+PickerFooter.displayName = 'PickerFooter';
 
-export function PickerMenuState({
+export function PickerState({
   className = '',
   ...props
 }: HTMLAttributes<HTMLDivElement>): JSX.Element {
@@ -926,13 +841,13 @@ export function PickerMenuState({
 }
 
 /** A sample label's width, in Tailwind's spacing steps. */
-export type PickerMenuSampleLabelWidth = 20 | 22 | 24 | 28 | 32 | 34 | 36 | 40;
+export type PickerSampleLabelWidth = 20 | 22 | 24 | 28 | 32 | 34 | 36 | 40;
 
 /**
  * Sample labels about as wide as each step (80px to 160px in the row's
  * text), so the measured bars keep the varied widths of a real list.
  */
-const SAMPLE_LABELS: Record<PickerMenuSampleLabelWidth, string> = {
+const SAMPLE_LABELS: Record<PickerSampleLabelWidth, string> = {
   20: 'Release notes',
   22: 'Sample option',
   24: 'Another option',
@@ -946,35 +861,33 @@ const SAMPLE_LABELS: Record<PickerMenuSampleLabelWidth, string> = {
 /** Varied label widths so placeholder rows read as a list, not a block. */
 const SKELETON_LABEL_WIDTHS = [
   32, 24, 40, 28, 36, 20,
-] as const satisfies readonly PickerMenuSampleLabelWidth[];
+] as const satisfies readonly PickerSampleLabelWidth[];
 
 /**
- * One sample option for a measured `Skeleton`: the real `PickerMenuOption`
+ * One sample option for a measured `Skeleton`: the real `PickerOption`
  * with its leading rail and a plain label of about the given width. It is
  * sample content, so render it only inside a `Skeleton`, which draws it as
  * bars and keeps it inert.
  */
-export function PickerMenuSampleOption({
+export function PickerSampleOption({
   labelWidth,
   leading = true,
 }: {
-  readonly labelWidth: PickerMenuSampleLabelWidth;
+  readonly labelWidth: PickerSampleLabelWidth;
   /** Keep the 16px leading rail, for a list whose rows lead with an icon. */
   readonly leading?: boolean;
 }): JSX.Element {
   return (
-    <PickerMenuOption tabIndex={-1}>
-      {leading ? <PickerMenuOptionLeading {...SKELETON_KEEP} /> : null}
-      <PickerMenuOptionContent>
-        <PickerMenuOptionLabel>
-          {SAMPLE_LABELS[labelWidth]}
-        </PickerMenuOptionLabel>
-      </PickerMenuOptionContent>
-    </PickerMenuOption>
+    <PickerOption tabIndex={-1}>
+      {leading ? <PickerOptionLeading {...SKELETON_KEEP} /> : null}
+      <PickerOptionContent>
+        <PickerOptionLabel>{SAMPLE_LABELS[labelWidth]}</PickerOptionLabel>
+      </PickerOptionContent>
+    </PickerOption>
   );
 }
 
-export interface PickerMenuSampleOptionsProps {
+export interface PickerSampleOptionsProps {
   /** Sample rows to draw. */
   readonly rows?: number;
   /** Whether the list's rows lead with an icon (branches, models). */
@@ -986,14 +899,14 @@ export interface PickerMenuSampleOptionsProps {
  * at once. Wrap them in `Skeleton`: they are real option rows with sample
  * labels, so each bar sits where an option's label will.
  */
-export function PickerMenuSampleOptions({
+export function PickerSampleOptions({
   rows = 6,
   leading = true,
-}: PickerMenuSampleOptionsProps): JSX.Element {
+}: PickerSampleOptionsProps): JSX.Element {
   return (
     <div className="flex flex-col">
       {Array.from({ length: rows }, (_, index) => (
-        <PickerMenuSampleOption
+        <PickerSampleOption
           key={index}
           leading={leading}
           labelWidth={

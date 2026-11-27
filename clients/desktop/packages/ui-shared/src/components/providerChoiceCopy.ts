@@ -25,6 +25,7 @@ export type ProviderChoiceSourceKey =
   | 'cursor'
   | 'copilot'
   | 'gateway'
+  | 'ollama'
   | 'credits';
 
 /**
@@ -331,6 +332,7 @@ const RUNS_ON_NAMES: Readonly<Record<ProviderChoiceSourceKey, string>> = {
   cursor: 'Cursor',
   copilot: 'Copilot',
   gateway: 'your AI gateway',
+  ollama: 'Ollama',
   credits: 'credits',
 };
 
@@ -362,4 +364,5 @@ export const PROVIDER_ROW_DESCRIPTIONS: Readonly<
   cursor: 'Use your Cursor subscription.',
   copilot: 'Use your GitHub Copilot subscription.',
   gateway: GATEWAY_ROW_DESCRIPTION,
+  ollama: 'Run open models on this computer.',
 };

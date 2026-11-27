@@ -1,11 +1,15 @@
 /**
- * The standard Customize grid (CAN-4261): Updates, Installed, Browse and
- * Related rows use two columns from `md`. Shared by me chooses columns from
- * its section width so its public-link badge and actions fit at increased
- * interface scale (CAN-5220).
+ * The standard Customize grid (CAN-4261): Updates, Installed, Browse, Related
+ * and Shared by me rows use two columns once their section is wide enough for
+ * a row's name, recommendation mark and actions to sit side by side. Columns
+ * follow the section's width, not the viewport (CAN-5220, CAN-7856): every
+ * desktop window passes a viewport breakpoint, and beside a wide sidebar that
+ * left two tiny columns. 48rem keeps each column wide enough for an installed
+ * MCP row's avatar, fixed-width split action and a readable name. Render the
+ * grid inside an `@container` element.
  */
 export const CUSTOMIZE_ROW_GRID_CLASS =
-  'grid grid-cols-1 gap-x-8 gap-y-2 md:grid-cols-2';
+  'grid grid-cols-1 gap-x-8 gap-y-2 @3xl:grid-cols-2';
 
 /**
  * The row ArrowDown (`step` 1) or ArrowUp (-1) moves to in a Customize grid:

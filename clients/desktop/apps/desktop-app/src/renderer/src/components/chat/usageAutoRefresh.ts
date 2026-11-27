@@ -4,7 +4,7 @@ import type {
   AgentProviderType,
 } from '@canopy/desktop-shared/types';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
-import { isLocalOnlyBuild } from '@/lib/local-only-build';
+import { isEgressGuardedBuild } from '@/lib/local-only-build';
 import { useObservabilityStore } from '@/stores/observabilityStore';
 
 /**
@@ -201,11 +201,11 @@ export function useProviderUsageAutoRefresh(
   provider: AgentProviderType | undefined,
   turnActive = false,
 ): void {
-  // A local-only build (docs/local-only-build.md) reads usage only when the
-  // person opens a surface that shows it (useUsageRefreshOnOpen), never on a
-  // timer, on focus or after a turn: main's matching policy id is
-  // `usage.anthropic-poll` (on-demand).
-  const watchedProvider = isLocalOnlyBuild() ? undefined : provider;
+  // A local-only or self-host build (docs/local-only-build.md) reads usage
+  // only when the person opens a surface that shows it
+  // (useUsageRefreshOnOpen), never on a timer, on focus or after a turn:
+  // main's matching policy id is `usage.anthropic-poll` (on-demand in both).
+  const watchedProvider = isEgressGuardedBuild() ? undefined : provider;
   const wasActive = useRef(turnActive);
   useEffect(() => {
     const ended = wasActive.current && !turnActive;

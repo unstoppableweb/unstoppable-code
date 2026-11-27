@@ -4,7 +4,7 @@ import {
   type AnyProviderSourceFacts,
 } from '@canopy/app-state/provider-choice';
 import {
-  ProviderChooser,
+  BillingSetupPanel,
   type ProviderChoicePresentation,
 } from '@canopy/ui-app/providers';
 import type { AiGatewayPresetId } from '@canopy/protocol/model-gateway/presets';
@@ -15,7 +15,12 @@ import {
   Button,
   PROVIDER_CHOICE_ACTION_LABELS,
 } from '@canopy/ui-shared/components';
-import { ClaudeLogo, CodexLogo } from '@canopy/ui-shared/icons';
+import { ClaudeLogo, CodexLogo, OllamaLogo } from '@canopy/ui-shared/icons';
+import { useNavigationStore } from '@/stores/navigationStore';
+import {
+  trackBillingSetupGateClick,
+  type BillingSetupGateSurface,
+} from '@/lib/billingSetupGateTelemetry';
 import {
   signedInProviderLine,
   useDesktopProviderSignIn,
@@ -77,16 +82,55 @@ function signInPresentation(
   };
 }
 
+const OLLAMA_PRESENTATION: ProviderChoicePresentation = {
+  icon: <OllamaLogo className="h-4 w-4 shrink-0 fg-primary" aria-hidden />,
+  name: 'Ollama',
+  description: (
+    <span className="fg-secondary">{PROVIDER_ROW_DESCRIPTIONS.ollama}</span>
+  ),
+};
+
+export interface FirstRunProviderChooserProps {
+  readonly title?: ReactNode;
+  readonly intro?: ReactNode;
+  /**
+   * Offer a local Ollama row (Set up opens Settings › Ollama). `'ready'`
+   * when Ollama already has a model this app can select.
+   */
+  readonly ollama?: 'ready' | 'not-connected';
+  /** Sources set up in Settings, under the rows. */
+  readonly moreProviders?: ReactNode;
+  /** A quiet way elsewhere, under the rows. */
+  readonly link?: ReactNode;
+  /** Move focus to the list when it mounts (it replaced a focused composer). */
+  readonly focusOnMount?: boolean;
+  /** The billing setup gate surface this list stands in for, for analytics. */
+  readonly gateSurface?: BillingSetupGateSurface;
+  readonly dataTestId?: string;
+}
+
 /**
- * "Let's get started"'s provider rows on the shared inline chooser: Claude,
- * Codex, the AI gateway, then the account row. Claude and Codex sign in
- * through their command-line tools (`useDesktopProviderSignIn`). The gateway
- * is a row whether or not it is set up: before setup it offers Connect and
- * the common gateways' marks, after it shows its name, model count and
- * Change. The configured gateway and the account row (its sign-in and
- * purchase hand-off) are still the desktop's own through `renderRow`.
+ * "Let's get started"'s provider rows on the shared billing setup panel:
+ * Claude, Codex, the AI gateway, then the account row. The billing setup
+ * gate renders the same rows, adding Ollama and the providers set up in
+ * Settings. Claude and Codex sign in through their command-line tools
+ * (`useDesktopProviderSignIn`). The gateway is a row whether or not it is set
+ * up: before setup it offers Connect and the common gateways' marks, after it
+ * shows its name, model count and Change. The configured gateway and the
+ * account row (its sign-in and purchase hand-off) are still the desktop's own
+ * through `renderRow`.
  */
-export function FirstRunProviderChooser(): JSX.Element {
+export function FirstRunProviderChooser({
+  title,
+  intro,
+  ollama,
+  moreProviders,
+  link,
+  focusOnMount,
+  gateSurface,
+  dataTestId,
+}: FirstRunProviderChooserProps = {}): JSX.Element {
+  const openSettings = useNavigationStore((state) => state.openSettings);
   const claude = useDesktopProviderSignIn('claude');
   const codex = useDesktopProviderSignIn('codex');
   const signIns: Readonly<
@@ -133,6 +177,21 @@ export function FirstRunProviderChooser(): JSX.Element {
             },
           ]
         : []),
+      // The billing setup gate's local Ollama row: Set up opens Settings ›
+      // Ollama until a selectable model is installed.
+      ...(ollama !== undefined
+        ? [
+            {
+              source: 'ollama' as const,
+              connection:
+                ollama === 'ready'
+                  ? { kind: 'ready' as const }
+                  : { kind: 'not-connected' as const },
+              connectable: true,
+              runsTargetModel: false,
+            },
+          ]
+        : []),
       {
         // The account row reads its own balance; the chooser only places it.
         source: 'credits',
@@ -151,25 +210,44 @@ export function FirstRunProviderChooser(): JSX.Element {
       target: { kind: 'set-up' },
       sources,
     });
-  }, [claude.connection, codex.connection, gateway, summary]);
+  }, [claude.connection, codex.connection, gateway, summary, ollama]);
+
+  const trackClick = (
+    action: 'connect' | 'buy' | 'set_up' | 'settings_open',
+    source: 'claude' | 'codex' | 'gateway' | 'ollama' | 'credits',
+  ): void => {
+    if (gateSurface === undefined) return;
+    trackBillingSetupGateClick({ surface: gateSurface, action, source });
+  };
 
   return (
     <>
-      <ProviderChooser
+      <BillingSetupPanel
         choices={choices}
+        {...(title !== undefined ? { title } : {})}
+        {...(intro !== undefined ? { intro } : {})}
+        {...(moreProviders !== undefined ? { moreProviders } : {})}
+        {...(link !== undefined ? { link } : {})}
+        {...(focusOnMount !== undefined ? { focusOnMount } : {})}
+        {...(dataTestId !== undefined ? { dataTestId } : {})}
         presentation={{
           claude: signInPresentation('claude', claude),
           codex: signInPresentation('codex', codex),
           gateway: aiGatewayPresentation(null, false),
+          ollama: OLLAMA_PRESENTATION,
         }}
         renderAction={(row) => {
           switch (row.source) {
             case 'claude':
             case 'codex': {
-              const { status, openSignIn } = signIns[row.source];
+              const source = row.source;
+              const { status, openSignIn } = signIns[source];
               return (
                 <Button
-                  onClick={openSignIn}
+                  onClick={() => {
+                    trackClick('connect', source);
+                    openSignIn();
+                  }}
                   disabled={status === null}
                   data-testid={`auth-panel-${row.source}-connect`}
                   size="compact"
@@ -187,7 +265,23 @@ export function FirstRunProviderChooser(): JSX.Element {
                 <Button
                   size="compact"
                   data-testid="first-run-ai-gateway-connect"
-                  onClick={() => setOpen({})}
+                  onClick={() => {
+                    trackClick('set_up', 'gateway');
+                    setOpen({});
+                  }}
+                >
+                  {PROVIDER_CHOICE_ACTION_LABELS['set-up']}
+                </Button>
+              ) : null;
+            case 'ollama':
+              return row.action === 'set-up' ? (
+                <Button
+                  size="compact"
+                  data-testid="billing-setup-ollama-set-up"
+                  onClick={() => {
+                    trackClick('set_up', 'ollama');
+                    openSettings('ollama');
+                  }}
                 >
                   {PROVIDER_CHOICE_ACTION_LABELS['set-up']}
                 </Button>
@@ -219,8 +313,14 @@ export function FirstRunProviderChooser(): JSX.Element {
               // their marks; picking one opens setup at its key step.
               return summary === null ? (
                 <GatewayPresetMarks
-                  onPick={(presetId) => setOpen({ presetId })}
-                  onMore={() => setOpen({})}
+                  onPick={(presetId) => {
+                    trackClick('set_up', 'gateway');
+                    setOpen({ presetId });
+                  }}
+                  onMore={() => {
+                    trackClick('set_up', 'gateway');
+                    setOpen({});
+                  }}
                 />
               ) : null;
             default:
@@ -240,7 +340,16 @@ export function FirstRunProviderChooser(): JSX.Element {
                 />
               );
             case 'credits':
-              return <FirstRunAccountRowHost />;
+              return (
+                <FirstRunAccountRowHost
+                  {...(gateSurface !== undefined
+                    ? {
+                        onAction: (action: 'connect' | 'buy'): void =>
+                          trackClick(action, 'credits'),
+                      }
+                    : {})}
+                />
+              );
             default:
               return undefined;
           }

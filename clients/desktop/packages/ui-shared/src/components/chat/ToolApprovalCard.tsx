@@ -38,13 +38,13 @@ import {
 } from '../../primitives/ActionMenuItems';
 import { ControlButton, Button } from '../../primitives/Button';
 import {
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuLabel,
-} from '../../primitives/DropdownMenu';
+  MenuDivider,
+  MenuItem,
+  MenuItemIcon,
+  MenuLabel,
+} from '../../primitives/MenuItem';
 import { TextArea } from '../../primitives/Field';
-import { FloatingMenu } from '../../primitives/FloatingMenu';
+import { Menu } from '../../primitives/Menu';
 import { FormField } from '../../primitives/FormField';
 import { Tooltip } from '../../primitives/Tooltip';
 import {
@@ -583,7 +583,7 @@ function ApprovalMenuTargetHeader({
   const preview = previewApprovalTargetLabel(targetLabel);
   return (
     <>
-      <DropdownMenuLabel data-testid={`${testIdPrefix}-target`} mono>
+      <MenuLabel data-testid={`${testIdPrefix}-target`} mono>
         {/* The rule target is tool input: blocked from session replay. The
             unstyled inline span keeps the label's truncation; the menu
             options around it stay recorded. */}
@@ -591,19 +591,19 @@ function ApprovalMenuTargetHeader({
           {preview.text}
           {preview.truncated ? '…' : ''}
         </span>
-      </DropdownMenuLabel>
+      </MenuLabel>
       {preview.truncated && (
-        <DropdownMenuItem
+        <MenuItem
           data-testid={`${testIdPrefix}-view-full`}
           onClick={onViewFull}
         >
-          <DropdownMenuItemIcon>
+          <MenuItemIcon>
             <EyeIcon />
-          </DropdownMenuItemIcon>
+          </MenuItemIcon>
           View full
-        </DropdownMenuItem>
+        </MenuItem>
       )}
-      <DropdownMenuDivider />
+      <MenuDivider />
     </>
   );
 }
@@ -969,7 +969,7 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
                     {/* Portaled and collision-clamped: the card sits at the bottom of
               the window, so an in-card popover opening downward ran behind
               the composer and off the viewport (CAN-3001). */}
-                    <FloatingMenu
+                    <Menu
                       open={allowMenuOpen}
                       onOpenChange={setAllowMenuOpen}
                       anchorRef={allowTriggerRef}
@@ -997,7 +997,7 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
                           }}
                         />
                       </ActionMenuRowStyle>
-                    </FloatingMenu>
+                    </Menu>
                   </>
                 )}
               </div>
@@ -1025,7 +1025,7 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
                     >
                       <AppCatalogChevronDownMediumIcon size={14} />
                     </ControlButton>
-                    <FloatingMenu
+                    <Menu
                       open={denyMenuOpen}
                       onOpenChange={setDenyMenuOpen}
                       anchorRef={denyTriggerRef}
@@ -1057,7 +1057,7 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
                           }}
                         />
                       </ActionMenuRowStyle>
-                    </FloatingMenu>
+                    </Menu>
                   </>
                 )}
               </div>

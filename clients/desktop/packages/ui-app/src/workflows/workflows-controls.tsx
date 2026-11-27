@@ -4,7 +4,7 @@ import { useRef, useState, type JSX, type ReactNode } from 'react';
 import {
   ActionMenuItems,
   ActionMenuRowStyle,
-  FloatingMenu,
+  Menu,
   type ActionMenuItem,
   PageSearchField,
   TableActionButton,
@@ -124,7 +124,7 @@ export function WorkflowsRowMenu({
           <MoreHorizontalIcon size="sm" aria-hidden="true" />
         </TableActionButton>
       </span>
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={setOpen}
         anchorRef={anchorRef}
@@ -136,7 +136,7 @@ export function WorkflowsRowMenu({
             items={workflowsRowMenuActionItems(items, testId)}
             onSelect={(item): void => {
               setOpen(false);
-              // Hand focus back to the trigger, as a FloatingMenu pick does.
+              // Hand focus back to the trigger, as a Menu pick does.
               anchorRef.current
                 ?.querySelector<HTMLElement>('button')
                 ?.focus({ preventScroll: true });
@@ -144,7 +144,7 @@ export function WorkflowsRowMenu({
             }}
           />
         </ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
     </>
   );
 }

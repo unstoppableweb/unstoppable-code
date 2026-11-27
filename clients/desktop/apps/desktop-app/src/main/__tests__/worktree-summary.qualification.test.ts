@@ -701,6 +701,11 @@ describe('worktree summary scheduler', () => {
     mockedReadChatTabsFile.mockResolvedValue(makeChatTabs(2));
     mockedReadWorktreeSummary.mockResolvedValue(makeSummaryData(1));
     mockedReadWriteAbortReason.mockResolvedValue(null);
+    jest
+      .mocked(readFile)
+      .mockRejectedValue(
+        Object.assign(new Error('ENOENT'), { code: 'ENOENT' }),
+      );
     mockedGenerateWorktreeSummary.mockResolvedValue(makeSummary(2));
     mockLedgerEnabled.mockReturnValue(false);
     mockTurnRunning.mockReturnValue(false);

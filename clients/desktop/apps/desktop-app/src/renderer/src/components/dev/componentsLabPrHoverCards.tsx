@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
 import type { GitHubItemPreview } from '@canopy/protocol/reference-previews';
 import {
-  DropdownMenuSurface,
+  MenuSurface,
   PrHoverCardsProvider,
   usePrHoverCards,
 } from '@canopy/ui-shared/components';
@@ -45,11 +45,7 @@ function Consumer(): JSX.Element {
         usePrHoverCards() returns <code>{String(on)}</code>, so the card uses
         the {on ? 'status' : 'classic'} layout
       </span>
-      <DropdownMenuSurface
-        role="presentation"
-        padding="readout"
-        className="w-72"
-      >
+      <MenuSurface role="presentation" padding="readout" className="w-72">
         <GitHubReferencePreviewCard
           label="acme/tower#1234"
           layout={on ? 'status' : 'classic'}
@@ -60,7 +56,7 @@ function Consumer(): JSX.Element {
             stale: false,
           }}
         />
-      </DropdownMenuSurface>
+      </MenuSurface>
     </div>
   );
 }

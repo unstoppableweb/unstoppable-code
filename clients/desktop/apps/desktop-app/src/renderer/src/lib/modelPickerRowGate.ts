@@ -33,6 +33,7 @@ import { getProviderLabel } from '@/lib/providerLabels';
 import type { BillingFramework } from '@/lib/chatBillingFramework';
 import type { ProviderModelAvailability } from '@/hooks/useProviderAvailability';
 import { resolveModelLibraryLock } from '@/lib/modelLibraryAccess';
+import { personalGatewayRouteFor } from '@/stores/chat/defaults';
 
 /**
  * CAN-2349 — the single decision for what a model-picker row does.
@@ -670,6 +671,16 @@ export function resolveModelRowGate(input: ModelRowGateInput): ModelRowGate {
     creditRouted
   );
   if (availabilityDisabled) {
+    // The user's own AI gateway runs this same model: the row is usable, and
+    // the picker commits the gateway's copy (`personalGatewayRouteFor`).
+    if (
+      (provider === 'claude' || provider === 'codex') &&
+      !isAgentModel(model) &&
+      personalGatewayRouteFor(model, { allowVariantFallback: false }) !==
+        undefined
+    ) {
+      return { kind: 'available' };
+    }
     if (gatingEnabled && (provider === 'claude' || provider === 'codex')) {
       return {
         kind: 'recoverable',

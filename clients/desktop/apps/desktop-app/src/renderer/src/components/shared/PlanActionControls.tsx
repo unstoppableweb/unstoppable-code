@@ -8,9 +8,9 @@ import {
 import {
   ActionMenuRowStyle,
   Button,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  FloatingMenu,
+  MenuItem,
+  MenuItemIcon,
+  Menu,
   PlanCopyAction,
   PlanOpenImplementationAction,
   planCopyStateFromMarkdown,
@@ -170,7 +170,7 @@ export function PlanActionControls({
 
   // Shared placement and focus apply to Execute and the retry overflow trigger.
   const executeMenu = (
-    <FloatingMenu
+    <Menu
       key={showOpen ? 'retry' : 'execute'}
       open={menuOpen}
       onOpenChange={setMenuOpen}
@@ -181,28 +181,28 @@ export function PlanActionControls({
       data-testid={`${dataTestIdPrefix}-execute-menu`}
     >
       <ActionMenuRowStyle>
-        <DropdownMenuItem
+        <MenuItem
           onClick={handlePipeline}
           disabled={executeDisabled}
           data-testid={`${dataTestIdPrefix}-execute-pipeline`}
         >
-          <DropdownMenuItemIcon>
+          <MenuItemIcon>
             <PipelineIcon />
-          </DropdownMenuItemIcon>
+          </MenuItemIcon>
           {showOpen ? 'Run again as workflow' : 'Workflow'}
-        </DropdownMenuItem>
-        <DropdownMenuItem
+        </MenuItem>
+        <MenuItem
           onClick={handleImplement}
           disabled={executeDisabled}
           data-testid={`${dataTestIdPrefix}-execute-implement`}
         >
-          <DropdownMenuItemIcon>
+          <MenuItemIcon>
             <ChatIcon />
-          </DropdownMenuItemIcon>
+          </MenuItemIcon>
           {showOpen ? 'Implement again in chat' : implementLabel}
-        </DropdownMenuItem>
+        </MenuItem>
       </ActionMenuRowStyle>
-    </FloatingMenu>
+    </Menu>
   );
 
   return (

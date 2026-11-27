@@ -11,7 +11,6 @@ import {
 } from '@canopy/desktop-shared/lib/global-shortcut-accelerator';
 import { getGlobalFocusShortcutService } from '../lifecycle/global-focus-shortcut';
 import { broadcastPreferencesSynced } from '../lib/preferences-broadcast';
-import type { FocusShortcutPort } from '../lib/preference-native-effects';
 import {
   projectPreferencesForRuntime,
   readPreferencesFile,
@@ -162,34 +161,29 @@ export async function handleUpdateGlobalFocusShortcut(
 }
 
 /**
- * Re-sync the OS registration after a generic `savePreferences` write. That
- * path persists before it applies, so it cannot be try-then-save on its own:
- * when the just-saved chord is refused, the service has already restored the
- * previous working registration, and the file must follow it. Otherwise the
- * next launch would come up blocked on a chord that never worked. The
- * dedicated `global-focus-shortcut:update` IPC is the intended writer; this
- * exists so a plain preference save can never leave file and OS disagreeing.
- * `service` is the host's shortcut port, or null before it starts.
+ * The corrective write after a committed chord was refused: puts the working
+ * chord back only while the refused one is still stored, so a newer choice
+ * that landed meanwhile wins. Resolves true when it wrote.
  */
-export async function syncGlobalFocusShortcutFromPreferences(
-  normalized: PreferencesData,
-  service: FocusShortcutPort | null,
-): Promise<void> {
-  if (service === null) return;
-  const config = {
-    enabled: normalized.globalFocusShortcutEnabled,
-    accelerator: normalized.globalFocusShortcut,
-  };
-  const result = service.apply(config);
-  if (result.ok) return;
-  const restored = service.getActiveAccelerator();
-  if (restored === null || restored === config.accelerator) return;
-  const persisted = await updatePreferencesFile(() => ({
-    globalFocusShortcut: restored,
-  }));
-  broadcastPreferencesSynced(persisted, projectPreferencesForRuntime);
-  // Report against the value that is actually on disk now.
-  service.apply({ enabled: config.enabled, accelerator: restored });
+export async function correctRefusedFocusShortcut(
+  refused: string,
+  restored: string,
+): Promise<boolean> {
+  let corrected = false;
+  const persisted = await updatePreferencesFile(
+    (current) =>
+      current.globalFocusShortcut === refused
+        ? { globalFocusShortcut: restored }
+        : null,
+    () => {
+      corrected = true;
+    },
+  );
+  // The corrective broadcast follows the save's optimistic one, which
+  // renderer mirrors tolerate.
+  if (corrected)
+    broadcastPreferencesSynced(persisted, projectPreferencesForRuntime);
+  return corrected;
 }
 
 export function registerGlobalFocusShortcutHandlers(): void {

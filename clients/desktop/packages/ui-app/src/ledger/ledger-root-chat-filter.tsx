@@ -3,12 +3,12 @@
 import { useRef, useState, type JSX } from 'react';
 import type { LedgerRootChatFilter } from '@canopy/protocol/canopy-core';
 import {
-  FloatingPickerMenu,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-  PickerMenuOptionLeading,
+  Picker,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
+  PickerOptionLeading,
   PickerTrigger,
   PickerTriggerChevron,
   ThinkingSpinner,
@@ -70,7 +70,7 @@ export function LedgerRootChatFilterBar({
     leading: JSX.Element,
     onSelect: () => void,
   ): JSX.Element => (
-    <PickerMenuOption
+    <PickerOption
       key={key}
       role="menuitemradio"
       aria-checked={selected}
@@ -79,12 +79,12 @@ export function LedgerRootChatFilterBar({
       data-chat-id={key}
       onClick={onSelect}
     >
-      <PickerMenuOptionLeading>{leading}</PickerMenuOptionLeading>
-      <PickerMenuOptionContent>
-        <PickerMenuOptionLabel>{label}</PickerMenuOptionLabel>
-      </PickerMenuOptionContent>
-      <PickerMenuOptionCheck selected={selected} />
-    </PickerMenuOption>
+      <PickerOptionLeading>{leading}</PickerOptionLeading>
+      <PickerOptionContent>
+        <PickerOptionLabel>{label}</PickerOptionLabel>
+      </PickerOptionContent>
+      <PickerOptionCheck selected={selected} />
+    </PickerOption>
   );
 
   return (
@@ -114,7 +114,7 @@ export function LedgerRootChatFilterBar({
           )}
           <PickerTriggerChevron open={open} />
         </PickerTrigger>
-        <FloatingPickerMenu
+        <Picker
           open={open}
           onOpenChange={setOpen}
           anchorRef={triggerRef}
@@ -144,7 +144,7 @@ export function LedgerRootChatFilterBar({
               ),
             )}
           </div>
-        </FloatingPickerMenu>
+        </Picker>
       </div>
       <div className="flex items-center gap-2 text-xs fg-secondary">
         <span>{LEDGER_ROOT_ACTIVITY_ONLY_LABEL}</span>

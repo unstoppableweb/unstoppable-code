@@ -28,8 +28,8 @@ import { applyUiZoomToAllWindows, uiScaleToZoomFactor } from './ui-zoom';
 export async function applyUiScaleCommand(
   adjustment: UiScaleAdjustment,
 ): Promise<number> {
-  const { previous, next } = await updatePreferencesFileWithPrevious(
-    (current) => {
+  const { previous, next, domainUnread } =
+    await updatePreferencesFileWithPrevious((current) => {
       const uiScale = adjustUiScale(current.uiScale, adjustment);
       // `null` is what actually skips the write. Returning a patch and
       // filtering afterwards would still commit preferences.json and its
@@ -37,10 +37,11 @@ export async function applyUiScaleCommand(
       // shortcut at either end of the range would queue one such write per
       // repeat ahead of unrelated preference saves on the same queue.
       return uiScale === current.uiScale ? null : { uiScale };
-    },
-  );
+    });
   if (previous.uiScale === next.uiScale) return next.uiScale;
   applyUiZoomToAllWindows(uiScaleToZoomFactor(next.uiScale));
-  broadcastPreferencesSynced(next, projectPreferencesForRuntime);
+  // Its domain keys are defaults standing in for an unread document.
+  if (domainUnread !== true)
+    broadcastPreferencesSynced(next, projectPreferencesForRuntime);
   return next.uiScale;
 }

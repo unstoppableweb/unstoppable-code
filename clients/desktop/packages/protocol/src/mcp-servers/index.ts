@@ -414,6 +414,39 @@ export interface ProviderConnectorEntry {
 /** Which agent provider owns a connector's OAuth. */
 export type ProviderConnectorProvider = 'claude' | 'codex';
 
+/**
+ * Where each provider manages its connectors. Neither CLI can create a
+ * connector, so linking always ends on the provider's site. Codex publishes a
+ * page per app and normally supplies its own `installUrl`; this is the
+ * fallback for an app the directory does not describe. Keyed by provider
+ * because a single fallback sent every Codex connect to Claude's page.
+ */
+const PROVIDER_CONNECTOR_MANAGE_URLS: Readonly<
+  Record<ProviderConnectorProvider, string>
+> = {
+  claude: 'https://claude.ai/customize/connectors',
+  codex: 'https://chatgpt.com/apps',
+};
+
+/**
+ * The page a connector is linked or managed on: its own link page, or the
+ * provider's connector directory. Null for an unknown provider or anything
+ * but an https page, since neither input is trusted: `installUrl` comes from
+ * a provider cache Canopy neither writes nor validates, and both cross a
+ * process or network boundary before they get here.
+ */
+export function providerConnectorSettingsUrl(request: {
+  readonly provider: unknown;
+  readonly installUrl?: unknown;
+}): string | null {
+  const { provider, installUrl } = request;
+  if (provider !== 'claude' && provider !== 'codex') return null;
+  const target = installUrl ?? PROVIDER_CONNECTOR_MANAGE_URLS[provider];
+  if (typeof target !== 'string' || !URL.canParse(target)) return null;
+  const parsed = new URL(target);
+  return parsed.protocol === 'https:' ? parsed.toString() : null;
+}
+
 /** One connector, with each provider's view of it. */
 export interface ProviderConnectorRow {
   displayName: string;

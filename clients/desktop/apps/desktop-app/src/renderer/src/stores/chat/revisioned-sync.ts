@@ -273,6 +273,22 @@ export class RevisionedChatSync {
     this.refresh(scope);
   }
 
+  /**
+   * Reconnect recovery for a tracked scope: recovers `live`, `refresh_error`,
+   * and `refreshing` scopes alike by bumping the scope epoch so any older
+   * in-flight read from before reconnect is ignored.
+   */
+  reconnectRefresh(projectId: string, worktreeId: string): void {
+    const scope = this.scopes.get(chatScopeKey(projectId, worktreeId));
+    if (!scope || scope.phase === 'hydrating') return;
+    scope.epoch = ++this.epochCounter;
+    scope.queryInFlight = false;
+    scope.buffered = [];
+    scope.phase = 'refreshing';
+    this.notify(scope);
+    this.refresh(scope);
+  }
+
   /** Stop tracking a scope (idle unload / worktree removal). */
   release(projectId: string, worktreeId: string): void {
     const key = chatScopeKey(projectId, worktreeId);

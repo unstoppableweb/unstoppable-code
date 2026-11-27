@@ -143,12 +143,20 @@ const RECOVERY_CEILING = 128;
 export interface CanopyWorkspaceEventBridge {
   /**
    * Subscribes on a connection the host already holds; never opens one.
-   * Idempotent while that connection's subscription is open. A connection
-   * whose daemon lacks event acknowledgement is remembered and skipped.
+   * Idempotent while that connection's subscription is open. While its
+   * stream is still opening, including the reconciliation on open, an attach
+   * joins that attachment and resolves when it settles. A connection whose
+   * daemon lacks event acknowledgement is remembered and skipped.
    */
   attach(connection: CanopyEventsConnection): Promise<void>;
   state(authorityId: string): ReturnType<CanopyEventSubscription['state']>;
   close(): Promise<void>;
+}
+
+interface Attaching {
+  readonly connection: CanopyEventsConnection;
+  readonly settled: Promise<void>;
+  signal: AbortSignal | undefined;
 }
 
 /**
@@ -229,6 +237,32 @@ export function createCanopyWorkspaceEventBridge(
   let broadOnOpen = false;
   const unavailable = new WeakSet<CanopyEventsConnection>();
   const watched = new WeakSet<AbortSignal>();
+  // The latest attachment until it settles; `signal` is its session's once
+  // its stream is opening.
+  let attaching: Attaching | null = null;
+  /** The attachment a same-connection attach joins: its stream is opening. */
+  const opening = (
+    connection: CanopyEventsConnection,
+  ): Promise<void> | undefined =>
+    attaching?.connection === connection && attaching.signal?.aborted === false
+      ? attaching.settled
+      : undefined;
+  const subscribe = (connection: CanopyEventsConnection): Promise<void> => {
+    const run = subscription.attach(wrap(connection));
+    const entry: Attaching = {
+      connection,
+      settled: run.then(
+        () => undefined,
+        () => undefined,
+      ),
+      signal: undefined,
+    };
+    attaching = entry;
+    void entry.settled.then(() => {
+      if (attaching === entry) attaching = null;
+    });
+    return run;
+  };
 
   const broad = async (): Promise<void> => {
     const generation = owedGeneration;
@@ -346,7 +380,7 @@ export function createCanopyWorkspaceEventBridge(
     if (state === 'open' || state === 'rehydrating') return;
     attempts += 1;
     broadOnOpen = true;
-    void subscription.attach(wrap(connection)).catch(report);
+    void subscribe(connection).catch(report);
   };
 
   const wrap = (
@@ -364,6 +398,7 @@ export function createCanopyWorkspaceEventBridge(
     openStream: async (name, params, streamOptions) => {
       const signal = streamOptions?.signal;
       streamSignal = signal;
+      if (attaching?.connection === connection) attaching.signal = signal;
       const continuity = continuityGeneration;
       // The helper aborts a session's signal whenever it stops that session.
       if (signal && !watched.has(signal)) {
@@ -428,6 +463,12 @@ export function createCanopyWorkspaceEventBridge(
       if (current === connection && authorityId !== null) {
         const state = subscription.state(authorityId);
         if (state === 'open' || state === 'rehydrating') return;
+        // Replacing it would discard a healthy stream and reconcile again.
+        const joined = opening(connection);
+        if (joined) {
+          attempts = 0;
+          return joined;
+        }
         // Its stream failed on this live connection; something may be lost.
         broadOnOpen = true;
       }
@@ -435,7 +476,7 @@ export function createCanopyWorkspaceEventBridge(
       attempts = 0;
       loseContinuity();
       try {
-        await subscription.attach(wrap(connection));
+        await subscribe(connection);
       } catch (error) {
         if (
           toCanopyClientError(error).payload.kind === 'capability_unavailable'

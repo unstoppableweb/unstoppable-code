@@ -200,6 +200,27 @@ describe('pipeline store owner records and older-writer refusal (CAN-7690)', () 
     }
   });
 
+  it('tells every writer a restore has fenced that the data is being restored', () => {
+    const fence = parseOwnerFlipRecord(
+      JSON.stringify({
+        namespaceId: 'pipeline_definitions',
+        fromOwner: 'daemon',
+        toOwner: 'offline',
+        workPackage: 'W6',
+        backupRecord: backupRecordReference('pipeline_definitions', DIGEST),
+        flippedAt: '2026-11-24T10:00:00.000Z',
+      }),
+      'pipeline_definitions',
+    );
+    for (const writer of ['electron_main', 'desktop_cli', 'daemon'] as const)
+      expect(decideRowWrite(fence, writer)).toEqual({
+        allowed: false,
+        reason: 'owned_elsewhere',
+        owner: 'offline',
+        message: 'This data is being restored, so nothing was saved.',
+      });
+  });
+
   it('reads a missing record as absent and a record it cannot read as unreadable', async () => {
     expect(await readOwnerFlipRecord(root, 'pipeline_definitions')).toEqual({
       kind: 'absent',

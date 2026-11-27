@@ -48,10 +48,10 @@ import {
 } from '@canopy/ui-shared/components';
 import {
   Badge,
-  PickerMenuOption,
-  PickerMenuOptionContent,
-  PickerMenuOptionDescription,
-  PickerMenuOptionLabel,
+  PickerOption,
+  PickerOptionContent,
+  PickerOptionDescription,
+  PickerOptionLabel,
   SearchField,
 } from '@canopy/ui-shared/components';
 import {
@@ -865,7 +865,7 @@ export function CanopyTab(): JSX.Element {
                   </p>
                 ) : (
                   versionItems.map((item) => (
-                    <PickerMenuOption
+                    <PickerOption
                       key={item.tag}
                       onClick={(): void => handleSelectTargetVersion(item)}
                       disabled={targetUpdatePending}
@@ -873,17 +873,15 @@ export function CanopyTab(): JSX.Element {
                       data-tag={item.tag}
                       data-relation={item.relation ?? 'upgrade'}
                     >
-                      <PickerMenuOptionContent>
-                        <PickerMenuOptionLabel>
-                          {item.version}
-                        </PickerMenuOptionLabel>
-                        <PickerMenuOptionDescription>
+                      <PickerOptionContent>
+                        <PickerOptionLabel>{item.version}</PickerOptionLabel>
+                        <PickerOptionDescription>
                           {item.tag}
                           {item.releaseDate
                             ? ` - ${new Date(item.releaseDate).toLocaleDateString()}`
                             : ''}
-                        </PickerMenuOptionDescription>
-                      </PickerMenuOptionContent>
+                        </PickerOptionDescription>
+                      </PickerOptionContent>
                       {item.relation && item.relation !== 'upgrade' && (
                         <Badge
                           tone={
@@ -897,7 +895,7 @@ export function CanopyTab(): JSX.Element {
                             : 'Current'}
                         </Badge>
                       )}
-                    </PickerMenuOption>
+                    </PickerOption>
                   ))
                 )}
               </div>

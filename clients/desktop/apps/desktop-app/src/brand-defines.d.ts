@@ -22,6 +22,12 @@ declare const __CANOPY_SOURCE_BUILD__: boolean;
  * docs/local-only-build.md.
  */
 declare const __CANOPY_LOCAL_ONLY__: boolean;
+/**
+ * The self-host build profile (`CANOPY_SELF_HOST=true`). Read it only
+ * through `isSelfHostBuild()` or the preload constant; see the "Self-host
+ * profile" section of docs/local-only-build.md.
+ */
+declare const __CANOPY_SELF_HOST__: boolean;
 declare const __CANOPY_E2E__: boolean;
 declare const __CANOPY_POSTHOG_ENABLED__: boolean;
 declare const __CANOPY_OLLAMA_ENABLED__: boolean;

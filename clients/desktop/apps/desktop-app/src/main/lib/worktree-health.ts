@@ -4,8 +4,10 @@ import {
 } from './w5-metadata-preparation';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { lstat, readFile, stat } from 'node:fs/promises';
+import { lstat, readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
+import type { CanopyHandlerContext } from '@canopy/core-runtime';
 import type {
   WorktreeData,
   WorkspaceConfigFile,
@@ -13,7 +15,10 @@ import type {
   WorktreeHealthIssue,
 } from '@canopy/desktop-shared/types';
 import {
+  GitRepositoryReadError,
+  createRecordedWorkerGitHosts,
   inspectWorktreeHealth,
+  type GitRepositoryReader,
   type WorktreeHealthSources,
   type WorktreeHealthWorkspace,
 } from '@canopy/core-runtime/node/git';
@@ -23,8 +28,12 @@ import {
   withGitRequestContextEnv,
 } from '@canopy/desktop-shared/node/git-request-context';
 import { getEnhancedEnv } from '@canopy/execution-engine/pipelines/config-paths';
-import { CANOPY_IN_PROCESS_WORKER_TARGET_ID } from '@canopy/protocol/canopy-core';
+import {
+  CANOPY_IN_PROCESS_WORKER_TARGET_ID,
+  type WorkerGitDiffGetParams,
+} from '@canopy/protocol/canopy-core';
 import { classifyPersistedWorkspaceOwner } from '@canopy/protocol/workspace-owner';
+import { getDataDir } from './paths';
 import { getResolvedGitExecutableForSpawn } from './git-executable';
 import { resolveWorktreeCwd } from './resolve-worktree';
 import {
@@ -212,6 +221,40 @@ export async function workspaceManifestReadable(
     recordedPath(manifest.sourceRepoPath) &&
     (manifest.repos === undefined ||
       (Array.isArray(manifest.repos) && manifest.repos.every(recordedRepo)))
+  );
+}
+
+// The diff resolver runs no Git; if that ever changes, admission fails closed to in process.
+const NO_GIT: GitRepositoryReader = {
+  read: () => Promise.reject(new GitRepositoryReadError('git_unavailable')),
+  selectExecutable: () =>
+    Promise.reject(new GitRepositoryReadError('git_unavailable')),
+};
+
+/**
+ * Pre-contact admission for a daemon diff read (CAN-4729): the daemon's own
+ * recorded resolver (recorded-worker-git-hosts.ts), over these records, names
+ * main's checkout `repoPath`. The manifest check adds main's stricter
+ * authority rule. A refusal or a throw lists in process.
+ */
+export async function diffScopeAdmitted(
+  params: WorkerGitDiffGetParams,
+  repoPath: string,
+  context: CanopyHandlerContext,
+): Promise<boolean> {
+  if (!(await workspaceManifestReadable(params.scope.workspaceId ?? '')))
+    return false;
+  const resolved = await createRecordedWorkerGitHosts({
+    dataRoot: await realpath(getDataDir()),
+    authorityId: context.caller.authorityId,
+    recordsTargetId: CANOPY_IN_PROCESS_WORKER_TARGET_ID,
+    os: hostPlatformOperatingSystem(),
+    arch: process.arch,
+    git: NO_GIT,
+  }).diff.resolveRepository(params, context);
+  return (
+    resolved !== null &&
+    (await realpath(resolved)) === (await realpath(repoPath))
   );
 }
 

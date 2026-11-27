@@ -15,6 +15,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { overlayManagedDelegationSnapshot } from '@canopy/ui-app/managed-delegation-progress';
 import type { SubagentTreeLoadState } from '@canopy/ui-app/subagents';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import type { AgentDelegationSnapshot } from '@canopy/protocol/delegation';
 import type { ChatMessage } from '@/stores/chatStore';
 import { currentLiveSnapshot } from '@/cloud-chats/cloud-delegation-cards';
@@ -74,6 +75,7 @@ interface MutableTreeRecord {
    * live snapshots, and main is never asked.
    */
   readonly cloud: boolean;
+  readonly paired: boolean;
   readonly listeners: Set<() => void>;
   snapshot: SubagentTreeStoreSnapshot;
   /** A cloud root's delegates as the web core last read them. */
@@ -226,6 +228,7 @@ function ensureRecord(
     scope,
     rootChatId,
     cloud: isWebCoreScope(scope.projectId),
+    paired: isPairedComputerId(scope.projectId),
     listeners: new Set(),
     snapshot: INERT_SNAPSHOT,
     liveSnapshots: NO_LIVE_SNAPSHOTS,
@@ -498,7 +501,7 @@ function syncWorkflowAcquisitions(record: MutableTreeRecord): void {
       record.workflowAcquisitions.delete(key);
     }
   });
-  if (record.consumers === 0) return;
+  if (record.consumers === 0 || record.paired) return;
   nextLocations.forEach((location: WorkflowRunLocation, key: string): void => {
     if (record.workflowAcquisitions.has(key)) return;
     record.workflowAcquisitions.set(key, {
@@ -608,8 +611,8 @@ async function readTree(record: MutableTreeRecord): Promise<void> {
     record.followUpQueued = true;
     return;
   }
-  if (record.cloud) {
-    // Main holds no cloud delegate: the root's own cards are the whole tree.
+  if (record.cloud || record.paired) {
+    // Main holds no cloud or paired-computer delegate: the root's own cards are the whole tree.
     record.latestEntries = [];
     record.managedEntryMap = EMPTY_MANAGED_ENTRIES;
     record.initialReadSettled = true;
@@ -721,10 +724,10 @@ export function updateSubagentTreeRootChat(
       useActivityStore.getState().bgProcesses[worktreeKey] ?? [],
     );
     updateLoadedInputs(record);
-    // Workflow runs are pipelines on this computer; a cloud root has none.
+    // Workflow runs are pipelines on this computer; cloud and paired roots have none.
     updateWorkflowLocations(
       record,
-      nextMessages === null || record.cloud
+      nextMessages === null || record.cloud || record.paired
         ? []
         : collectWorkflowRunLocations(nextMessages),
     );

@@ -506,14 +506,18 @@ async function runtimeBusyReasons(
       branchName: candidate.targetName,
       createdAt: candidate.createdAt,
     } satisfies WorktreeData);
-  const statuses = await getWorktreeRuntimeStatuses([
-    { workspaceId: candidate.workspaceId, worktree },
-  ]);
+  const statuses = await getWorktreeRuntimeStatuses(
+    [{ workspaceId: candidate.workspaceId, worktree }],
+    undefined,
+    { includeSettledPausedPipelines: false },
+  );
   const status = statuses.get(
     targetKey(candidate.workspaceId, candidate.targetId),
   );
   const reasons: WorkspaceTargetBusyReason[] = [];
   if (status?.isStreaming) reasons.push('agent');
+  // Settled paused workflows are excluded above; any remaining running or
+  // paused pipelineStatus is an active handle still in flight or settling.
   if (status?.pipelineStatus) reasons.push('workflow');
   if (status?.terminalStatus) reasons.push('terminal');
   if (status?.scriptStatus) reasons.push('script');

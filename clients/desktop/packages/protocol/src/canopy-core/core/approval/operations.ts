@@ -101,6 +101,12 @@ export type CoreApprovalRequest = z.output<typeof CoreApprovalRequestSchema>;
  */
 export const CORE_APPROVAL_REQUEST_LIST_SCHEMA_REVISION = 2;
 
+/**
+ * Revision 3 adds `presentation.deferredAt`: when Core deferred a pending
+ * request past its turn, so an answer resumes the chat (REG-3134).
+ */
+export const CORE_APPROVAL_REQUEST_LIST_DEFERRED_REVISION = 3;
+
 // Display text as the cloud's own approval card carries it.
 const text = z.string().max(8 * 1024 * 1024);
 const reason = { reason: text.optional() };
@@ -188,6 +194,8 @@ export const CoreApprovalListedRequestSchema = CoreApprovalRequestSchema.extend(
         details: CoreApprovalRequestDetailsSchema,
         /** Whether a denial's reason and stop reach the agent. */
         explainable: z.boolean(),
+        /** Revision 3: when Core deferred it past its turn, or null. */
+        deferredAt: timestamp.nullable().optional(),
       })
       .optional(),
   },
@@ -201,7 +209,12 @@ export const CoreApprovalRequestListParamsSchema = z.strictObject({
   states: z.array(z.enum(CORE_APPROVAL_REQUEST_STATES)),
   cursor: id.nullable(),
   limit: z.number().int().min(1).max(500),
-  revision: z.literal(CORE_APPROVAL_REQUEST_LIST_SCHEMA_REVISION).optional(),
+  revision: z
+    .union([
+      z.literal(CORE_APPROVAL_REQUEST_LIST_SCHEMA_REVISION),
+      z.literal(CORE_APPROVAL_REQUEST_LIST_DEFERRED_REVISION),
+    ])
+    .optional(),
 });
 
 export const CoreApprovalRequestListResultSchema = z.strictObject({

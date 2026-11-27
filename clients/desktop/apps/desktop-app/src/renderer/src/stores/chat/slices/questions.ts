@@ -32,6 +32,7 @@ import type { StateCreator } from 'zustand';
 import type { ChatState, ChatQuestionsSlice } from '../state';
 import type { PendingQuestion } from '../types';
 import { localChatBackend } from '../backend';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isWebCoreScope } from '@/lib/chat-authority';
 
 interface WorktreeTarget {
@@ -117,7 +118,9 @@ function answersByCommand(
 ): pending is PendingQuestion {
   return (
     pending !== undefined &&
-    (pending.delivery === 'async' || isWebCoreScope(pending.projectId))
+    (pending.delivery === 'async' ||
+      isWebCoreScope(pending.projectId) ||
+      isPairedComputerId(pending.projectId))
   );
 }
 

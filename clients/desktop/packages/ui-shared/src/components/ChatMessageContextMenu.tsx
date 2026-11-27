@@ -19,7 +19,7 @@ import {
   copyTextToClipboard,
   DEFAULT_COPIED_DURATION_MS,
 } from '../primitives/copy-to-clipboard';
-import { DropdownMenuStatusRow } from '../primitives/DropdownMenu';
+import { MenuStatusRow } from '../primitives/MenuItem';
 import { HoverCard } from '../primitives/HoverCard';
 import { ErrorBanner } from '../primitives/StatusBlocks';
 import { selectionTextWithMathSource } from './markdown-math-copy';
@@ -775,9 +775,9 @@ function ChatMessageCopyStatus({
       surfaceClassName="w-max"
       content={
         <>
-          <DropdownMenuStatusRow role="presentation" aria-hidden="true">
+          <MenuStatusRow role="presentation" aria-hidden="true">
             Copied
-          </DropdownMenuStatusRow>
+          </MenuStatusRow>
           <span role="status" className="sr-only">
             {announced ? 'Copied' : ''}
           </span>

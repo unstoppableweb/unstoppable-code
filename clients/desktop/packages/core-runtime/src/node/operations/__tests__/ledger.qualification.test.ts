@@ -1,4 +1,8 @@
+import { createHash } from 'node:crypto';
 import {
+  cpSync,
+  existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -25,9 +29,22 @@ import {
   OperationLedgerError,
   backupOperationLedger,
   restoreOperationLedgerBackup,
+  returnOperationLedger,
   type OperationAcceptRequest,
   type OperationLedgerBackupOptions,
 } from '../ledger';
+import { createDaemonOperationService } from '../daemon-ledger';
+import {
+  assertRowWritable,
+  persistNamespaceBackupRecord,
+  readOwnerFlipRecord,
+  writeOwnerFlipRecord,
+} from '../../storage-records';
+import {
+  Crash,
+  crashFs,
+} from '../../pipeline/__tests__/definitions-backup-crash-fs';
+import { strictFlush } from '../../pipeline/__tests__/definitions-backup-fixtures';
 
 function thrown(run: () => unknown): unknown {
   try {
@@ -335,4 +352,458 @@ describe('operation ledger persistence qualification', () => {
       }),
     ).rejects.toMatchObject({ code: 'BACKUP_UNVERIFIED' });
   });
+});
+
+describe('operation ledger rollback and first-open backup (CAN-7655)', () => {
+  const outside = (): boolean => true;
+  const flushed = (): Promise<'flushed'> => Promise.resolve('flushed');
+  const DAEMON_OWNED = STORAGE_OWNERSHIP.map((row) =>
+    row.id === 'operation_ledger'
+      ? { ...row, transitionOwner: 'daemon' as const, currentWriters: [] }
+      : row,
+  );
+  const ledgerRows = (at: string): readonly unknown[] => {
+    const reader = OperationLedger.open(
+      join(at, 'operations', 'operation-ledger.sqlite'),
+    );
+    try {
+      return reader.list({ limit: 50 }).items;
+    } finally {
+      reader.close();
+    }
+  };
+  const takeBackup = (): Promise<NamespaceBackupRecord> =>
+    backupOperationLedger(ledger, {
+      dataRoot: dir,
+      backupPath:
+        'backups/operation-ledger/20261126T050000Z-aaaaaaaa-0001.sqlite',
+      isOutsideCheckouts: outside,
+      syncDirectory: flushed,
+      clock: () => now,
+    });
+  const giveBack = (
+    record: NamespaceBackupRecord,
+    overrides: Record<string, unknown> = {},
+  ): Promise<void> =>
+    (
+      returnOperationLedger as unknown as (
+        record: NamespaceBackupRecord,
+        options: Record<string, unknown>,
+      ) => Promise<void>
+    )(record, {
+      owner: 'legacy',
+      dataRoot: dir,
+      databasePath: dbPath,
+      isOutsideCheckouts: outside,
+      syncDirectory: flushed,
+      ...overrides,
+    });
+  const failureOf = (run: () => Promise<unknown>): Promise<unknown> =>
+    Promise.resolve()
+      .then(run)
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+  it('returns a backup into an empty data root, read back equal', async () => {
+    const kept = ledger.accept(request()).operation;
+    const record = await takeBackup();
+    ledger.close();
+    const empty = realpathSync(
+      mkdtempSync(join(tmpdir(), 'operation-ledger-empty-')),
+    );
+    try {
+      cpSync(join(dir, 'backups'), join(empty, 'backups'), {
+        recursive: true,
+      });
+      await giveBack(record, {
+        dataRoot: empty,
+        databasePath: join(empty, 'operations', 'operation-ledger.sqlite'),
+      });
+      expect(ledgerRows(empty)).toEqual([kept]);
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+      ledger = open();
+    }
+  });
+
+  it('refuses to return a backup over newer writes, changing nothing', async () => {
+    ledger.accept(request());
+    const record = await takeBackup();
+    const newer = ledger.accept(
+      request({ origin: { kind: 'client', sourceId: 'later' } }),
+    ).operation;
+    ledger.close();
+    expect(await failureOf(() => giveBack(record))).toMatchObject({
+      code: 'NEWER_STATE',
+    });
+    ledger = open();
+    expect(ledger.get(newer.operationId)).toEqual(newer);
+  });
+
+  it('returns a backup over newer writes once a person confirms the loss', async () => {
+    const kept = ledger.accept(request()).operation;
+    const record = await takeBackup();
+    const newer = ledger.accept(
+      request({ origin: { kind: 'client', sourceId: 'later' } }),
+    ).operation;
+    ledger.close();
+    await giveBack(record, { acceptNewerLoss: 'person-confirmed' });
+    ledger = open();
+    expect(ledger.get(kept.operationId)).toEqual(kept);
+    expect(ledger.get(newer.operationId)).toBeNull();
+  });
+
+  it('refuses to return a backup over a newer source head alone, until a person confirms the loss', async () => {
+    ledger.accept(request());
+    const record = await takeBackup();
+    ledger.recordSourceHead('github.pr', 'subject-1', 'head-1');
+    ledger.close();
+    expect(await failureOf(() => giveBack(record))).toMatchObject({
+      code: 'NEWER_STATE',
+    });
+    ledger = open();
+    expect(ledger.sourceHead('github.pr', 'subject-1')).toBe('head-1');
+    ledger.close();
+    await giveBack(record, { acceptNewerLoss: 'person-confirmed' });
+    ledger = open();
+    expect(ledger.sourceHead('github.pr', 'subject-1')).toBeNull();
+  });
+
+  it('returns a copy an older build left into this build, at this build schema', async () => {
+    const kept = ledger.accept(request()).operation;
+    const record = await takeBackup();
+    ledger.close();
+    const copy = join(dir, ...record.backupPath.split('/'));
+    const older = new DatabaseSync(copy);
+    try {
+      older.exec('DROP TABLE initiated_work_heads');
+      older
+        .prepare(
+          `UPDATE operation_meta SET value = '2' WHERE key = 'schema_version'`,
+        )
+        .run();
+    } finally {
+      older.close();
+    }
+    const digest = createHash('sha256')
+      .update(readFileSync(copy))
+      .digest('hex');
+    await giveBack(
+      { ...record, verifiedBy: { algorithm: 'sha256', digest } },
+      { acceptNewerLoss: 'person-confirmed' },
+    );
+    ledger = open();
+    expect(ledger.get(kept.operationId)).toEqual(kept);
+    expect(ledger.sourceHead('github.pr', 'subject-1')).toBeNull();
+  });
+
+  it('returns the row to the app: the record names it again, the app writes and the daemon is refused', async () => {
+    ledger.accept(request());
+    const record = await takeBackup();
+    const writes = { syncDirectory: flushed, isOutsideCheckouts: outside };
+    await persistNamespaceBackupRecord(dir, record, writes);
+    await writeOwnerFlipRecord(
+      dir,
+      {
+        namespaceId: 'operation_ledger',
+        fromOwner: 'legacy',
+        toOwner: 'daemon',
+        workPackage: 'W6',
+        backupDigest: record.verifiedBy.digest,
+        flippedAt: '2026-11-26T05:00:00.000Z',
+      },
+      writes,
+    );
+    ledger.close();
+    await giveBack(record);
+    ledger = open();
+    await expect(
+      readOwnerFlipRecord(dir, 'operation_ledger'),
+    ).resolves.toMatchObject({
+      kind: 'record',
+      record: {
+        fromOwner: 'daemon',
+        toOwner: 'legacy',
+        backupRecord: `storage-records/operation_ledger/namespace-backup.json#sha256:${record.verifiedBy.digest}`,
+      },
+    });
+    await expect(
+      assertRowWritable(dir, 'operation_ledger', 'electron_main'),
+    ).resolves.toBeUndefined();
+    await expect(
+      assertRowWritable(dir, 'operation_ledger', 'daemon'),
+    ).rejects.toMatchObject({ reason: 'owned_elsewhere' });
+  });
+
+  it('finishes an interrupted return on a retry, with no loss to confirm', async () => {
+    const kept = ledger.accept(request()).operation;
+    const record = await takeBackup();
+    const writes = { syncDirectory: flushed, isOutsideCheckouts: outside };
+    await persistNamespaceBackupRecord(dir, record, writes);
+    await writeOwnerFlipRecord(
+      dir,
+      {
+        namespaceId: 'operation_ledger',
+        fromOwner: 'legacy',
+        toOwner: 'daemon',
+        workPackage: 'W6',
+        backupDigest: record.verifiedBy.digest,
+        flippedAt: '2026-11-26T05:00:00.000Z',
+      },
+      writes,
+    );
+    ledger.close();
+    const records = join(dir, 'storage-records', 'operation_ledger');
+    expect(
+      await failureOf(() =>
+        giveBack(record, {
+          syncDirectory: (path: string): Promise<'flushed' | 'unsupported'> =>
+            Promise.resolve(path === records ? 'unsupported' : 'flushed'),
+        }),
+      ),
+    ).not.toBeNull();
+    await giveBack(record);
+    await expect(
+      readOwnerFlipRecord(dir, 'operation_ledger'),
+    ).resolves.toMatchObject({ kind: 'record', record: { toOwner: 'legacy' } });
+    ledger = open();
+    expect(ledger.get(kept.operationId)).toEqual(kept);
+  });
+
+  it('flushes the owner record on a retry that finds the requested owner already named', async () => {
+    ledger.accept(request());
+    const record = await takeBackup();
+    const writes = { syncDirectory: flushed, isOutsideCheckouts: outside };
+    await persistNamespaceBackupRecord(dir, record, writes);
+    await writeOwnerFlipRecord(
+      dir,
+      {
+        namespaceId: 'operation_ledger',
+        fromOwner: 'legacy',
+        toOwner: 'daemon',
+        workPackage: 'W6',
+        backupDigest: record.verifiedBy.digest,
+        flippedAt: '2026-11-26T05:00:00.000Z',
+      },
+      writes,
+    );
+    ledger.close();
+    const records = join(dir, 'storage-records', 'operation_ledger');
+    const ownerFlip = join(records, 'owner-flip.json');
+    const named = (): boolean =>
+      existsSync(ownerFlip) &&
+      (JSON.parse(readFileSync(ownerFlip, 'utf8')) as { toOwner?: string })
+        .toOwner === 'legacy';
+    const unflushedOnceNamed = (
+      path: string,
+    ): Promise<'flushed' | 'unsupported'> =>
+      Promise.resolve(path === records && named() ? 'unsupported' : 'flushed');
+    expect(
+      await failureOf(() =>
+        giveBack(record, { syncDirectory: unflushedOnceNamed }),
+      ),
+    ).not.toBeNull();
+    await expect(
+      readOwnerFlipRecord(dir, 'operation_ledger'),
+    ).resolves.toMatchObject({ kind: 'record', record: { toOwner: 'legacy' } });
+    expect(
+      await failureOf(() =>
+        giveBack(record, { syncDirectory: unflushedOnceNamed }),
+      ),
+    ).toMatchObject({ code: 'STORAGE_UNAVAILABLE' });
+    const synced: string[] = [];
+    await giveBack(record, {
+      syncDirectory: (path: string): Promise<'flushed'> => {
+        synced.push(path);
+        return Promise.resolve('flushed');
+      },
+    });
+    expect(synced).toContain(records);
+    ledger = open();
+  });
+
+  it('returns an unchanged older ledger after a crash between the owner record and the migration', async () => {
+    const kept = ledger.accept(request()).operation;
+    ledger.close();
+    const older = new DatabaseSync(dbPath);
+    try {
+      older.exec('DROP TABLE initiated_work_heads');
+      older
+        .prepare(
+          `UPDATE operation_meta SET value = '2' WHERE key = 'schema_version'`,
+        )
+        .run();
+    } finally {
+      older.close();
+    }
+    const at = realpathSync(dir);
+    const crashed = (
+      createDaemonOperationService as unknown as (
+        options: Record<string, unknown>,
+      ) => ReturnType<typeof createDaemonOperationService>
+    )({
+      dataRoot: at,
+      ownership: DAEMON_OWNED,
+      syncDirectory: flushed,
+      firstOpenCheckpoint: (point: string): void => {
+        if (point === 'recorded') throw new Error('crash');
+      },
+    });
+    try {
+      expect(await failureOf(() => crashed.list({ limit: 1 }))).not.toBeNull();
+    } finally {
+      crashed.close();
+    }
+    const record = JSON.parse(
+      readFileSync(
+        join(
+          at,
+          'storage-records',
+          'operation_ledger',
+          'namespace-backup.json',
+        ),
+        'utf8',
+      ),
+    ) as NamespaceBackupRecord;
+    await giveBack(record, {
+      dataRoot: at,
+      databasePath: join(at, 'operations', 'operation-ledger.sqlite'),
+    });
+    await expect(
+      readOwnerFlipRecord(at, 'operation_ledger'),
+    ).resolves.toMatchObject({ kind: 'record', record: { toOwner: 'legacy' } });
+    ledger = open();
+    expect(ledger.get(kept.operationId)).toEqual(kept);
+  });
+
+  it.each([
+    ['an owner record that cannot be read', {}, 'not json'],
+    ['no owner to return the row to', { owner: undefined }, null],
+  ])(
+    'refuses to return a backup given %s, restoring nothing',
+    async (_name, overrides, recordText) => {
+      ledger.accept(request());
+      const record = await takeBackup();
+      const newer = ledger.accept(
+        request({ origin: { kind: 'client', sourceId: 'later' } }),
+      ).operation;
+      if (recordText !== null) {
+        mkdirSync(join(dir, 'storage-records', 'operation_ledger'), {
+          recursive: true,
+        });
+        writeFileSync(
+          join(dir, 'storage-records', 'operation_ledger', 'owner-flip.json'),
+          recordText,
+        );
+      }
+      ledger.close();
+      expect(
+        await failureOf(() =>
+          giveBack(record, {
+            acceptNewerLoss: 'person-confirmed',
+            ...overrides,
+          }),
+        ),
+      ).toMatchObject({ code: 'STORAGE_UNAVAILABLE' });
+      ledger = open();
+      expect(ledger.get(newer.operationId)).toEqual(newer);
+    },
+  );
+
+  it('ends with one cited copy, both records and the ledger unchanged after a crash before any flush of the first daemon open', async () => {
+    const kept = ledger.accept(request()).operation;
+    ledger.close();
+    const attempt = async (
+      at: string,
+      syncDirectory: (path: string) => Promise<'flushed' | 'unsupported'>,
+    ): Promise<unknown> => {
+      const service = (
+        createDaemonOperationService as unknown as (
+          options: Record<string, unknown>,
+        ) => ReturnType<typeof createDaemonOperationService>
+      )({ dataRoot: at, ownership: DAEMON_OWNED, syncDirectory });
+      try {
+        await service.list({ limit: 1 });
+        return null;
+      } catch (error) {
+        return error;
+      } finally {
+        service.close();
+      }
+    };
+    const run = async (crash?: number): Promise<string[] | string> => {
+      const at = realpathSync(
+        mkdtempSync(join(tmpdir(), 'operation-ledger-crash-')),
+      );
+      const scratch = [at];
+      try {
+        cpSync(dir, at, { recursive: true });
+        const fs = crashFs(at, strictFlush);
+        fs.crashBefore(crash);
+        const failure = await attempt(at, fs.syncDirectory);
+        if (crash === undefined) return [...fs.flushed];
+        if (
+          !(
+            failure instanceof Crash ||
+            (failure instanceof OperationLedgerError &&
+              failure.underlying instanceof Crash)
+          )
+        )
+          return `crash before flush ${String(crash)}: the attempt ended with ${failure === null ? 'success' : failure instanceof Error ? failure.message : JSON.stringify(failure)}`;
+        const image = fs.durableImage();
+        scratch.push(image);
+        const retried = await attempt(image, strictFlush);
+        if (retried !== null)
+          return `crash before flush ${String(crash)}: the retry failed with ${retried instanceof Error ? retried.message : JSON.stringify(retried)}`;
+        const backup = JSON.parse(
+          readFileSync(
+            join(
+              image,
+              'storage-records',
+              'operation_ledger',
+              'namespace-backup.json',
+            ),
+            'utf8',
+          ),
+        ) as { backupPath: string; verifiedBy: { digest: string } };
+        const owner = await readOwnerFlipRecord(image, 'operation_ledger');
+        const problems = [
+          ...(existsSync(join(image, backup.backupPath))
+            ? []
+            : ['the cited copy is missing']),
+          ...(owner.kind === 'record' &&
+          owner.record.toOwner === 'daemon' &&
+          owner.record.backupRecord.endsWith(backup.verifiedBy.digest)
+            ? []
+            : [
+                'the owner record does not name the daemon over the cited copy',
+              ]),
+          ...(JSON.stringify(ledgerRows(image)).includes(kept.operationId)
+            ? []
+            : ['the ledger lost its operation']),
+        ];
+        return problems.length === 0
+          ? []
+          : `crash before flush ${String(crash)}: ${problems.join('; ')}`;
+      } finally {
+        for (const path of scratch)
+          rmSync(path, { recursive: true, force: true });
+      }
+    };
+    const listed = await run();
+    expect(Array.isArray(listed) ? listed.length : 0).toBeGreaterThan(0);
+    const failures: string[] = [];
+    for (
+      let point = 0;
+      point < (Array.isArray(listed) ? listed.length : 0);
+      point += 1
+    ) {
+      const result = await run(point);
+      if (typeof result === 'string') failures.push(result);
+    }
+    expect(failures).toEqual([]);
+    ledger = open();
+  }, 120_000);
 });

@@ -169,7 +169,7 @@ function terminalUnavailableError(): CanopyOperationError {
   });
 }
 
-function idempotencyKeyReusedError(): CanopyOperationError {
+export function idempotencyKeyReusedError(): CanopyOperationError {
   return new CanopyOperationError({
     kind: 'conflict',
     code: 'worker.script.idempotencyKeyReused',

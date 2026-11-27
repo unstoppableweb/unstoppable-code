@@ -2,8 +2,14 @@
 
 export { FIELD_INVALID_CLASS } from './control-button-shared';
 
-import { FIELD_EDGE_CLASS } from './control-button-shared';
-export { FIELD_EDGE_CLASS } from './control-button-shared';
+import {
+  FIELD_EDGE_CLASS,
+  FIELD_FOCUS_WITHIN_CLASS,
+} from './control-button-shared';
+export {
+  FIELD_EDGE_CLASS,
+  FIELD_FOCUS_WITHIN_CLASS,
+} from './control-button-shared';
 
 import { FIELD_CLASS, FIELD_SURFACE_CLASS } from './control-button-shared';
 
@@ -30,14 +36,14 @@ import {
   FieldButtonNestProvider,
   type FieldButtonNest,
 } from './field-button-nest';
-import { FLOATING_MENU_GAP } from './FloatingMenu';
+import { MENU_GAP } from './Menu';
+import { Picker } from './Picker';
 import {
-  FloatingPickerMenu,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-} from './PickerMenu';
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
+} from './PickerParts';
 
 /**
  * Canonical form fields shared by desktop and web: `TextInput`, `TextArea`,
@@ -64,12 +70,6 @@ import {
  * The field edge at rest. A composite field (`SearchField`) draws it on the
  * box around its input and swaps in {@link FIELD_FOCUS_WITHIN_CLASS}.
  */
-
-/**
- * The neutral field focus, for a box whose input has focus. A field never
- * fills on hover or focus: the edge and halo alone show focus.
- */
-export const FIELD_FOCUS_WITHIN_CLASS = 'has-[input:focus]:shadow-field-focus';
 
 /**
  * The invalid field (`aria-invalid`): the destructive edge at rest and the
@@ -512,11 +512,11 @@ export interface SelectProps {
  *
  * Single-choice select drawn by Canopy rather than the operating system. The
  * trigger is a field (same edge, focus, inset, and app chevron as
- * `TextInput`); the menu is the shared picker (`FloatingPickerMenu` with
- * `PickerMenuOption` rows and a checkmark on the chosen one), at least as wide
+ * `TextInput`); the menu is the shared picker (`Picker` with
+ * `PickerOption` rows and a checkmark on the chosen one), at least as wide
  * as the field.
  *
- * `FloatingMenu`'s listbox mode owns the keyboard: ArrowUp/ArrowDown on the
+ * `Menu`'s listbox mode owns the keyboard: ArrowUp/ArrowDown on the
  * trigger open the menu on the chosen option, arrows, Home, and End move,
  * typing jumps to a matching label, Enter or Space choose, and Escape, Tab,
  * or an outside press close with focus back on the trigger.
@@ -589,13 +589,13 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(
           </span>
         </FieldPickerTrigger>
         <FieldPickerChevron />
-        <FloatingPickerMenu
+        <Picker
           open={open}
           onOpenChange={setOpen}
           anchorRef={triggerRef}
           placement="bottom-left"
           // A field-attached menu sits closer than a free-standing picker.
-          gap={FLOATING_MENU_GAP}
+          gap={MENU_GAP}
           interaction="listbox"
           role="listbox"
           id={listboxId}
@@ -611,7 +611,7 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(
           {options.map((option) => {
             const selected = option.value === value;
             return (
-              <PickerMenuOption
+              <PickerOption
                 key={option.value}
                 role="option"
                 data-value={option.value}
@@ -620,8 +620,8 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(
                 disabled={option.disabled}
                 onClick={() => onValueChange(option.value)}
               >
-                <PickerMenuOptionContent>
-                  <PickerMenuOptionLabel>
+                <PickerOptionContent>
+                  <PickerOptionLabel>
                     {blockLabelsInReplay ? (
                       <span className={REPLAY_BLOCK_CLASS}>{option.label}</span>
                     ) : option.maskInReplay ? (
@@ -629,13 +629,13 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(
                     ) : (
                       option.label
                     )}
-                  </PickerMenuOptionLabel>
-                </PickerMenuOptionContent>
-                <PickerMenuOptionCheck selected={selected} />
-              </PickerMenuOption>
+                  </PickerOptionLabel>
+                </PickerOptionContent>
+                <PickerOptionCheck selected={selected} />
+              </PickerOption>
             );
           })}
-        </FloatingPickerMenu>
+        </Picker>
       </span>
     );
   },

@@ -25,7 +25,7 @@ export function useCloseOnOutsideMouseDown(
       const insideContent =
         contentRef.current && contentRef.current.contains(event.target);
       // Menu flyouts render beside their parent in document.body. Match the
-      // shared FloatingMenu boundary without changing non-menu popovers.
+      // shared Menu boundary without changing non-menu popovers.
       const ElementConstructor = doc.defaultView?.Element;
       const insideNestedMenu =
         includeNestedMenus &&

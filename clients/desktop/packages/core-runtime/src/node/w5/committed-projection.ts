@@ -43,8 +43,8 @@ import {
  * Two log-wide facts outlive any one file's slice, so the projection keeps
  * them beside the entries: an abandoned commit (permanent; it makes every
  * file `abandoned-history`) and the newest unresolved count (any unresolved
- * commit makes every label `pending`). One projection serves one log: a new
- * log epoch needs a new projection.
+ * commit makes every label `pending`). One projection serves one log, the one
+ * its first capture names; a new log needs a new projection.
  */
 
 /**
@@ -290,6 +290,8 @@ function evidenceStale(entry: Entry, markedAt: number): Entry {
 export function createW5CommittedProjection(): W5CommittedProjection {
   const entries = new Map<string, Entry>();
   let generation = 0;
+  // The log the first capture named; another log's captures never install.
+  let logId: string | undefined;
   // Abandonment is permanent, so once seen no unabandoned evidence is current.
   let abandoned = false;
   // The newest position's unresolved count; at one position it only falls.
@@ -350,8 +352,10 @@ export function createW5CommittedProjection(): W5CommittedProjection {
     capture,
     options,
   ) => {
-    version += 1;
     const { log } = capture;
+    if (logId !== undefined && log.logId !== logId) return;
+    logId = log.logId;
+    version += 1;
     noteLog(log.commitId, log.unresolvedCommits);
     if (isAbandoned(capture)) learnAbandoned();
     const rows = new Map<string, W5FileLogEvidence[]>();
@@ -382,6 +386,7 @@ export function createW5CommittedProjection(): W5CommittedProjection {
         files: [{ ...captured }],
         discovery: 'not-requested',
         log: {
+          logId: log.logId,
           commitId: log.commitId,
           retainedCommits: log.retainedCommits,
           unresolvedCommits: log.unresolvedCommits,
@@ -526,6 +531,7 @@ export function createW5CommittedProjection(): W5CommittedProjection {
       files: [...first.files, ...second.files],
       discovery: 'not-requested',
       log: {
+        logId: second.log.logId,
         commitId,
         // Abandonment is permanent: either side's makes both unverified.
         retainedCommits:
@@ -686,6 +692,8 @@ export function createW5CommittedProjection(): W5CommittedProjection {
         : [],
     );
     if (recovered.length) return unserved('not-current', recovered);
+    // Only a capture sets it, and every served entry holds one.
+    if (logId === undefined) return unserved('not-current');
     let commitId = 0;
     const unresolved = newest.unresolved;
     let abandonedEvidence = false;
@@ -709,6 +717,7 @@ export function createW5CommittedProjection(): W5CommittedProjection {
         files: servedEntries.flatMap(({ evidence }) => evidence?.files ?? []),
         discovery,
         log: {
+          logId,
           commitId,
           retainedCommits,
           unresolvedCommits: Math.min(unresolved, retainedCommits),

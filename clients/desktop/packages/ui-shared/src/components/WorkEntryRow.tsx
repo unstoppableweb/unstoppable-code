@@ -22,13 +22,13 @@ import {
   type RefObject,
 } from 'react';
 import {
-  DropdownMenuDivider,
+  MenuDivider,
   DEFAULT_MENU_ROW_STYLE,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuRowStyleProvider,
+  MenuItem,
+  MenuItemIcon,
+  MenuRowStyleProvider,
   QUIET_MENU_ROW_STYLE,
-} from '../primitives/DropdownMenu';
+} from '../primitives/MenuItem';
 import {
   SpaceNotificationMenuItems,
   spaceNotificationMenuUnavailable,
@@ -36,10 +36,7 @@ import {
   type SpaceNotificationMenuState,
 } from './SpaceNotificationMenu';
 import { ActionMenuRowStyle } from '../primitives/ActionMenuItems';
-import {
-  FloatingMenu,
-  FloatingMenuPointAnchor,
-} from '../primitives/FloatingMenu';
+import { Menu, MenuPointAnchor } from '../primitives/Menu';
 import { RailIconButton } from './RailIconButton';
 import { SharedWithTeammatesBadge } from './SharedWithTeammatesBadge';
 import {
@@ -844,7 +841,7 @@ function WorkEntryRowImpl({
         : renderMenuItems !== undefined &&
           menuOpen &&
           menuRemoteControlBody !== null && (
-            <WorkEntryRowFloatingMenu
+            <WorkEntryRowMenu
               anchorPoint={menuAnchorPoint}
               menuButtonRef={menuButtonRef}
               returnFocusRef={menuReturnFocusRef}
@@ -854,7 +851,7 @@ function WorkEntryRowImpl({
               testId={testIdFor('-menu-popover')}
             >
               {renderMenuItems(menuContext)}
-            </WorkEntryRowFloatingMenu>
+            </WorkEntryRowMenu>
           )}
       {unreadAnchorRect !== null &&
         hasUnread &&
@@ -1296,7 +1293,7 @@ function WorkEntryRowCompactActions({
   );
 }
 
-interface WorkEntryRowFloatingMenuProps {
+interface WorkEntryRowMenuProps {
   anchorPoint: WorkEntryRowPoint | null;
   menuButtonRef: RefObject<HTMLButtonElement | null>;
   returnFocusRef: RefObject<HTMLElement | null>;
@@ -1313,7 +1310,7 @@ interface WorkEntryRowFloatingMenuProps {
  * or clipped row cannot displace it). No entry motion: this is a
  * high-frequency context menu.
  */
-function WorkEntryRowFloatingMenu({
+function WorkEntryRowMenu({
   anchorPoint,
   menuButtonRef,
   returnFocusRef,
@@ -1322,14 +1319,14 @@ function WorkEntryRowFloatingMenu({
   label,
   testId,
   children,
-}: WorkEntryRowFloatingMenuProps): JSX.Element {
+}: WorkEntryRowMenuProps): JSX.Element {
   const pointAnchorRef = useRef<HTMLSpanElement>(null);
   // Early access: a right-click menu sits 2px off the pointer on both axes,
   // the cursor placement's offset, rather than the button menu's 4px gap.
   const contextMenuPlacement = useContextMenuPlacement();
   const atCursor = anchorPoint !== null && contextMenuPlacement === 'cursor';
   const menu = (
-    <FloatingMenu
+    <Menu
       open
       onOpenChange={(open): void => {
         if (!open) onClose();
@@ -1350,7 +1347,7 @@ function WorkEntryRowFloatingMenu({
       onContextMenu={(event): void => event.preventDefault()}
     >
       {/* Early access: quieter rows (small text, tertiary icons). */}
-      <DropdownMenuRowStyleProvider
+      <MenuRowStyleProvider
         value={
           contextMenuPlacement === 'cursor'
             ? QUIET_MENU_ROW_STYLE
@@ -1358,13 +1355,13 @@ function WorkEntryRowFloatingMenu({
         }
       >
         {children}
-      </DropdownMenuRowStyleProvider>
-    </FloatingMenu>
+      </MenuRowStyleProvider>
+    </Menu>
   );
   if (!anchorPoint) return menu;
   return (
     <>
-      <FloatingMenuPointAnchor
+      <MenuPointAnchor
         ref={pointAnchorRef}
         x={anchorPoint.x}
         y={anchorPoint.y}
@@ -1483,37 +1480,37 @@ export function WorkEntryRowMenuItems({
       )}
       {afterPin}
       {onRename && (
-        <DropdownMenuItem
+        <MenuItem
           onClick={run(onRename)}
           data-testid={menu.testIdFor('-rename')}
         >
-          <DropdownMenuItemIcon>
+          <MenuItemIcon>
             <PencilIcon />
-          </DropdownMenuItemIcon>
+          </MenuItemIcon>
           Rename
-        </DropdownMenuItem>
+        </MenuItem>
       )}
       {onToggleDone && (
-        <DropdownMenuItem
+        <MenuItem
           onClick={run((): void => onToggleDone(done ? 'active' : 'done'))}
           data-testid={menu.testIdFor('-toggle-done')}
         >
-          <DropdownMenuItemIcon>
+          <MenuItemIcon>
             <CheckIcon />
-          </DropdownMenuItemIcon>
+          </MenuItemIcon>
           {done ? 'Mark active' : 'Mark done'}
-        </DropdownMenuItem>
+        </MenuItem>
       )}
       {onShare && (
-        <DropdownMenuItem
+        <MenuItem
           onClick={run(onShare)}
           data-testid={menu.testIdFor('-invite')}
         >
-          <DropdownMenuItemIcon>
+          <MenuItemIcon>
             <ShareIcon />
-          </DropdownMenuItemIcon>
+          </MenuItemIcon>
           Share
-        </DropdownMenuItem>
+        </MenuItem>
       )}
       {notifications && onNotificationChoice && (
         <SpaceNotificationMenuItems
@@ -1523,55 +1520,55 @@ export function WorkEntryRowMenuItems({
         />
       )}
       {menu.onSelectItem && (
-        <DropdownMenuItem
+        <MenuItem
           onClick={run(menu.onSelectItem)}
           data-testid={menu.testIdFor('-select-item')}
         >
-          <DropdownMenuItemIcon>
+          <MenuItemIcon>
             <ListChecks />
-          </DropdownMenuItemIcon>
+          </MenuItemIcon>
           Select multiple
-        </DropdownMenuItem>
+        </MenuItem>
       )}
       {beforeRemoval}
       {/* Archive and Delete end the menu in their own group. */}
       {(hasActionRows || notificationsShown || beforeRemoval !== undefined) &&
-        (onArchive || onDelete) && <DropdownMenuDivider />}
+        (onArchive || onDelete) && <MenuDivider />}
       {autoDelete && onAutoDeleteDisarm && (
-        <DropdownMenuItem
+        <MenuItem
           onClick={run(onAutoDeleteDisarm)}
           data-testid={menu.testIdFor('-auto-delete-disarm')}
         >
           {autoDelete.mode === 'archive'
             ? 'Turn off auto-archive'
             : 'Turn off auto-delete'}
-        </DropdownMenuItem>
+        </MenuItem>
       )}
       {onArchive && (
-        <DropdownMenuItem
+        <MenuItem
           onClick={run(onArchive)}
           disabled={removalDisabled}
           data-testid={menu.testIdFor('-archive')}
           title={removalDisabledReason ?? archiveTitle}
         >
-          <DropdownMenuItemIcon>
+          <MenuItemIcon>
             <ArchiveIcon />
-          </DropdownMenuItemIcon>
+          </MenuItemIcon>
           Archive
-        </DropdownMenuItem>
+        </MenuItem>
       )}
       {onDelete && (
-        <DropdownMenuItem
+        <MenuItem
           onClick={run(onDelete)}
           disabled={removalDisabled}
           data-testid={menu.testIdFor('-delete')}
           title={removalDisabledReason ?? deleteTitle}
         >
-          <DropdownMenuItemIcon>
+          <MenuItemIcon>
             <TrashIcon />
-          </DropdownMenuItemIcon>
+          </MenuItemIcon>
           Delete
-        </DropdownMenuItem>
+        </MenuItem>
       )}
     </ActionMenuRowStyle>
   );

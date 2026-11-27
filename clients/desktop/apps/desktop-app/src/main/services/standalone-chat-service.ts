@@ -22,6 +22,7 @@ import { inputDeliveryViews } from '@canopy/desktop-shared/chat-input-delivery';
 import { newChatPluginDefaultsStamp } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { getChatQueueService } from './chat-queue-service';
+import { resolvePersonalGatewaySendRoute } from '../agents/no-billing-source-refusal';
 import type { BrowserWindow } from 'electron';
 import {
   CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE,
@@ -2096,6 +2097,31 @@ async function sendStandaloneChatMessageOnce(
             providerType:
               getProviderForModel(sendModelPin) ?? request.providerType,
             executionHarness: getExecutionHarnessForModel(sendModelPin),
+          };
+        }
+        // A built-in model this account can't pay for (signed out, no AI
+        // Credits) runs as the same model on the user's Personal AI gateway
+        // instead of being refused, as the worktree send does. Before the
+        // policy and billing gates below, so they judge the model that runs.
+        const gatewayRoute = await resolvePersonalGatewaySendRoute(
+          request.model ?? existingTab?.model,
+          {
+            owner: () =>
+              resolveAiCreditsScopeOwner({
+                kind: 'work',
+                projectId: workspaceId,
+                worktreeId: entryId,
+                chatId: request.chatId,
+              }),
+            projectId: workspaceId,
+          },
+        );
+        if (gatewayRoute) {
+          request = {
+            ...request,
+            model: gatewayRoute.model,
+            providerType: gatewayRoute.providerType ?? request.providerType,
+            executionHarness: gatewayRoute.executionHarness,
           };
         }
         const liveSession = existingTab

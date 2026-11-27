@@ -4,7 +4,7 @@ import {
   WorkflowCreateCluster,
 } from '@canopy/ui-shared/components';
 import { type JSX, useId, useRef, useState } from 'react';
-import { FloatingMenu } from '@canopy/ui-shared';
+import { Menu } from '@canopy/ui-shared';
 import {
   ActionMenuItems,
   ActionMenuRowStyle,
@@ -75,7 +75,7 @@ export function CreatePipelineSplitButton({
       >
         <ChevronDownIcon size="sm" aria-hidden="true" />
       </ControlButton>
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={menuOpen}
         onOpenChange={setMenuOpen}
@@ -105,7 +105,7 @@ export function CreatePipelineSplitButton({
             }}
           />
         </ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
     </WorkflowCreateCluster>
   );
 }

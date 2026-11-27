@@ -33,13 +33,13 @@ import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { Button } from '../../primitives/Button';
 import { copyTextToClipboard } from '../../primitives/copy-to-clipboard';
 import {
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuRowStyleProvider,
+  MenuDivider,
+  MenuItem,
+  MenuItemIcon,
+  MenuRowStyleProvider,
   QUIET_MENU_ROW_STYLE,
-} from '../../primitives/DropdownMenu';
-import { FLOATING_MENU_GAP, FloatingMenu } from '../../primitives/FloatingMenu';
+} from '../../primitives/MenuItem';
+import { MENU_GAP, Menu } from '../../primitives/Menu';
 import { Tooltip } from '../../primitives/Tooltip';
 import {
   useDoubleClickToEdit,
@@ -363,19 +363,19 @@ function QueuedMessageMoreMenu({
           <MoreHorizontalIcon size={16} aria-hidden="true" />
         </Button>
       </Tooltip>
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={open}
         onOpenChange={setOpen}
         anchorRef={triggerRef}
         placement="bottom-right"
-        gap={FLOATING_MENU_GAP}
+        gap={MENU_GAP}
         interaction="menu"
         aria-label="More actions"
         data-testid="queued-message-more-menu"
         className="w-max min-w-44"
       >
-        <DropdownMenuRowStyleProvider value={QUIET_MENU_ROW_STYLE}>
+        <MenuRowStyleProvider value={QUIET_MENU_ROW_STYLE}>
           {unavailableReason ? (
             <p
               data-testid="queued-message-more-unavailable"
@@ -388,8 +388,8 @@ function QueuedMessageMoreMenu({
             const ItemIcon = item.icon;
             return (
               <Fragment key={item.id}>
-                {item.destructive && index > 0 ? <DropdownMenuDivider /> : null}
-                <DropdownMenuItem
+                {item.destructive && index > 0 ? <MenuDivider /> : null}
+                <MenuItem
                   data-testid={`queued-message-${item.id}`}
                   tone={item.destructive ? 'destructive' : 'default'}
                   disabled={unavailableReason !== undefined || item.disabled}
@@ -400,20 +400,20 @@ function QueuedMessageMoreMenu({
                     else item.onSelect();
                   }}
                 >
-                  <DropdownMenuItemIcon>
+                  <MenuItemIcon>
                     <ItemIcon
                       size="sm"
                       drawnStrokeWidth={ROW_ICON_STROKE_PX}
                       aria-hidden="true"
                     />
-                  </DropdownMenuItemIcon>
+                  </MenuItemIcon>
                   {item.label}
-                </DropdownMenuItem>
+                </MenuItem>
               </Fragment>
             );
           })}
-        </DropdownMenuRowStyleProvider>
-      </FloatingMenu>
+        </MenuRowStyleProvider>
+      </Menu>
     </>
   );
 }

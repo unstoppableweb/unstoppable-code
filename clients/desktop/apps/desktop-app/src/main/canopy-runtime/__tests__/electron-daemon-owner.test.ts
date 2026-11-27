@@ -136,7 +136,7 @@ describe('Electron daemon owner session (CAN-5771)', () => {
     expect(mockServiceOptions[0]).not.toHaveProperty('onReachability');
   });
 
-  it('the owner session declares only the lease, runtime reads, the host request channel, the fence publish, the write activity stream, the definitions import (CAN-7523) and the operation ledger (CAN-6986 L3)', () => {
+  it('the owner session declares only the lease, runtime reads, the host request channel, the fence publish, the write activity stream, the definitions import (CAN-7523), the operation ledger (CAN-6986 L3) and the preferences document owner writes (CAN-7991)', () => {
     expect(
       Object.keys(ELECTRON_DAEMON_OWNER_DEFINITIONS.queries).sort(),
     ).toEqual(
@@ -153,6 +153,8 @@ describe('Electron daemon owner session (CAN-5771)', () => {
         'core.mutationFence.publish',
         'worker.pipeline.hostRequest.respond',
         'core.pipeline.definition.import',
+        'core.config.document.ownerUpdate',
+        'core.config.loadError.acknowledge',
         ...Object.keys(CORE_OPERATION_LEDGER_INSTRUCTION_DEFINITIONS),
       ].sort(),
     );

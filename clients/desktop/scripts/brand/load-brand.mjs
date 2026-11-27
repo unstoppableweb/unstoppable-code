@@ -63,6 +63,66 @@ function validateHttpsUrl(value, label) {
   }
 }
 
+// Kept in step with the manifest validator in packages/protocol/src/brand.ts.
+const EMAIL_ADDRESS_PATTERN = /^[^\s@<>()]+@[^\s@<>()]+\.[^\s@<>()]+$/;
+const HOMEBREW_CASK_PATTERN =
+  /^[a-z0-9][a-z0-9_.-]*\/[a-z0-9][a-z0-9_.-]*\/[a-z0-9][a-z0-9_.-]*$/;
+const ANDROID_PACKAGE_PATTERN =
+  /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
+const SHA256_FINGERPRINT_PATTERN = /^[0-9A-F]{2}(:[0-9A-F]{2}){31}$/;
+const HOSTNAME_PATTERN =
+  /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+
+/**
+ * Android Digital Asset Links (CAN-7958): package, certificate fingerprints
+ * and app-link hosts are declared together or not at all.
+ */
+function validateAndroidAppLinks(mobileApps) {
+  const { androidPackage, androidCertFingerprints, androidAppLinkHosts } =
+    mobileApps;
+  const declared = [
+    androidPackage,
+    androidCertFingerprints,
+    androidAppLinkHosts,
+  ].filter((value) => value !== undefined).length;
+  if (declared === 0) return;
+  if (declared !== 3) {
+    throw new Error(
+      'web.mobileApps.androidPackage, androidCertFingerprints and androidAppLinkHosts must be declared together',
+    );
+  }
+  if (
+    typeof androidPackage !== 'string' ||
+    !ANDROID_PACKAGE_PATTERN.test(androidPackage)
+  ) {
+    throw new Error(
+      'web.mobileApps.androidPackage must be an Android application id',
+    );
+  }
+  assertArrayOfStrings(
+    androidCertFingerprints,
+    'web.mobileApps.androidCertFingerprints',
+  );
+  if (
+    androidCertFingerprints.some(
+      (entry) => !SHA256_FINGERPRINT_PATTERN.test(entry),
+    )
+  ) {
+    throw new Error(
+      'web.mobileApps.androidCertFingerprints must be upper-case colon-separated SHA-256 fingerprints',
+    );
+  }
+  assertArrayOfStrings(
+    androidAppLinkHosts,
+    'web.mobileApps.androidAppLinkHosts',
+  );
+  if (androidAppLinkHosts.some((entry) => !HOSTNAME_PATTERN.test(entry))) {
+    throw new Error(
+      'web.mobileApps.androidAppLinkHosts must be lower-case hostnames',
+    );
+  }
+}
+
 /**
  * Origin used only to resolve a candidate root-relative href. Never fetched,
  * never rendered; `.invalid` is reserved by RFC 2606 so it can never resolve.
@@ -557,6 +617,20 @@ export function loadBrand(brandId, options = {}) {
     if (appStoreUrl === undefined && playStoreUrl === undefined) {
       throw new Error('web.mobileApps must declare at least one store URL');
     }
+    validateAndroidAppLinks(manifest.web.mobileApps);
+  }
+
+  // Contact addresses (CAN-7958). Optional and additive like copyrightHolder;
+  // outside `marketing` because Terms and Privacy render without it.
+  for (const field of ['supportEmail', 'legalEmail', 'privacyEmail']) {
+    const value = manifest.web[field];
+    if (value === undefined) continue;
+    if (typeof value !== 'string' || !EMAIL_ADDRESS_PATTERN.test(value)) {
+      throw new Error(`web.${field} must be an email address when provided`);
+    }
+  }
+  if (manifest.web.demoUrl !== undefined) {
+    validateHttpsUrl(manifest.web.demoUrl, 'web.demoUrl');
   }
 
   let normalizedMarketing;
@@ -684,6 +758,33 @@ export function loadBrand(brandId, options = {}) {
           `web.marketing.socialLinks[${conflictIndex}].label must not be "${SOURCE_CODE_FOOTER_LABEL}" when web.marketing.sourceRepository is declared: the footer appends its own "${SOURCE_CODE_FOOTER_LABEL}" link`,
         );
       }
+    }
+
+    // Canonical marketing origin (CAN-7958). Optional and additive: without
+    // it nothing redirects to a marketing apex and the support silo uses the
+    // request origin. A value must be a bare https origin.
+    if (marketing.canonicalOrigin !== undefined) {
+      validateHttpsUrl(
+        marketing.canonicalOrigin,
+        'web.marketing.canonicalOrigin',
+      );
+      if (
+        !URL.canParse(marketing.canonicalOrigin) ||
+        new URL(marketing.canonicalOrigin).origin !== marketing.canonicalOrigin
+      ) {
+        throw new Error(
+          'web.marketing.canonicalOrigin must be an https origin with no path or trailing slash',
+        );
+      }
+    }
+    if (
+      marketing.homebrewCask !== undefined &&
+      (typeof marketing.homebrewCask !== 'string' ||
+        !HOMEBREW_CASK_PATTERN.test(marketing.homebrewCask))
+    ) {
+      throw new Error(
+        'web.marketing.homebrewCask must name a cask as <owner>/<tap>/<cask>',
+      );
     }
 
     normalizedMarketing = { ...marketing, copyrightHolder };

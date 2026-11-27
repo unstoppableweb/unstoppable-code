@@ -13,7 +13,7 @@ import { getPipelinePluginDefaultKey } from '@canopy/execution-engine/pipelines/
 import { parseJsonInputValue } from './pipelineTriggerInputs';
 
 /** The step whose "Send as" a workflow chooses (CAN-7186). */
-export const SEND_AGENT_MESSAGE_USES = 'builtin/send-agent-message';
+const SEND_AGENT_MESSAGE_USES = 'builtin/send-agent-message';
 
 /** The collection a send step with no selections of its own is given. */
 const SEND_AS_COLLECTION_ID = 'send_as';

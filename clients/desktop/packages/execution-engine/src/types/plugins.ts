@@ -423,10 +423,14 @@ export interface PluginsAPI {
     componentFile: string,
     mode?: 'catalog-checkout',
   ): Promise<IPCResult<PluginComponentContent & { truncated?: true }>>;
-  /** Customize's light preview of a catalog plugin not added yet. */
+  /**
+   * Customize's light preview of a catalog plugin not added yet. `retry`
+   * reads a failed preview again instead of its brief cached failure.
+   */
   previewManifest(
     marketplaceId: string,
     pluginName: string,
+    options?: { readonly retry?: boolean },
   ): Promise<IPCResult<PluginManifestPreviewResult>>;
   installPlugin(
     marketplaceId: string,

@@ -1268,6 +1268,28 @@ describe('plugin manifest preview (spec 3b)', () => {
     expect(fetchMock.mock.calls.length).toBe(calls);
   });
 
+  it('reads afresh on Try again after a remembered failure (CAN-7857)', async () => {
+    const treeUrl = `https://api.github.com/repos/acme/review/git/trees/${SHA}?recursive=1`;
+    routes[treeUrl] = (): Response => new Response('busy', { status: 502 });
+    const read = (options?: unknown): unknown =>
+      handler(PLUGINS_CHANNELS.PREVIEW_MANIFEST)('acme', 'review', options);
+    expect(await read()).toMatchObject({ data: { ok: false } });
+    routes[treeUrl] = tree(['.claude-plugin/plugin.json', 'commands/check.md']);
+    routes[
+      `https://raw.githubusercontent.com/acme/review/${SHA}/.claude-plugin/plugin.json`
+    ] = json({ name: 'review' });
+    plainMembers(`https://raw.githubusercontent.com/acme/review/${SHA}`, [
+      'commands/check.md',
+    ]);
+    // An ordinary read keeps the failure for its lifetime.
+    expect(await read()).toMatchObject({ data: { ok: false } });
+    expect(previewOf(await read({ retry: true })).commands).toEqual(['check']);
+    // A remembered success is kept: retrying it sends nothing.
+    const calls = fetchMock.mock.calls.length;
+    await read({ retry: true });
+    expect(fetchMock.mock.calls.length).toBe(calls);
+  });
+
   it('keeps derived harnesses unknown when hooks and MCP servers are listed', async () => {
     routes[
       `https://api.github.com/repos/acme/hooked/git/trees/${HEAD_SHA}?recursive=1`
@@ -1960,8 +1982,9 @@ describe('plugin manifest preview (spec 3b)', () => {
       ...skills.map((name) => `skills/${name}/SKILL.md`),
       ...configs,
     ]);
-    // The manifest, which is no optional read, answers once the README and
-    // the descriptions are out, so its configs queue behind them.
+    // The manifest, which is no optional read, answers first: descriptions
+    // wait for it to show which folders are read, and its configs queue with
+    // them behind the README.
     const manifestGate = Promise.withResolvers<Response>();
     routes[`${raw}/.claude-plugin/plugin.json`] = (): Promise<Response> =>
       manifestGate.promise;
@@ -2002,8 +2025,6 @@ describe('plugin manifest preview (spec 3b)', () => {
         settled = true;
       }
     })();
-    await sixStarted.promise;
-    await new Promise<void>((resolve) => setImmediate(resolve));
     manifestGate.resolve(
       new Response(
         JSON.stringify({
@@ -2012,6 +2033,8 @@ describe('plugin manifest preview (spec 3b)', () => {
         }),
       ),
     );
+    await sixStarted.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
     // Answer the held reads one at a time, oldest first, until all are done.
     while (!settled) {
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -2037,8 +2060,8 @@ describe('plugin manifest preview (spec 3b)', () => {
       '.mcp.json',
       ...skills.map((name) => `skills/${name}/SKILL.md`),
     ]);
-    // The manifest answers once every description is queued; each
-    // description is held until the test answers it, slowest first.
+    // Descriptions start once the manifest answers; each is held until the
+    // test answers it, slowest first.
     const manifestGate = Promise.withResolvers<Response>();
     routes[`${raw}/.claude-plugin/plugin.json`] = (): Promise<Response> =>
       manifestGate.promise;
@@ -2076,8 +2099,8 @@ describe('plugin manifest preview (spec 3b)', () => {
         settled = true;
       }
     })();
-    await sixStarted.promise;
     manifestGate.resolve(new Response(JSON.stringify({ name: 'review' })));
+    await sixStarted.promise;
     // The config is now waiting behind six held descriptions and 34 queued.
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(startedBeforeConfig).toBeUndefined();
@@ -2658,6 +2681,78 @@ describe('plugin manifest preview (spec 3b)', () => {
     expect(read.commands).toEqual(['.md', 'check']);
     expect(read.agents).toEqual(['.md']);
     expect(read.descriptions).toEqual({ 'command:check': 'Checks.' });
+    // One row stands for two members, so the read is partial.
+    expect(read.partial).toBe(true);
+  });
+
+  it('marks partial two app files with one front-matter name (CAN-7857)', async () => {
+    const raw = `https://raw.githubusercontent.com/acme/review/${SHA}`;
+    routes[
+      `https://api.github.com/repos/acme/review/git/trees/${SHA}?recursive=1`
+    ] = tree(['.claude-plugin/plugin.json', 'apps/board.md', 'apps/copy.md']);
+    routes[`${raw}/.claude-plugin/plugin.json`] = json({ name: 'review' });
+    for (const path of ['apps/board.md', 'apps/copy.md'])
+      routes[`${raw}/${path}`] = (): Response =>
+        new Response('---\nname: Team Board\n---\n');
+    // The installed scan lists both files; the preview's one row cannot.
+    const read = previewOf(
+      await handler(PLUGINS_CHANNELS.PREVIEW_MANIFEST)('acme', 'review'),
+    );
+    expect(read.apps).toEqual(['Team Board']);
+    expect(read.partial).toBe(true);
+  });
+
+  it('marks partial a Mod or LSP server name two definitions share (CAN-7857)', async () => {
+    const raw = `https://raw.githubusercontent.com/acme/review/${SHA}`;
+    const treeUrl = `https://api.github.com/repos/acme/review/git/trees/${SHA}?recursive=1`;
+    const read = async (): Promise<ReturnType<typeof previewOf>> => {
+      resetPluginManifestPreviewCache();
+      return previewOf(
+        await handler(PLUGINS_CHANNELS.PREVIEW_MANIFEST)('acme', 'review'),
+      );
+    };
+    // Two LSP configs define gopls with different commands: the installed
+    // scan lists both definitions, the preview's one row cannot.
+    routes[treeUrl] = tree([
+      '.claude-plugin/plugin.json',
+      'a.lsp.json',
+      'b.lsp.json',
+    ]);
+    routes[`${raw}/.claude-plugin/plugin.json`] = json({
+      name: 'review',
+      lspServers: ['./a.lsp.json', './b.lsp.json'],
+    });
+    routes[`${raw}/a.lsp.json`] = json({ gopls: { command: 'gopls' } });
+    routes[`${raw}/b.lsp.json`] = json({ gopls: { command: 'gopls-next' } });
+    const lsp = await read();
+    expect(lsp.lspServers).toEqual(['gopls']);
+    expect(lsp.partial).toBe(true);
+    // Same name and command, args the installed scan keeps as `serve` and
+    // `version` but the inventory drops for their non-string entry.
+    routes[`${raw}/a.lsp.json`] = json({
+      gopls: { command: 'gopls', args: ['serve', 1] },
+    });
+    routes[`${raw}/b.lsp.json`] = json({
+      gopls: { command: 'gopls', args: ['version', 1] },
+    });
+    const dropped = await read();
+    expect(dropped.lspServers).toEqual(['gopls']);
+    expect(dropped.partial).toBe(true);
+    // Two hooks files declare one Mod: two installed rows, one name.
+    routes[treeUrl] = tree([
+      '.claude-plugin/plugin.json',
+      'hooks/hooks.json',
+      'extra-hooks.json',
+    ]);
+    routes[`${raw}/.claude-plugin/plugin.json`] = json({
+      name: 'review',
+      hooks: './extra-hooks.json',
+    });
+    routes[`${raw}/hooks/hooks.json`] = json({ modules: ['guard'] });
+    routes[`${raw}/extra-hooks.json`] = json({ modules: ['guard'] });
+    const mods = await read();
+    expect(mods.mods).toEqual(['guard']);
+    expect(mods.partial).toBe(true);
   });
 
   it('counts a member file named only .md, as the installed readers do (CAN-7545)', async () => {

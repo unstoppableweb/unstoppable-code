@@ -7,6 +7,7 @@ import {
   useSyncExternalStore,
   type JSX,
 } from 'react';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import type { NativeAiCreditsAvailability } from '@canopy/desktop-shared/types';
 import {
@@ -181,7 +182,16 @@ interface AiCreditsUsageLimitBannerProps {
  * a spendable balance makes it usable, an organization member with no
  * headroom is pointed at the admin, and anyone else can buy credits there.
  */
-export function AiCreditsUsageLimitBanner({
+export function AiCreditsUsageLimitBanner(
+  props: AiCreditsUsageLimitBannerProps,
+): JSX.Element | null {
+  if (props.target !== null && isPairedComputerId(props.target.projectId)) {
+    return null;
+  }
+  return <AiCreditsUsageLimitBannerContent {...props} />;
+}
+
+function AiCreditsUsageLimitBannerContent({
   target,
   onUseJustThisTime,
   onUseCreditsForThisChat,

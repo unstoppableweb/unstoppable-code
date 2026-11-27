@@ -88,7 +88,15 @@ function ChangeAccountButton({
  * Check again in this row. With credits, Change account signs in again in
  * the browser, as on the Claude and Codex rows.
  */
-export function FirstRunAccountRowHost(): JSX.Element {
+export function FirstRunAccountRowHost({
+  onAction,
+}: {
+  /**
+   * The user picked this row's way to pay: `connect` (sign in) or `buy`
+   * (a purchase hand-off started). For the billing setup gate's analytics.
+   */
+  readonly onAction?: (action: 'connect' | 'buy') => void;
+} = {}): JSX.Element {
   // The one account source, so the dot, the email and the action agree. The
   // page has no key field, so nothing is saved on unmount.
   const auth = useCanopyCloudAuth({
@@ -177,13 +185,14 @@ export function FirstRunAccountRowHost(): JSX.Element {
         // proceeds without a modal when its own read finds a real account
         // this row's read missed, so re-read rather than do nothing; the gate
         // confirmed that account, so it is not an identity change.
-        onClick={(): void =>
+        onClick={(): void => {
+          onAction?.('connect');
           useCloudConnectGateStore
             .getState()
             .requestConnect({}, () =>
               announceCanopyCloudAccountChanged('same-account-refresh'),
-            )
-        }
+            );
+        }}
         data-testid="first-run-account-action"
       >
         {FIRST_RUN_ACCOUNT_CONNECT_LABEL}
@@ -227,7 +236,11 @@ export function FirstRunAccountRowHost(): JSX.Element {
           // Always the browser, so the wait and Check again stay on this page
           // instead of leaving it for Settings.
           billingDestination="browser"
-          onHandoffChange={setHandoff}
+          onHandoffChange={(next): void => {
+            // A purchase hand-off starting is the Buy click.
+            if (next !== null && handoff === null) onAction?.('buy');
+            setHandoff(next);
+          }}
           dataTestId="first-run-account-action"
         />
       </span>

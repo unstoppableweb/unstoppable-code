@@ -21,6 +21,7 @@ export type FileSetBackupErrorCode =
   | 'BACKUP_UNVERIFIED'
   | 'NOT_QUIESCED'
   | 'NEWER_STATE'
+  | 'OWNER_RECORD'
   | 'NOT_REQUIRED_BEFORE_FLIP';
 
 export class FileSetBackupError extends Error {

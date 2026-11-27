@@ -372,7 +372,8 @@ export const STORAGE_OWNERSHIP = [
     "workPackage": "W5",
     "backupShape": "namespace_backup",
     "admittedWriters": [
-      "main/lib/preferences-store"
+      "main/lib/preferences-store",
+      "packages/core-runtime/src/node/preferences/daemon-document.ts"
     ]
   },
   {

@@ -24,13 +24,10 @@ import {
 } from '../lib/menu-open-body-flag';
 import { createPortal, flushSync } from 'react-dom';
 import { getDocument, getWindow } from '../lib/window-registry';
-import {
-  DropdownMenuSurface,
-  type DropdownMenuSurfaceProps,
-} from './DropdownMenu';
+import { MenuSurface, type MenuSurfaceProps } from './MenuItem';
 import { OverlayScrollArea } from './OverlayScrollArea';
 
-export type FloatingMenuPlacement =
+export type MenuPlacement =
   | 'top-left'
   | 'top-center'
   | 'top-right'
@@ -38,10 +35,10 @@ export type FloatingMenuPlacement =
   | 'bottom-center'
   | 'bottom-right';
 
-type FloatingMenuSide = 'top' | 'bottom';
-type FloatingMenuAlignment = 'left' | 'center' | 'right';
+type MenuSide = 'top' | 'bottom';
+type MenuAlignment = 'left' | 'center' | 'right';
 
-export interface FloatingMenuPositionInput {
+export interface MenuPositionInput {
   readonly anchorRect: Pick<
     DOMRect,
     'top' | 'right' | 'bottom' | 'left' | 'width'
@@ -50,18 +47,18 @@ export interface FloatingMenuPositionInput {
   readonly menuHeight: number;
   readonly viewportWidth: number;
   readonly viewportHeight: number;
-  readonly placement: FloatingMenuPlacement;
+  readonly placement: MenuPlacement;
   readonly allowFlip?: boolean;
   readonly preserveHeightOnCollision?: boolean;
   readonly gap?: number;
   readonly viewportPadding?: number;
 }
 
-export interface FloatingMenuPosition {
+export interface MenuPosition {
   readonly top: number;
   readonly left: number;
   readonly maxHeight: number;
-  readonly placement: FloatingMenuPlacement;
+  readonly placement: MenuPlacement;
   readonly transformOrigin: string;
 }
 
@@ -70,10 +67,7 @@ interface FocusWithoutRingOptions extends FocusOptions {
   readonly focusVisible?: boolean;
 }
 
-export interface FloatingMenuProps extends Omit<
-  DropdownMenuSurfaceProps,
-  'children'
-> {
+export interface MenuProps extends Omit<MenuSurfaceProps, 'children'> {
   /** Disable when a composite owns trigger keys and anchors on a larger surface. */
   readonly openOnArrowKeys?: boolean;
   readonly open: boolean;
@@ -96,7 +90,7 @@ export interface FloatingMenuProps extends Omit<
    * Defaults to `anchorRef`.
    */
   readonly returnFocusRef?: RefObject<HTMLElement | null>;
-  readonly placement?: FloatingMenuPlacement;
+  readonly placement?: MenuPlacement;
   readonly allowFlip?: boolean;
   /** Keep an unscrollable row visible when neither side fits, overlapping the anchor if needed. */
   readonly preserveHeightOnCollision?: boolean;
@@ -204,9 +198,9 @@ export interface FloatingMenuProps extends Omit<
    * Open at this point (a right-click's coordinates, in the anchor window's
    * viewport) instead of beside the anchor's box. `anchorRef` still names
    * the window, the outside-press boundary and the focus fallback; pair it
-   * with a `FloatingMenuPointAnchor` at the same point.
+   * with a `MenuPointAnchor` at the same point.
    */
-  readonly anchorPoint?: FloatingMenuPoint;
+  readonly anchorPoint?: MenuPoint;
   /**
    * The current viewport rectangle for a virtual anchor such as a text
    * selection. A supplied point takes precedence. The anchor ref still
@@ -234,10 +228,10 @@ export interface FloatingMenuProps extends Omit<
    * `onOpenChange`.
    */
   readonly closeOnOutsidePress?: boolean;
-  readonly children: DropdownMenuSurfaceProps['children'];
+  readonly children: MenuSurfaceProps['children'];
 }
 
-export interface FloatingMenuPoint {
+export interface MenuPoint {
   readonly x: number;
   readonly y: number;
 }
@@ -254,15 +248,15 @@ export function floatingSurfaceAnchor(surface: Element): Element | null {
   return SURFACE_ANCHORS.get(surface) ?? null;
 }
 
-export const FLOATING_MENU_GAP = 4;
-export const FLOATING_PICKER_GAP = 8;
+export const MENU_GAP = 4;
+export const PICKER_GAP = 8;
 /**
  * The chat composer's settings row: menus opened from the row under the box
  * (permission, model, effort, usage) sit 4px above their trigger, so they
  * overlap the box's lower edge rather than floating clear of it.
  */
 export const COMPOSER_ROW_MENU_GAP = 4;
-export const FLOATING_MENU_VIEWPORT_PADDING = 8;
+export const MENU_VIEWPORT_PADDING = 8;
 
 const MENU_ITEM_SELECTOR = [
   '[role="menuitem"]',
@@ -270,21 +264,18 @@ const MENU_ITEM_SELECTOR = [
   '[role="menuitemradio"]',
 ].join(',');
 const LISTBOX_ITEM_SELECTOR = '[role="option"]';
-function splitPlacement(placement: FloatingMenuPlacement): {
-  side: FloatingMenuSide;
-  alignment: FloatingMenuAlignment;
+function splitPlacement(placement: MenuPlacement): {
+  side: MenuSide;
+  alignment: MenuAlignment;
 } {
-  const [side, alignment] = placement.split('-') as [
-    FloatingMenuSide,
-    FloatingMenuAlignment,
-  ];
+  const [side, alignment] = placement.split('-') as [MenuSide, MenuAlignment];
   return { side, alignment };
 }
 
 function placementName(
-  side: FloatingMenuSide,
-  alignment: FloatingMenuAlignment,
-): FloatingMenuPlacement {
+  side: MenuSide,
+  alignment: MenuAlignment,
+): MenuPlacement {
   return `${side}-${alignment}`;
 }
 
@@ -292,9 +283,9 @@ function nearestAlignment(
   anchorPoint: number,
   menuLeft: number,
   menuWidth: number,
-): FloatingMenuAlignment {
+): MenuAlignment {
   const candidates: ReadonlyArray<{
-    alignment: FloatingMenuAlignment;
+    alignment: MenuAlignment;
     point: number;
   }> = [
     { alignment: 'left', point: menuLeft },
@@ -309,7 +300,7 @@ function nearestAlignment(
   ).alignment;
 }
 
-function transformOriginForPlacement(placement: FloatingMenuPlacement): string {
+function transformOriginForPlacement(placement: MenuPlacement): string {
   const { side, alignment } = splitPlacement(placement);
   return `${side === 'bottom' ? 'top' : 'bottom'} ${alignment}`;
 }
@@ -322,7 +313,7 @@ function transformOriginForPlacement(placement: FloatingMenuPlacement): string {
  * resolves the closest left/center/right anchor so entry motion grows from the
  * final collision-adjusted attachment point.
  */
-export function computeFloatingMenuPosition({
+export function computeMenuPosition({
   anchorRect,
   menuWidth,
   menuHeight,
@@ -331,9 +322,9 @@ export function computeFloatingMenuPosition({
   placement,
   allowFlip = true,
   preserveHeightOnCollision = false,
-  gap = FLOATING_MENU_GAP,
-  viewportPadding = FLOATING_MENU_VIEWPORT_PADDING,
-}: FloatingMenuPositionInput): FloatingMenuPosition {
+  gap = MENU_GAP,
+  viewportPadding = MENU_VIEWPORT_PADDING,
+}: MenuPositionInput): MenuPosition {
   const preferred = splitPlacement(placement);
   const availableTop = Math.max(0, anchorRect.top - gap - viewportPadding);
   const availableBottom = Math.max(
@@ -409,7 +400,7 @@ function viewportAnchorRect(
   top: number,
   width: number,
   height: number,
-): FloatingMenuPositionInput['anchorRect'] {
+): MenuPositionInput['anchorRect'] {
   return { top, bottom: top + height, left, right: left + width, width };
 }
 
@@ -461,8 +452,9 @@ function focusMenuItem(item: HTMLElement | undefined): void {
  * outside/Escape/Tab dismissal, and roving menu focus. Callers own only the
  * controlled open state, trigger markup, menu width, and action contents.
  */
-export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
-  function FloatingMenu(
+export const Menu = forwardRef<HTMLDivElement, MenuProps>(
+  // `ref` is the portaled surface element, the menu's `MenuSurface`.
+  function Menu(
     {
       open,
       onOpenChange,
@@ -473,8 +465,8 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       placement = 'bottom-left',
       allowFlip = true,
       preserveHeightOnCollision = false,
-      gap = FLOATING_MENU_GAP,
-      viewportPadding = FLOATING_MENU_VIEWPORT_PADDING,
+      gap = MENU_GAP,
+      viewportPadding = MENU_VIEWPORT_PADDING,
       heightLimit,
       sizing = 'content',
       closeOnSelect = true,
@@ -508,7 +500,7 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
     const menuId = idProp ?? generatedId;
     const menuRef = useRef<HTMLDivElement | null>(null);
     const scrollViewportRef = useRef<HTMLDivElement | null>(null);
-    const [position, setPosition] = useState<FloatingMenuPosition | null>(null);
+    const [position, setPosition] = useState<MenuPosition | null>(null);
     const initialItemFocusRef = useRef<'first' | 'last'>('first');
     const focusedForOpenRef = useRef(false);
     const typeaheadRef = useRef({ value: '', at: 0 });
@@ -586,7 +578,7 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
         ? scrollViewport.scrollHeight +
           Math.max(0, menu.offsetHeight - scrollViewport.clientHeight)
         : Math.max(menu.scrollHeight, menu.offsetHeight);
-      const next = computeFloatingMenuPosition({
+      const next = computeMenuPosition({
         anchorRect,
         menuWidth,
         menuHeight: Math.min(
@@ -1088,7 +1080,7 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
           pointerEvents: 'none',
         };
     const menu = (
-      <DropdownMenuSurface
+      <MenuSurface
         {...props}
         shell={
           sizing === 'content' &&
@@ -1146,7 +1138,7 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
         ) : (
           children
         )}
-      </DropdownMenuSurface>
+      </MenuSurface>
     );
 
     return createPortal(
@@ -1156,9 +1148,9 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
   },
 );
 
-FloatingMenu.displayName = 'FloatingMenu';
+Menu.displayName = 'Menu';
 
-export interface FloatingMenuPointAnchorProps {
+export interface MenuPointAnchorProps {
   /** Pointer position in the owner window's viewport, from the event. */
   readonly x: number;
   readonly y: number;
@@ -1176,15 +1168,15 @@ export interface FloatingMenuPointAnchorProps {
 
 /**
  * The anchor for a right-click menu: a zero-size point at the pointer, in
- * the window the click came from. Pass its ref as the `FloatingMenu`'s
+ * the window the click came from. Pass its ref as the `Menu`'s
  * `anchorRef`, so the menu opens at the pointer with the menu's own
  * placement, collision, dismissal and focus return, instead of a
  * hand-portalled anchor.
  */
-export const FloatingMenuPointAnchor = forwardRef<
+export const MenuPointAnchor = forwardRef<
   HTMLSpanElement,
-  FloatingMenuPointAnchorProps
->(function FloatingMenuPointAnchor(
+  MenuPointAnchorProps
+>(function MenuPointAnchor(
   { x, y, width = 0, height = 0, ownerDocument, 'data-testid': dataTestId },
   ref,
 ): JSX.Element {

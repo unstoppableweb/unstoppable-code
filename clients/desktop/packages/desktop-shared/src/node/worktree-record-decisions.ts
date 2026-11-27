@@ -14,6 +14,7 @@ import type {
   SidebarItem,
   SidebarItemsFile,
   SingleRepoSidebarItem,
+  WorkspaceConfigFile,
   WorktreeCreationIdentity,
   WorktreeData,
   WorktreeHealthIssue,
@@ -37,6 +38,11 @@ export interface DesktopW5LifecycleTypes extends W5LifecycleTypes {
   readonly worktree: WorktreeData;
   readonly creationPhase: WorktreeCreationIdentity['phase'];
   readonly healthIssue: WorktreeHealthIssue;
+}
+
+/** The desktop's create orchestration vocabulary (CAN-4096 C1). */
+export interface DesktopWorkspaceCreateTypes extends DesktopW5LifecycleTypes {
+  readonly repos: WorkspaceConfigFile['repos'];
 }
 
 export type WorktreeIncarnation = CoreWorktreeIncarnation<WorktreeData, 'id'>;

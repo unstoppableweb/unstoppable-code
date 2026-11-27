@@ -1046,6 +1046,7 @@ describe('cold metadata adoption policy', () => {
       ],
       discovery: 'not-requested',
       log: {
+        logId: '00000000-0000-4000-8000-000000000001',
         commitId: 1,
         retainedCommits: 1,
         unresolvedCommits: 0,

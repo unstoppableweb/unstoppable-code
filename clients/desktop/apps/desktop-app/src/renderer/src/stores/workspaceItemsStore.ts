@@ -9,6 +9,7 @@
  * `main/ipc/workspace-items.ts`) — this store is storage-agnostic.
  */
 import { create } from 'zustand';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import {
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
@@ -141,11 +142,12 @@ export const useWorkspaceItemsStore = create<WorkspaceItemsState>(
     loadNotes: async (projectId, worktreeId): Promise<void> => {
       try {
         // Notes live in a local workspace; a cloud project has none here.
-        const items = isWebCoreScope(projectId)
-          ? []
-          : await window.api.workspaceItems.listNotes(
-              itemsScope(projectId, worktreeId),
-            );
+        const items =
+          isWebCoreScope(projectId) || isPairedComputerId(projectId)
+            ? []
+            : await window.api.workspaceItems.listNotes(
+                itemsScope(projectId, worktreeId),
+              );
         const key = workspaceItemsKey(projectId, worktreeId);
         set((state) =>
           isSameListing(state.notes[key], items)
@@ -193,11 +195,12 @@ export const useWorkspaceItemsStore = create<WorkspaceItemsState>(
     loadPrompts: async (projectId, worktreeId): Promise<void> => {
       try {
         // Prompts live in a local workspace; a cloud project has none here.
-        const items = isWebCoreScope(projectId)
-          ? []
-          : await window.api.workspaceItems.listPrompts(
-              itemsScope(projectId, worktreeId),
-            );
+        const items =
+          isWebCoreScope(projectId) || isPairedComputerId(projectId)
+            ? []
+            : await window.api.workspaceItems.listPrompts(
+                itemsScope(projectId, worktreeId),
+              );
         const key = workspaceItemsKey(projectId, worktreeId);
         set((state) =>
           isSameListing(state.prompts[key], items)
@@ -248,6 +251,7 @@ export const useWorkspaceItemsStore = create<WorkspaceItemsState>(
       isCurrent,
     ): Promise<void> => {
       if (isCurrent?.() === false) return;
+      if (isPairedComputerId(projectId)) return;
       const key = attachmentsKey(projectId, worktreeId);
       const listing = (askedAttachmentListings.get(key) ?? 0) + 1;
       askedAttachmentListings.set(key, listing);

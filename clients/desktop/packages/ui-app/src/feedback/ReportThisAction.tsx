@@ -22,6 +22,11 @@ export interface ReportThisActionProps {
   /** Session links read when the error happened. */
   readonly telemetry?: FeedbackReportTelemetry;
   readonly size?: ButtonSize;
+  /**
+   * `ghost` beside a retry in a notice or toast. `secondary` beside the
+   * primary recovery of a caught render failure.
+   */
+  readonly variant?: 'ghost' | 'secondary';
 }
 
 /**
@@ -116,6 +121,7 @@ function ReportThisButton({
   appName,
   telemetry,
   size = 'sm',
+  variant = 'ghost',
 }: ReportThisActionProps): JSX.Element | null {
   const canReport = useCanReportError(error);
   // Set while open: a popped-out panel's form belongs in that panel's window.
@@ -125,7 +131,7 @@ function ReportThisButton({
     <>
       <Button
         type="button"
-        variant="ghost"
+        variant={variant}
         size={size}
         aria-haspopup="dialog"
         onClick={(event): void => setOpenIn(event.currentTarget.ownerDocument)}

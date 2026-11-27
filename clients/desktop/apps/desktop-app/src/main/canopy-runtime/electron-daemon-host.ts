@@ -57,6 +57,8 @@ import {
   CanopyRuntimeDescriptorSchema,
   CORE_CLOUD_ACCOUNT_CUSTODY_INSTRUCTION_DEFINITIONS,
   CORE_CLOUD_ACCOUNT_CUSTODY_QUERY_DEFINITIONS,
+  CORE_CONFIG_DOCUMENT_INSTRUCTION_DEFINITIONS,
+  CORE_CONFIG_DOCUMENT_QUERY_DEFINITIONS,
   CORE_EXECUTION_STREAMS,
   CORE_INTEGRATION_CREDENTIAL_INSTRUCTIONS,
   CORE_TRANSPORT_QUERY_DEFINITIONS,
@@ -120,12 +122,14 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
       WORKER_QUERY_DEFINITIONS['worker.filesystem.search'],
     'worker.filesystem.link.resolve':
       WORKER_QUERY_DEFINITIONS['worker.filesystem.link.resolve'],
-    // CAN-5501: typed client only; production selects none and has no Git grant.
+    // CAN-5501: typed client; macOS and Linux select it (DAEMON_GIT_PRODUCTION_SELECTION); needs worker.git.read.
     'worker.git.branch.list':
       WORKER_QUERY_DEFINITIONS['worker.git.branch.list'],
     // CAN-4729: worktree health on macOS and Linux, codes only.
     'worker.git.worktree.health.get':
       WORKER_QUERY_DEFINITIONS['worker.git.worktree.health.get'],
+    // CAN-4729: changed files on macOS and Linux, revision 3 only.
+    'worker.git.diff.get': WORKER_QUERY_DEFINITIONS['worker.git.diff.get'],
     // W6g's record port (CAN-5528): served only by a W5 qualification daemon,
     // so production's manifest refuses each call capability_unavailable.
     ...CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
@@ -165,6 +169,9 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
     // CAN-6997: typing only until account authority activation is selected;
     // a daemon not holding the account refuses each call.
     ...CORE_CLOUD_ACCOUNT_CUSTODY_QUERY_DEFINITIONS,
+    // CAN-7991: typing only; no daemon serves the preferences document until
+    // the CAN-5722 flip, so the manifest refuses each call.
+    ...CORE_CONFIG_DOCUMENT_QUERY_DEFINITIONS,
   },
   instructions: {
     // CAN-5908: typing only; no production entry route is selected.
@@ -216,6 +223,9 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
       WORKER_SCRIPT_INSTRUCTION_DEFINITIONS['worker.script.execute'],
     'worker.script.execution.cancel':
       WORKER_SCRIPT_INSTRUCTION_DEFINITIONS['worker.script.execution.cancel'],
+    // A finished run's clear, keyed (CAN-7663).
+    'worker.script.execution.clear':
+      WORKER_SCRIPT_INSTRUCTION_DEFINITIONS['worker.script.execution.clear'],
     // CAN-5092 S1a: typing only, as the operation record queries.
     ...OPERATION_INSTRUCTION_DEFINITIONS,
     // CAN-5092 S1b: typing only, as the definition queries. No import: it is
@@ -235,6 +245,12 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
     'core.pipeline.definition.setEnabled':
       PIPELINE_DEFINITION_INSTRUCTION_DEFINITIONS[
         'core.pipeline.definition.setEnabled'
+      ],
+    // CAN-7991: typing only, as the document queries. The owner writes go
+    // over the owner connection alone.
+    'core.config.document.update':
+      CORE_CONFIG_DOCUMENT_INSTRUCTION_DEFINITIONS[
+        'core.config.document.update'
       ],
   },
   streams: {
@@ -735,6 +751,7 @@ export async function createElectronDaemonHost(
           connectCanopyClient({
             onListenerError: reportDaemonListenerError,
             ...options,
+            desktopPeerProof: ownerCredential?.peerProof(launch.dataRootHash),
           }),
       );
     },

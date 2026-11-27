@@ -433,11 +433,20 @@ async function refreshAuthoritativeSidebarData(
   changedWorkspaceIds: readonly string[] = [],
 ): Promise<void> {
   try {
-    const [{ useProjectsStore }, { useStandaloneChatStore }] =
-      await Promise.all([
-        import('./projectsStore'),
-        import('./standaloneChatStore'),
-      ]);
+    const [
+      { useProjectsStore },
+      { useStandaloneChatStore },
+      { usePipelineRunsStore },
+    ] = await Promise.all([
+      import('./projectsStore'),
+      import('./standaloneChatStore'),
+      import('./pipelineRunsStore'),
+    ]);
+    // Refresh global workflow statuses in the background so archive actions
+    // do not block on sequential Advisor snapshot reads across local history.
+    void usePipelineRunsStore
+      .getState()
+      .refreshGlobalPipelineStatusesKeepingSeen();
     await Promise.all([
       useProjectsStore
         .getState()

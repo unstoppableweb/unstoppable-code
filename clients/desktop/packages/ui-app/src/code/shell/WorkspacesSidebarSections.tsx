@@ -25,8 +25,8 @@ import {
   SidebarDropLine,
   SidebarNestingRail,
   Button,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
+  MenuItem,
+  MenuItemIcon,
   Dot,
   SidebarItemGroupHeader,
   sidebarItemGroupColor,
@@ -3137,18 +3137,18 @@ export function WorkspacesSidebarSections({
             <>
               {workspaceCapabilities.worktreeRecoveryReads === true &&
               recoveryWorkspaceIds.has(workspace.localId) ? (
-                <DropdownMenuItem
+                <MenuItem
                   data-testid="workspace-review-archive-recovery"
                   onClick={(): void => {
                     close();
                     requestArchiveRecoveryReview(workspace.localId);
                   }}
                 >
-                  <DropdownMenuItemIcon>
+                  <MenuItemIcon>
                     <ArchiveIcon />
-                  </DropdownMenuItemIcon>
+                  </MenuItemIcon>
                   Review archive recovery
-                </DropdownMenuItem>
+                </MenuItem>
               ) : null}
               {renderWorkspaceContextMenuItems?.({ workspace, close })}
             </>

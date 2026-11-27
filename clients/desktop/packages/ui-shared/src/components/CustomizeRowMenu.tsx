@@ -1,10 +1,7 @@
 import { type JSX, Fragment, useRef, useState } from 'react';
 import { Button } from '../primitives/Button';
-import {
-  DropdownMenuDivider,
-  DropdownMenuItem,
-} from '../primitives/DropdownMenu';
-import { FloatingMenu } from '../primitives/FloatingMenu';
+import { MenuDivider, MenuItem } from '../primitives/MenuItem';
+import { Menu } from '../primitives/Menu';
 import { Tooltip } from '../primitives/Tooltip';
 import { menuDismissalSwallowsClick } from '../lib/menu-open-body-flag';
 import { MoreHorizontalIcon } from '../icons/AppIcons';
@@ -131,7 +128,7 @@ export function CustomizeRowMenu({
       >
         <MoreHorizontalIcon size="sm" aria-hidden />
       </Button>
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={open}
         onOpenChange={setOpen}
@@ -142,7 +139,7 @@ export function CustomizeRowMenu({
       >
         {groups.map((group, index) => (
           <Fragment key={index}>
-            {index > 0 && <DropdownMenuDivider />}
+            {index > 0 && <MenuDivider />}
             {group.map((item) => (
               <Tooltip
                 key={item.id}
@@ -151,7 +148,7 @@ export function CustomizeRowMenu({
                 disabled={!item.disabledReason}
                 className="w-full"
               >
-                <DropdownMenuItem
+                <MenuItem
                   data-testid={testId ? `${testId}-${item.id}` : undefined}
                   tone={item.destructive ? 'destructive' : 'default'}
                   disabled={item.disabled}
@@ -169,12 +166,12 @@ export function CustomizeRowMenu({
                   }}
                 >
                   {item.label}
-                </DropdownMenuItem>
+                </MenuItem>
               </Tooltip>
             ))}
           </Fragment>
         ))}
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

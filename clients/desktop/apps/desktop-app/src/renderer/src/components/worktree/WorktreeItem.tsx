@@ -115,10 +115,10 @@ import {
   TerminalStatusPopover,
   RunBadgePopover,
   ActionMenuRowStyle,
-  FloatingMenu,
-  FloatingMenuPointAnchor,
-  FLOATING_MENU_GAP,
-  type FloatingMenuPlacement,
+  Menu,
+  MenuPointAnchor,
+  MENU_GAP,
+  type MenuPlacement,
   WorktreeActionMenuItems,
   type WorktreeMenuItem,
   type PipelineStatusPopoverEntry,
@@ -1876,12 +1876,12 @@ function WorktreeItemContent({
   // menu hangs from the pointer as it hangs from the ••• button.
   const pointerMenuBesideCursor =
     actionsMenuAnchorPoint !== null && contextMenuPlacement === 'cursor';
-  const actionsMenuPlacement: FloatingMenuPlacement = pointerMenuBesideCursor
+  const actionsMenuPlacement: MenuPlacement = pointerMenuBesideCursor
     ? 'bottom-left'
     : 'bottom-right';
   const actionsMenuGap = pointerMenuBesideCursor
     ? CONTEXT_MENU_POINTER_OFFSET
-    : FLOATING_MENU_GAP;
+    : MENU_GAP;
   useEffect(() => {
     if (actionsMenuOpen) onActionsMenuOpen?.();
   }, [actionsMenuOpen, onActionsMenuOpen]);
@@ -2213,14 +2213,14 @@ function WorktreeItemContent({
           aria-expanded={actionsMenuOpen}
         />
         {actionsMenuOpen && actionsMenuAnchorPoint && (
-          <FloatingMenuPointAnchor
+          <MenuPointAnchor
             ref={actionsMenuPointAnchorRef}
             x={actionsMenuAnchorPoint.x}
             y={actionsMenuAnchorPoint.y}
             ownerDocument={document}
           />
         )}
-        <FloatingMenu
+        <Menu
           open={actionsMenuOpen}
           onOpenChange={handleActionsMenuOpenChange}
           anchorRef={
@@ -2257,7 +2257,7 @@ function WorktreeItemContent({
               }}
             />
           </ActionMenuRowStyle>
-        </FloatingMenu>
+        </Menu>
       </span>
     </WorktreeRowActionChip>
   );

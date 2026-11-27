@@ -222,6 +222,7 @@ function writeRoot(spec: RootSpec): W5CaptureResult {
     ),
     discovery: 'complete',
     log: {
+      logId: '00000000-0000-4000-8000-000000000001',
       commitId: 9,
       retainedCommits: 9,
       unresolvedCommits: 0,

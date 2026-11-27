@@ -18,6 +18,7 @@ import {
   type TurnFileLocation,
 } from '@canopy/desktop-shared/lib/turn-files';
 import { getBaseName } from '@/lib/format';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { useChatStore } from '@/stores/chatStore';
 import { requestFilePanelPlacementBesideChat } from '@/lib/panels/chat-panel-sync';
 import { TurnDiffPopover } from './TurnDiffPopover';
@@ -295,6 +296,13 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
 
   const selectedWorktree = useChatStore((s) => s.selectedWorktree);
   const openFileTab = useChatStore((s) => s.openFileTab);
+  const isPairedScope =
+    (fileTarget !== undefined &&
+      (isPairedComputerId(fileTarget.projectId) ||
+        isPairedComputerId(fileTarget.worktreeId))) ||
+    (selectedWorktree !== null &&
+      (isPairedComputerId(selectedWorktree.projectId) ||
+        isPairedComputerId(selectedWorktree.worktreeId)));
 
   // Auto-collapse when a new turn starts (this group is no longer the last)
   useEffect(() => {
@@ -339,7 +347,7 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
 
   const handleCardMouseEnter = useCallback(
     (file: ChangedFileInfo, el: HTMLElement, clientX: number): void => {
-      if (!selectedWorktree) return;
+      if (!selectedWorktree || isPairedScope) return;
       updatePreviewSide(el, clientX);
       clearTimeout(hoverTimerRef.current);
       if (hoveredFileRef.current !== null) {
@@ -355,7 +363,7 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
         }, ITEM_PREVIEW_OPEN_DELAY_MS);
       }
     },
-    [selectedWorktree, updatePreviewSide],
+    [isPairedScope, selectedWorktree, updatePreviewSide],
   );
 
   const handleCardMouseLeave = useCallback((): void => {
@@ -374,7 +382,7 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
 
   const openDiffFile = useCallback(
     (file: ChangedFileInfo): void => {
-      if (!selectedWorktree) return;
+      if (!selectedWorktree || isPairedScope) return;
       closePopover();
       void openFileInDiff(
         selectedWorktree,
@@ -384,12 +392,12 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
         turnDiff,
       );
     },
-    [closePopover, selectedWorktree, originChatTabId, turnDiff],
+    [closePopover, isPairedScope, selectedWorktree, originChatTabId, turnDiff],
   );
 
   const handleEditFromPopover = useCallback((): void => {
     const file = hoveredFileRef.current;
-    if (!file || !selectedWorktree) return;
+    if (!file || !selectedWorktree || isPairedScope) return;
     closePopover();
     void (async (): Promise<void> => {
       const repoBase = await window.api.getWorktreePath({
@@ -406,7 +414,13 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
         requestFilePanelPlacementBesideChat(fileTabId, originChatTabId);
       }
     })();
-  }, [closePopover, openFileTab, originChatTabId, selectedWorktree]);
+  }, [
+    closePopover,
+    isPairedScope,
+    openFileTab,
+    originChatTabId,
+    selectedWorktree,
+  ]);
 
   const handleOpenModalFromPopover = useCallback((): void => {
     const file = hoveredFileRef.current;
@@ -446,7 +460,7 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
     handleCardMouseLeave,
   ]);
 
-  if (totalCount === 0) return null;
+  if (isPairedScope || totalCount === 0) return null;
   const extraHeading = formatTurnFilesHeading(extraEntries);
   const otherHeading = formatTurnFilesHeading(extraEntries, { other: true });
 

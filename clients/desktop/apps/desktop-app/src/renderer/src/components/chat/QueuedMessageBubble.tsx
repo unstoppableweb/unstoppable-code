@@ -61,7 +61,7 @@ interface QueuedMessageBubbleProps {
   receivingContext?: AgentSentReceivingContext;
   message: QueuedChatMessage;
   index: number;
-  onClear: (index: number) => void;
+  onClear?: (index: number) => void;
   /** Interrupt: stops the running turn so this message sends now. */
   onForce?: (index: number) => void;
   /** Retry a send that failed, for example a Claude terminal launch. */
@@ -178,7 +178,7 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
       scheduled.onClear();
       return;
     }
-    onClear(index);
+    onClear?.(index);
   }, [index, onClear, scheduled]);
 
   const scheduledLabel = scheduled
@@ -246,7 +246,7 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
         text={message.text}
         reason={message.reason}
         waitingReason={message.waitingReason}
-        onCancel={handleClear}
+        onCancel={onClear || scheduled ? handleClear : undefined}
         pending={message.pendingSend === true}
         footer={footer}
       />
@@ -288,7 +288,7 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
               variant="badge"
               cornerLeading={<BubbleCopyBadge copyText={copyText} />}
               onEdit={showEdit ? handleEdit : undefined}
-              onCancel={handleClear}
+              onCancel={onClear || scheduled ? handleClear : undefined}
               pending={message.pendingSend === true}
               editLabel={
                 isScheduled ? 'Edit scheduled message' : 'Edit queued message'

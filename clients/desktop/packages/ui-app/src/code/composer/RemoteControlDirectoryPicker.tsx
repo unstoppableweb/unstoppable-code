@@ -5,8 +5,8 @@ import {
   ChatComposerToolbarChip,
   PickerTrigger,
   Tooltip,
-  FLOATING_PICKER_GAP,
-  FloatingMenu,
+  PICKER_GAP,
+  Menu,
   DirectoryPickerOptionRow,
 } from '@canopy/ui-shared';
 import {
@@ -145,13 +145,13 @@ export function RemoteControlDirectoryPicker({
           dataTestId="remote-control-chat-directory-picker"
         />
       )}
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={open && !disabled}
         onOpenChange={setOpen}
         anchorRef={triggerRef}
         placement="top-left"
-        gap={FLOATING_PICKER_GAP}
+        gap={PICKER_GAP}
         heightLimit={224}
         interaction="listbox"
         role="listbox"
@@ -169,7 +169,7 @@ export function RemoteControlDirectoryPicker({
             onSelect={(): void => handleSelect(option.id)}
           />
         ))}
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

@@ -1,12 +1,12 @@
 /**
  * The shared definition of "focusable" used by `DialogModal` and
- * `FloatingMenu`.
+ * `Menu`.
  *
  * Not yet every focus-managing surface in the package — `WorktreeDialogs` still
  * carries its own selector with different rules. Folding it in is worthwhile
  * but is not this change's business.
  *
- * There used to be two: `FloatingMenu`'s and `DialogModal`'s, with quietly
+ * There used to be two: `Menu`'s and `DialogModal`'s, with quietly
  * different rules — one excluded `aria-disabled="true"`, the other did not; one
  * read the `tabindex` attribute, the other the `tabIndex` property (which
  * reports 0 for a `<button>` with no attribute, so the two disagree about

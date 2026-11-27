@@ -30,6 +30,14 @@ import {
 } from '@canopy/ui-shared/lib/worktree-discard-copy';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
+/**
+ * Temporary copies and Git snapshots are the archive's own working material:
+ * their absence tells the person nothing, so only their presence is listed.
+ */
+const INTERNAL_ASSETS: ReadonlySet<
+  keyof WorktreeRecoveryDescription['retained']
+> = new Set(['stagedCopy', 'gitSnapshot']);
+
 /** Existence alone never promises a restorable copy. */
 export function WorktreeRecoveryDialog({
   name,
@@ -349,21 +357,32 @@ export function WorktreeRecoveryDialog({
           )}
         </p>
       ) : null}
-      {!outcome && resolution ? (
+      {!outcome ? (
+        <p className="text-pretty" data-testid="worktree-recovery-reason">
+          {completedCleanup
+            ? 'The archive finished. Only cleanup of saved change data remains.'
+            : formatWorktreeRecoveryReason(recovery)}
+        </p>
+      ) : null}
+      {/* In completed cleanup the reason already says only cleanup remains. */}
+      {!outcome && resolution && !completedCleanup ? (
         <p
-          className="text-pretty"
+          className="text-pretty text-s fg-secondary"
           data-testid="worktree-recovery-resolution-help"
         >
           {resolution === 'keep-worktree'
-            ? 'Keep the worktree and withdraw this archive attempt. Saved recovery material stays separate and can be deleted later. Earlier scripts and stopped sessions are not reversed.'
+            ? "Keep worktree cancels this archive and leaves the worktree where it is. Scripts that already ran and sessions that stopped aren't undone."
             : resolution === 'release'
-              ? 'Withdraw the archive attempt with no listed worktree or working folder. Saved recovery material stays separate and can be deleted later.'
-              : 'Finish removing this worktree using the saved archive. Any separate cleanup still pending will be reported.'}
+              ? 'The worktree and its folder are already gone. Release withdraws this archive attempt; saved recovery material stays until you delete it.'
+              : // Cleanup debt: the archive completed and its row is gone.
+                recovery.diagnosis?.verdict === 'cleanup-debt'
+                ? 'The worktree is already removed. Finish archive completes the remaining cleanup.'
+                : 'Finish archive removes the worktree using the saved archive.'}
         </p>
       ) : null}
       {!outcome && offered.includes('set-aside') ? (
         <p
-          className="text-pretty"
+          className="text-pretty text-s fg-secondary"
           data-testid="worktree-recovery-set-aside-help"
         >
           This archive can't continue from here. Set its record aside so it
@@ -371,28 +390,27 @@ export function WorktreeRecoveryDialog({
         </p>
       ) : null}
       {!outcome ? (
-        <>
-          <p className="text-pretty" data-testid="worktree-recovery-reason">
-            {completedCleanup
-              ? 'The archive finished. Only cleanup of saved change data remains.'
-              : formatWorktreeRecoveryReason(recovery)}
-          </p>
-          <section className="flex flex-col gap-2">
-            <Heading level={3} variant="title">
-              What remains
-            </Heading>
-            <ul
-              className="flex flex-col gap-2 text-s text-pretty fg-secondary"
-              data-testid="worktree-recovery-retained"
-            >
-              {assets.map((key) => (
+        <section className="flex flex-col gap-2">
+          <Heading level={3} variant="title">
+            What remains
+          </Heading>
+          <ul
+            className="flex flex-col gap-1 text-s text-pretty fg-secondary"
+            data-testid="worktree-recovery-retained"
+          >
+            {assets
+              .filter(
+                (key) =>
+                  !INTERNAL_ASSETS.has(key) ||
+                  recovery.retained[key].presence !== 'absent',
+              )
+              .map((key) => (
                 <li key={key}>
                   {worktreeRecoveryRetainedFact(key, recovery.retained[key])}
                 </li>
               ))}
-            </ul>
-          </section>
-        </>
+          </ul>
+        </section>
       ) : null}
       {hostOutdated && !error ? (
         <p
@@ -420,13 +438,13 @@ export function WorktreeRecoveryDialog({
         />
       ) : null}
       {!settled ? (
-        <p className="text-pretty">
-          If recovery cannot continue, keep the files in place. Copy the
-          recovery details before changing or deleting files. Use Send feedback
-          in the account menu to share them with support.
+        <p className="text-pretty text-s fg-secondary">
+          If this keeps failing, leave the files where they are and send the
+          recovery details to support with Send feedback in the account menu.
         </p>
       ) : null}
       <CopyButton
+        className="self-start"
         label="Copy recovery details"
         value={JSON.stringify({ ...recovery, result: outcome }, null, 2)}
       />

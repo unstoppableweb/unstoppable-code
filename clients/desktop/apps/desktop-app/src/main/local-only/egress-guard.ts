@@ -1,8 +1,11 @@
 /**
- * The local-only egress guard (docs/local-only-build.md). Installed only when
- * `isLocalOnlyBuild()` is true; it blocks and logs every outbound request
- * from Electron main and its sessions to a host `egress-policy.ts` does not
- * allow.
+ * The egress guard (docs/local-only-build.md). Installed only in a local-only
+ * or self-host build (`isEgressGuardedBuild()`); it blocks and logs every
+ * outbound request from Electron main and its sessions to a host
+ * `egress-policy.ts` does not allow. In a self-host build the policy also
+ * allows the configured server's origin and the relay origin it handed out;
+ * the Node layer matches those by host and port (a socket carries no
+ * scheme), the Chromium layer by scheme family, host and port.
  *
  * Two layers:
  *
@@ -52,7 +55,7 @@ import {
   loadEgressPolicySettings,
   markEgressPolicyReady,
 } from './egress-policy';
-import { isLocalOnlyBuild } from './profile';
+import { isEgressGuardedBuild } from './profile';
 
 export const EGRESS_BLOCKED_ERROR_CODE = 'CANOPY_LOCAL_ONLY_EGRESS_BLOCKED';
 
@@ -72,7 +75,28 @@ const EXEMPT_IN_MEMORY_PARTITIONS = ['mcp-oauth'] as const;
 
 type ConnectTarget =
   | { readonly kind: 'ipc' }
-  | { readonly kind: 'tcp'; readonly host: string };
+  | {
+      readonly kind: 'tcp';
+      readonly host: string;
+      /** Null when absent or invalid; a null port matches no origin. */
+      readonly port: number | null;
+    };
+
+/**
+ * A connect port: an integer from 1 to 65535, given as a number or a numeric
+ * string (undici passes the URL's port as a string). Anything else is null.
+ */
+export function parseConnectPort(value: unknown): number | null {
+  let port: number;
+  if (typeof value === 'number') {
+    port = value;
+  } else if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+    port = Number(value.trim());
+  } else {
+    return null;
+  }
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
+}
 
 function hostFromOptions(options: object): ConnectTarget {
   const path: unknown = Reflect.get(options, 'path');
@@ -81,6 +105,7 @@ function hostFromOptions(options: object): ConnectTarget {
   return {
     kind: 'tcp',
     host: typeof host === 'string' && host.length > 0 ? host : 'localhost',
+    port: parseConnectPort(Reflect.get(options, 'port')),
   };
 }
 
@@ -95,7 +120,7 @@ export function connectTarget(args: readonly unknown[]): ConnectTarget {
     const normalized: unknown = first[0];
     return typeof normalized === 'object' && normalized !== null
       ? hostFromOptions(normalized)
-      : { kind: 'tcp', host: 'localhost' };
+      : { kind: 'tcp', host: 'localhost', port: null };
   }
   if (typeof first === 'object' && first !== null) {
     return hostFromOptions(first);
@@ -107,6 +132,7 @@ export function connectTarget(args: readonly unknown[]): ConnectTarget {
   return {
     kind: 'tcp',
     host: typeof host === 'string' && host.length > 0 ? host : 'localhost',
+    port: parseConnectPort(first),
   };
 }
 
@@ -127,11 +153,14 @@ function installNodeGuard(): void {
   const connect = originalConnect;
   function guardedConnect(this: net.Socket, ...args: unknown[]): net.Socket {
     const target = connectTarget(args);
-    if (target.kind === 'tcp' && !isEgressHostAllowed(target.host)) {
+    if (
+      target.kind === 'tcp' &&
+      !isEgressHostAllowed(target.host, target.port)
+    ) {
       recordBlockedEgress(target.host, 'node', () => new Error().stack);
       const error = Object.assign(
         new Error(
-          `Local-only build: outbound connection to ${target.host} blocked.`,
+          `Outbound connection to ${target.host} blocked by this build's network policy.`,
         ),
         { code: EGRESS_BLOCKED_ERROR_CODE },
       );
@@ -341,7 +370,7 @@ let installed = false;
  * finishes.
  */
 export function installLocalOnlyEgressGuard(): void {
-  if (installed || !isLocalOnlyBuild()) return;
+  if (installed || !isEgressGuardedBuild()) return;
   installed = true;
   installNodeGuard();
   recordInMemoryPartitions();

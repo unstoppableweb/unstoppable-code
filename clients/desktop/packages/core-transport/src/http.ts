@@ -96,6 +96,18 @@ const UNREACHABLE: CanopyErrorPayload = {
   retry: { kind: 'same_request' },
 };
 
+/**
+ * The deployment serves no web core: a self-host install without Agentic Core
+ * answers the connection POST 501 `capability_unavailable` (CAN-7958).
+ * Retrying cannot help until it is configured, so the owner stops, the way it
+ * stops for a web core missing its identity inputs (CAN-6859).
+ */
+const NOT_SERVED: CanopyErrorPayload = {
+  kind: 'unavailable',
+  message: 'This deployment does not serve the web core.',
+  retry: { kind: 'never' },
+};
+
 /** One request that got no response at all; the connection may still stand. */
 const NO_RESPONSE: CanopyErrorPayload = {
   kind: 'unavailable',
@@ -173,6 +185,7 @@ export async function connectCanopyHttp(
     throw new CanopyTransportError(
       options.signal?.aborted ? CLOSED : UNREACHABLE,
     );
+  if (response.status === 501) throw new CanopyTransportError(NOT_SERVED);
   if (!response.ok)
     throw new CanopyTransportError(statusError(response.status));
   const read = await readJson(response, options.signal);

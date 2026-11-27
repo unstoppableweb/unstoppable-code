@@ -114,6 +114,7 @@ jest.mock('../lib/workspace-worktree-runtime', () => ({}));
 jest.mock('../lib/archived-container-git', () => ({}));
 
 import { restoreArchivedContainer } from '../lib/archived-container-restore';
+import { subscribeDurablePausedPipelinesChanged } from '../pipelines/paused-pipeline-cache-signal';
 import {
   commitArchivedContainer,
   readArchivedContainerManifest,
@@ -608,5 +609,47 @@ describe('archived-containers:restore execution qualification', () => {
     expect(commitArchivedContainer).toHaveBeenCalledWith(
       expect.objectContaining({ executionRestorePending: true }),
     );
+  });
+
+  it('notifies the paused-workflow cache when a paused execution live state installs before artifact copy fails', async () => {
+    const pausedState = {
+      ...createInitialState(
+        normalizePipeline({
+          name: 'Paused',
+          on: 'dispatch',
+          jobs: { main: { steps: [{ id: 'work', run: 'echo ok' }] } },
+        }),
+        {
+          cwd: dir,
+          pipelineId: 'paused',
+          runtime,
+          projectId: 'workspace-1',
+          worktreeId: 'archive-1',
+        },
+        id,
+      ),
+      status: 'paused',
+    };
+    await fs.writeFile(
+      join(dir, 'archive', `${id}.json`),
+      JSON.stringify(pausedState),
+    );
+    jest
+      .mocked(fileOps.copyFile)
+      .mockRejectedValueOnce(new Error('Artifact copy failed'));
+    const notified: Array<readonly string[] | undefined> = [];
+    const unsubscribe = subscribeDurablePausedPipelinesChanged((ids) => {
+      notified.push(ids);
+    });
+    try {
+      const result = await restoreArchivedContainer('workspace-1', 'archive-1');
+      expect(result.warnings.join(' ')).toContain(id);
+      await expect(
+        fs.access(join(runtime.executionsDir, `${id}.json`)),
+      ).resolves.toBeUndefined();
+      expect(notified).toEqual([[id]]);
+    } finally {
+      unsubscribe();
+    }
   });
 });

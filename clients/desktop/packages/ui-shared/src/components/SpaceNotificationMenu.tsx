@@ -1,10 +1,7 @@
 import { useId, type JSX, type MouseEvent } from 'react';
 import { BellIcon, CheckIcon } from '../icons/AppIcons';
 import { LoadingSpinner } from '../primitives/LoadingSpinner';
-import {
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-} from '../primitives/DropdownMenu';
+import { MenuItem, MenuItemIcon } from '../primitives/MenuItem';
 import { NestedMenuFlyout } from '../primitives/NestedMenuFlyout';
 import {
   ActionMenuStatusLine,
@@ -217,7 +214,7 @@ export function SpaceNotificationMenuItems({
       data-testid={testIdFor?.('-notify')}
     >
       {spaceNotificationMenuChoices(state).map((row) => (
-        <DropdownMenuItem
+        <MenuItem
           key={row.key}
           role="menuitemradio"
           aria-checked={row.checked}
@@ -231,15 +228,15 @@ export function SpaceNotificationMenuItems({
             if (row.selectable) onSelect(row.choice);
           }}
         >
-          <DropdownMenuItemIcon>
+          <MenuItemIcon>
             <SpaceNotificationMenuChoiceIndicator row={row} />
-          </DropdownMenuItemIcon>
+          </MenuItemIcon>
           {row.label}
           {/* Read as the row's description; the row stays one line. */}
           <span id={`${descriptionIdPrefix}-${row.key}`} hidden>
             {row.description}
           </span>
-        </DropdownMenuItem>
+        </MenuItem>
       ))}
       {status && (
         <SpaceNotificationMenuStatusLine

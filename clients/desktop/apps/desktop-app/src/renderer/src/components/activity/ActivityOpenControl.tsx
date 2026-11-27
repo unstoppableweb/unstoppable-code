@@ -9,11 +9,7 @@ import {
 } from 'react';
 import type { DevServerHit } from '@/lib/scriptDevServerDetection';
 import { ChevronIcon, GlobeIcon } from '@canopy/ui-shared/icons';
-import {
-  DropdownMenuDivider,
-  DropdownMenuLabel,
-  FloatingMenu,
-} from '@canopy/ui-shared';
+import { MenuDivider, MenuLabel, Menu } from '@canopy/ui-shared';
 import {
   ActionMenuRowStyle,
   HeaderActionButton,
@@ -117,7 +113,7 @@ export function ActivityOpenControl({
         <span>Open</span>
         <ChevronIcon open={menuOpen} />
       </HeaderActionButton>
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={menuOpen}
         onOpenChange={setMenuOpen}
@@ -130,18 +126,16 @@ export function ActivityOpenControl({
         <ActionMenuRowStyle>
           {sections.map((section, sectionIndex) => (
             <Fragment key={`${section.scriptKey}-${sectionIndex}`}>
-              {showSectionHeaders && sectionIndex > 0 && (
-                <DropdownMenuDivider />
-              )}
+              {showSectionHeaders && sectionIndex > 0 && <MenuDivider />}
               {showSectionHeaders && (
-                <DropdownMenuLabel>
+                <MenuLabel>
                   {section.repoContext && (
                     <span className="block truncate">
                       {section.repoContext}
                     </span>
                   )}
                   <span className="block truncate">{section.scriptLabel}</span>
-                </DropdownMenuLabel>
+                </MenuLabel>
               )}
               {/* Every row opens a dev server: one icon per section,
                   shown on its first row. */}
@@ -161,7 +155,7 @@ export function ActivityOpenControl({
             </Fragment>
           ))}
         </ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

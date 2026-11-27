@@ -7,7 +7,10 @@ import {
   safeLstat,
 } from './feedback-archive';
 export { MAX_FILE_BYTES } from './feedback-archive';
-import { withheldIfCredential } from './feedback-scrub';
+import {
+  withheldIfCredential,
+  withholdWorktreesDiscovery,
+} from './feedback-scrub';
 import { FeedbackReportErrorSchema } from '@canopy/protocol/feedback-report';
 import {
   createReadStream,
@@ -735,6 +738,9 @@ export const feedbackLogsForTests = {
   includeAppLogs,
   includeCoreDiagnostics,
   addSanitizedPipelineExecutionState,
+  includePipelineDiagnostics,
+  includeWorktreePipelineDiagnostics,
+  includeWorkspaceDiagnostics,
 };
 
 async function includeMacDiagnosticReports(
@@ -991,6 +997,7 @@ async function includePipelineDiagnostics(
   } catch {
     await builder.addDirectoryIfSafe(executionsDir, 'pipeline-executions', {
       sourceRoot: dataDir,
+      scrub: 'process-output',
     });
     return;
   }
@@ -1019,6 +1026,7 @@ async function includePipelineDiagnostics(
           sourcePath,
           posix.join('pipeline-executions', entry.name),
           { sourceRoot: dataDir },
+          'process-output',
         );
       }
     }),
@@ -1065,6 +1073,7 @@ async function includeWorktreePipelineDiagnostics(
         join(executionsDir, execution.executionDirName),
         posix.join('pipeline-executions', execution.executionDirName),
         { sourceRoot: dataDir },
+        'process-output',
       );
     }),
   );
@@ -1346,6 +1355,7 @@ async function includeWorkspaceDiagnostics(
               getWorkspaceScriptRunDir(selection.workspaceId, worktreeId),
             ),
             { sourceRoot: dataDir },
+            'process-output',
           );
           await builder.addDirectoryIfSafe(
             getHookInvocationsDir(selection.workspaceId, worktreeId),
@@ -1353,6 +1363,7 @@ async function includeWorkspaceDiagnostics(
               getHookInvocationsDir(selection.workspaceId, worktreeId),
             ),
             { sourceRoot: dataDir },
+            'process-output',
           );
         }),
       );
@@ -1370,6 +1381,7 @@ async function addWorkspaceWorktreesDiagnostics(
     await builder.addFileIfSafe(sourcePath, zipPath, {
       sourceRoot: getDataDir(),
       allowChatContent: true,
+      scrub: 'worktrees-discovery',
     });
     return;
   }
@@ -1411,6 +1423,15 @@ async function addWorkspaceWorktreesDiagnostics(
     builder.recordSkipped(normalizedZipPath, 'inaccessible');
     return;
   }
+  // Rows written before discovery left worktrees.json can still hold MCP
+  // connect errors and command text (CAN-7623).
+  const withheld = withholdWorktreesDiscovery(sanitized);
+  if (withheld > 0)
+    builder.recordWithheld(normalizedZipPath, {
+      mode: 'json-fields',
+      units: withheld,
+      reasons: ['credential'],
+    });
   builder.addGeneratedJson(normalizedZipPath, sanitized);
 }
 

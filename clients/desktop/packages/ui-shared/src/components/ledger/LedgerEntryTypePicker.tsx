@@ -6,16 +6,16 @@ import {
   LEDGER_ENTRY_TYPE_LABELS,
   LEDGER_FORM_TYPE_OPTIONS,
 } from '../../lib/ledger-display';
+import { Picker } from '../../primitives/Picker';
 import {
-  FloatingPickerMenu,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-  PickerMenuOptionLeading,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
+  PickerOptionLeading,
   PickerTrigger,
   PickerTriggerChevron,
-} from '../../primitives/PickerMenu';
+} from '../../primitives/PickerParts';
 import { LedgerEntryTypeIcon } from '../../icons/LedgerEntryTypeIcon';
 
 export interface LedgerEntryTypePickerProps {
@@ -66,7 +66,7 @@ export function LedgerEntryTypePicker({
         </span>
         <PickerTriggerChevron open={open} variant="field" />
       </PickerTrigger>
-      <FloatingPickerMenu
+      <Picker
         open={open}
         onOpenChange={setOpen}
         anchorRef={triggerRef}
@@ -77,7 +77,7 @@ export function LedgerEntryTypePicker({
         {LEDGER_FORM_TYPE_OPTIONS.map((type) => {
           const selected = type === value;
           return (
-            <PickerMenuOption
+            <PickerOption
               key={type}
               role="menuitemradio"
               aria-checked={selected}
@@ -87,19 +87,19 @@ export function LedgerEntryTypePicker({
                 if (!selected) onChange(type);
               }}
             >
-              <PickerMenuOptionLeading tone="secondary">
+              <PickerOptionLeading tone="secondary">
                 <LedgerEntryTypeIcon type={type} />
-              </PickerMenuOptionLeading>
-              <PickerMenuOptionContent>
-                <PickerMenuOptionLabel>
+              </PickerOptionLeading>
+              <PickerOptionContent>
+                <PickerOptionLabel>
                   {LEDGER_ENTRY_TYPE_LABELS[type]}
-                </PickerMenuOptionLabel>
-              </PickerMenuOptionContent>
-              <PickerMenuOptionCheck selected={selected} />
-            </PickerMenuOption>
+                </PickerOptionLabel>
+              </PickerOptionContent>
+              <PickerOptionCheck selected={selected} />
+            </PickerOption>
           );
         })}
-      </FloatingPickerMenu>
+      </Picker>
     </div>
   );
 }

@@ -59,15 +59,23 @@ export type WorkflowSendAsSaveResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly message: string };
 
+interface SendStepLocation {
+  readonly jobId: string;
+  readonly stepIndex: number;
+}
+
 export interface WorkflowSendAs {
   readonly step: (
     jobId: string,
     stepIndex: number,
   ) => WorkflowSendAsStep | undefined;
-  /** The names of send steps that still need a "Send as" choice. */
-  readonly unchosenSteps: readonly string[];
+  /** The send steps that still need a "Send as" choice. */
+  readonly unchosenSteps: readonly SendStepLocation[];
   /** Still reading what the send steps use, so Save waits. */
   readonly checking: boolean;
+  /** Collection preferences could not be read for the current draft. */
+  readonly resolutionFailed: boolean;
+  readonly retryResolution: () => void;
   /** Choices not yet written to this machine's preferences. */
   readonly dirty: boolean;
   /** Writes the choices for the pipeline `info` names, once it is saved. */
@@ -77,10 +85,7 @@ export interface WorkflowSendAs {
   readonly discard: () => void;
 }
 
-interface SendStep {
-  readonly jobId: string;
-  readonly stepIndex: number;
-  readonly label: string;
+interface SendStep extends SendStepLocation {
   readonly source: StepSendAsSource;
   readonly target: StepSendAsTarget;
   /** The synthetic collection that resolves its `plugins` input, if any. */
@@ -163,7 +168,9 @@ function sendSteps(
 ): SendStep[] {
   if (!pipeline) return [];
   const declared = new Set(
-    (pipeline.plugin_collections ?? []).map((collection) => collection.id),
+    (pipeline.plugin_collections ?? []).map((collection) =>
+      collection.id.trim(),
+    ),
   );
   let plugins = 0;
   const pluginsCollectionId = (): string => {
@@ -180,7 +187,6 @@ function sendSteps(
         {
           jobId,
           stepIndex,
-          label: step.name || step.id || `${jobId} step ${stepIndex + 1}`,
           source,
           target: stepSendAsTarget(step, inputValues),
           ...(hasPlugins
@@ -310,9 +316,11 @@ export function useWorkflowSendAs({
   );
   const live = steps.length > 0;
   // A saved pipeline has a place to keep preferences on this machine.
-  const locator: PipelinePreferenceLocator | undefined = info
-    ? derivePipelinePreferenceLocator(info)
-    : undefined;
+  const locator = useMemo(
+    (): PipelinePreferenceLocator | undefined =>
+      info ? derivePipelinePreferenceLocator(info) : undefined,
+    [info],
+  );
 
   // The collections' stored preferences and the defaults they (and the
   // steps' plugins) matched, once read for this pipeline.
@@ -340,21 +348,35 @@ export function useWorkflowSendAs({
     locator,
     inputValues,
   });
-  if (resolveInput.key !== resolveKey)
-    setResolveInput({ key: resolveKey, pipeline, steps, locator, inputValues });
   const [resolved, setResolved] = useState<{
-    readonly key: string;
+    readonly input: typeof resolveInput;
     readonly status: 'ready' | 'failed';
     readonly stored: Preferences;
     readonly previewItems: readonly PipelinePluginDefaultPreviewItem[];
   } | null>(null);
+  const resolution = resolved?.input === resolveInput ? resolved : null;
+  // The resolver normalizes the entire workflow. Retry a failed read when
+  // the draft changes, even if the collections and plugins are the same.
+  if (
+    resolveInput.key !== resolveKey ||
+    (resolution?.status === 'failed' && resolveInput.pipeline !== pipeline)
+  ) {
+    setResolveInput({ key: resolveKey, pipeline, steps, locator, inputValues });
+  }
+  const retryResolution = useCallback((): void => {
+    setResolveInput({ key: resolveKey, pipeline, steps, locator, inputValues });
+  }, [resolveKey, pipeline, steps, locator, inputValues]);
   useEffect(() => {
     if (!live || !needsResolve || !resolveInput.pipeline) return;
     let isCurrent = true;
-    const { key } = resolveInput;
     const failed = (): void => {
       if (isCurrent)
-        setResolved({ key, status: 'failed', stored: {}, previewItems: [] });
+        setResolved({
+          input: resolveInput,
+          status: 'failed',
+          stored: {},
+          previewItems: [],
+        });
     };
     window.pipelines
       .resolvePluginCollections({
@@ -377,7 +399,7 @@ export function useWorkflowSendAs({
         }
         if (!isCurrent) return;
         setResolved({
-          key,
+          input: resolveInput,
           status: 'ready',
           stored: result.data.effectivePreferences,
           previewItems: result.data.previewItems,
@@ -391,7 +413,6 @@ export function useWorkflowSendAs({
       isCurrent = false;
     };
   }, [live, needsResolve, resolveInput]);
-  const resolution = resolved?.key === resolveKey ? resolved : null;
   const resolving = needsResolve && resolution === null;
   // Stored preferences are known only once read; a draft has none to read.
   const storedKnown = locator !== undefined && resolution?.status === 'ready';
@@ -719,14 +740,13 @@ export function useWorkflowSendAs({
   // collection-kept choice waits for its first save instead.
   const unchosenSteps = useMemo(
     () =>
-      steps.flatMap((entry, index) =>
-        unavailable(entry) === undefined &&
-        !refusesChoice(entry) &&
-        (connectorLists[index] ?? []).some(
-          (connector) => connector.value === null,
-        )
-          ? [entry.label]
-          : [],
+      steps.filter(
+        (entry, index) =>
+          unavailable(entry) === undefined &&
+          !refusesChoice(entry) &&
+          (connectorLists[index] ?? []).some(
+            (connector) => connector.value === null,
+          ),
       ),
     [steps, connectorLists, unavailable, refusesChoice],
   );
@@ -738,7 +758,7 @@ export function useWorkflowSendAs({
       // Only collections a send step still uses keep a choice: one an undo
       // took out of the workflow, or whose send step was removed, is dropped.
       const used = new Set(
-        sendSteps(editor.pipeline, inputValues).flatMap((entry) =>
+        steps.flatMap((entry) =>
           entry.source.kind === 'collection' ? [entry.source.collectionId] : [],
         ),
       );
@@ -756,8 +776,7 @@ export function useWorkflowSendAs({
         setDraft(unwritten);
         return { ok: true };
       }
-      if (!saved || !editor.pipeline)
-        return { ok: false, message: SAVE_FAILED };
+      if (!saved || !pipeline) return { ok: false, message: SAVE_FAILED };
       setWriting(true);
       try {
         // The choices go onto what is stored now, read again here, so a
@@ -765,7 +784,7 @@ export function useWorkflowSendAs({
         const pipelinePreferenceLocator =
           derivePipelinePreferenceLocator(saved);
         const read = await window.pipelines.resolvePluginCollections({
-          pipeline: editor.pipeline,
+          pipeline,
           pipelinePreferenceLocator,
         });
         if (!read.success || !read.data)
@@ -796,7 +815,7 @@ export function useWorkflowSendAs({
         setWriting(false);
       }
     },
-    [draft, editor.pipeline, inputValues],
+    [draft, pipeline, steps],
   );
 
   const discard = useCallback((): void => setDraft({}), []);
@@ -805,6 +824,8 @@ export function useWorkflowSendAs({
     step,
     unchosenSteps,
     checking,
+    resolutionFailed: needsResolve && resolution?.status === 'failed',
+    retryResolution,
     dirty: Object.keys(draft).length > 0,
     save,
     discard,

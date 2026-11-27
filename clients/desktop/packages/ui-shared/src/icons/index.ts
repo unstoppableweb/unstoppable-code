@@ -106,6 +106,7 @@ export * from './WorkflowIcon';
 export * from './WindowsPlatformIcon';
 export * from './RefreshSpinnerIcon';
 export * from './RevertIcon';
+export * from './AntigravityLogo';
 export * from './ClaudeLogo';
 export * from './CodexLogo';
 export * from './CursorLogo';

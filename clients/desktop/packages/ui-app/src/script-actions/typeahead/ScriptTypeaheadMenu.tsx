@@ -28,7 +28,7 @@ export interface ScriptTypeaheadMenuProps {
   readonly typeahead: ScriptTypeaheadController;
   /**
    * A non-interactive element spanning the composer box; the menu sits above
-   * it at its width. It must not contain the editor (FloatingMenu opens on
+   * it at its width. It must not contain the editor (Menu opens on
    * ArrowDown/ArrowUp pressed inside its anchor).
    */
   readonly anchorRef: RefObject<HTMLElement | null>;

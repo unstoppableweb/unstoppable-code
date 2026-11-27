@@ -133,9 +133,15 @@ export interface ApprovalEvaluationContext {
   /**
    * Canonical policy files that governed agents must never silently modify.
    * A `*` in an entry matches any characters within one path segment, so one
-   * entry can name files created later, such as timestamped backups.
+   * entry can name files created later, such as timestamped backups. A final
+   * `**` segment protects the folder before it and everything below it.
    */
   protectedFileWritePaths?: readonly string[];
+  /**
+   * Canonical folders inside a protected tree that agents work in: a path at
+   * or below one is not protected. A `*` matches within one path segment.
+   */
+  protectedFileExemptPaths?: readonly string[];
 }
 
 export type ApprovalEvaluation =

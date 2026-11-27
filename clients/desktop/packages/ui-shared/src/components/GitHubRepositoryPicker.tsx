@@ -8,7 +8,7 @@ import { TextInput } from '../primitives/Field';
 import { FormField } from '../primitives/FormField';
 import { LoadingSpinner } from '../primitives/LoadingSpinner';
 import { Notice } from '../primitives/Notice';
-import { PickerMenuOptionCheck } from '../primitives/PickerMenu';
+import { PickerOptionCheck } from '../primitives/PickerParts';
 import { ErrorBanner, ErrorState } from '../primitives/StatusBlocks';
 
 /**
@@ -179,7 +179,7 @@ function RepositoryRow({
           </span>
           {repository.private && <Badge>Private</Badge>}
           {repository.archived && <Badge>Archived</Badge>}
-          <PickerMenuOptionCheck
+          <PickerOptionCheck
             selected={selected}
             reserveSpace
             className="ml-auto"

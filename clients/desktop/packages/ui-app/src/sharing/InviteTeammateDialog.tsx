@@ -10,12 +10,12 @@ import {
   ErrorBanner,
   Notice,
   NoticeButton,
-  PickerMenuList,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-  PickerMenuOptionTrailing,
+  PickerList,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
+  PickerOptionTrailing,
   SearchField,
   SettingsSelect,
   Badge,
@@ -384,14 +384,11 @@ export function InviteTeammateDialog({
             </Notice>
           )}
           {!membersLoading && !membersError && (
-            <PickerMenuList
-              presentation="bounded-options"
-              aria-label="Teammates"
-            >
+            <PickerList presentation="bounded-options" aria-label="Teammates">
               {members.map((member) => {
                 const alreadyShared = invitedUserIds.has(member.userId);
                 return (
-                  <PickerMenuOption
+                  <PickerOption
                     key={member.userId}
                     role="option"
                     aria-selected={selectedUserId === member.userId}
@@ -404,23 +401,21 @@ export function InviteTeammateDialog({
                       name={memberLabel(member)}
                       image={member.image}
                     />
-                    <PickerMenuOptionContent>
-                      <PickerMenuOptionLabel>
+                    <PickerOptionContent>
+                      <PickerOptionLabel>
                         {memberLabel(member)}
-                      </PickerMenuOptionLabel>
-                    </PickerMenuOptionContent>
-                    <PickerMenuOptionCheck
+                      </PickerOptionLabel>
+                    </PickerOptionContent>
+                    <PickerOptionCheck
                       selected={selectedUserId === member.userId}
                     />
                     {alreadyShared && (
-                      <PickerMenuOptionTrailing>
-                        Shared
-                      </PickerMenuOptionTrailing>
+                      <PickerOptionTrailing>Shared</PickerOptionTrailing>
                     )}
-                  </PickerMenuOption>
+                  </PickerOption>
                 );
               })}
-            </PickerMenuList>
+            </PickerList>
           )}
         </Stack>
 

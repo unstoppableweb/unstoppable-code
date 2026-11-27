@@ -21,6 +21,12 @@ import { formatCompactAge } from '@canopy/ui-shared/lib';
 import { SourceBranchCommitHint } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { FirstRunProviderChooser } from '@/components/onboarding/FirstRunProviderChooser';
+import { useBillingGateChooserProps } from '@/components/billing/DesktopBillingSetupGate';
+import { useDesktopBillingGate } from '@/hooks/useDesktopBillingReadiness';
+import {
+  BILLING_SETUP_GATE_INTRO,
+  BILLING_SETUP_GATE_TITLE,
+} from '@canopy/ui-app/providers';
 import {
   bulkSelection,
   CODE_REPOSITORY_DETAIL,
@@ -547,6 +553,11 @@ export function FirstRunImportPage({
 }): JSX.Element {
   const claude = useClaudeAuthStatus();
   const codex = useCodexAuthStatus();
+  const billingGateShown = useDesktopBillingGate().gate.shown;
+  const billingGateChooserProps = useBillingGateChooserProps(
+    'first_run',
+    billingGateShown,
+  );
   const [scan, setScan] = useState<ExternalProjectDiscoverResponse | null>(
     null,
   );
@@ -844,10 +855,19 @@ export function FirstRunImportPage({
         title="Let's get started"
         description={pageDescription(scan, foundAny)}
       >
+        {/* With no way to run a model, the provider section takes the
+            billing setup gate's title and rows. It stays first, and project
+            import, Skip and Continue stay as they are: Home shows the gate
+            again. The same chooser either way, so it never remounts. */}
         <SettingsSection
-          description={agentConnectionsIntro({ appName: brandText.appName })}
+          {...(billingGateShown ? { title: BILLING_SETUP_GATE_TITLE } : {})}
+          description={
+            billingGateShown
+              ? BILLING_SETUP_GATE_INTRO
+              : agentConnectionsIntro({ appName: brandText.appName })
+          }
         >
-          <FirstRunProviderChooser />
+          <FirstRunProviderChooser {...billingGateChooserProps} />
         </SettingsSection>
 
         <ProjectsSection

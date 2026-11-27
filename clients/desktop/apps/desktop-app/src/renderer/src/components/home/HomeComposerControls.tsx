@@ -23,6 +23,7 @@ import type { ComposerMenuController } from '@/hooks/useComposerMenu';
 import type { FileMentionOption } from '@canopy/ui-rich/types';
 import { useComposerActions } from '@/hooks/useComposerActions';
 import { isCursorModel } from '@canopy/execution-engine/lib/cursor-models';
+import { isOrgGatewayRoute } from '@canopy/execution-engine/lib/gateway-model-availability';
 import {
   useCallback,
   useEffect,
@@ -32,6 +33,7 @@ import {
   useState,
   useSyncExternalStore,
   type JSX,
+  type MutableRefObject,
   type RefObject,
 } from 'react';
 import { useShallow } from 'zustand/shallow';
@@ -76,7 +78,7 @@ import {
 } from '@/stores/homeComposerStore';
 import { useContextualCodexSpeedControl } from '@/hooks/useContextualCodexSpeedControl';
 import { useCodexSpeedDowngrade } from '@/hooks/useCodexSpeedDowngrade';
-import { useChatStore } from '@/stores/chatStore';
+import { resolveLaneForTarget, useChatStore } from '@/stores/chatStore';
 import {
   getApprovalDefaultsGeneration,
   subscribeApprovalDefaultsGeneration,
@@ -113,6 +115,15 @@ import { isHomeCloudTarget } from './homeScope';
 import { useHomeEffectiveModelSettings } from './useHomeEffectiveModelSettings';
 import { useDropUnfitWorkflowPick } from './useHomeTaskWorkflows';
 import type { PipelineExecutionScope } from '@canopy/protocol/pipelines';
+import { rememberedBillingSeed } from '@/stores/chat/defaults';
+import {
+  getRendererBillingLaneFactsVersion,
+  subscribeRendererBillingLaneFacts,
+} from '@/stores/billingLaneRuntime';
+import {
+  getRendererModelFactsVersion,
+  subscribeRendererModelFacts,
+} from '@/stores/modelPolicyRuntime';
 
 interface HomeComposerActionMenuProps {
   composerMenu?: ComposerMenuController;
@@ -290,6 +301,14 @@ export interface HomeComposerControlsProps {
   /** True only for the standalone Home page that owns global shortcuts. */
   shortcutEnabled: boolean;
   onSend: () => void;
+  /**
+   * Filled with the billing send guard (billing setup gate, 2026-11-25):
+   * returns true, and opens the model picker, when nothing can pay for the
+   * staged Claude or Codex model. `HomeSurface.handleSend` calls it so the
+   * button, Enter and dictation send all keep the draft instead of starting
+   * a chat main would refuse.
+   */
+  billingSendGuardRef?: MutableRefObject<(() => boolean) | null>;
   /** Re-syncs `HomeSurface`'s local editor value/text state after voice
    * dictation mutates the Slate editor directly. */
   onEditorExternallyChanged: () => void;
@@ -357,6 +376,7 @@ export function HomeComposerControls({
   targetPending = false,
   shortcutEnabled,
   onSend,
+  billingSendGuardRef,
   onEditorExternallyChanged,
   commands,
   commandsRefreshing,
@@ -512,9 +532,23 @@ export function HomeComposerControls({
   );
   // Home has no chat yet: a model's billing menu sets the billing the next
   // chat starts with, the same value a credits pick used to remember.
-  const nextChatBilling = useChatStore(
-    (s) => s.modelDefaults?.billingFramework,
+  // Read through the same seed helper the new chat uses, so a remembered AI
+  // Credits choice at a settled zero balance neither seeds the chat nor
+  // claims credits routing here; the stored choice applies again once
+  // credits are eligible. The lane facts subscription re-renders this when
+  // credits eligibility settles; the helper is a cheap read.
+  const laneFactsVersion = useSyncExternalStore(
+    subscribeRendererBillingLaneFacts,
+    getRendererBillingLaneFactsVersion,
+    getRendererBillingLaneFactsVersion,
   );
+  const modelFactsVersion = useSyncExternalStore(
+    subscribeRendererModelFacts,
+    getRendererModelFactsVersion,
+    getRendererModelFactsVersion,
+  );
+  const homeModelDefaults = useChatStore((s) => s.modelDefaults);
+  const nextChatBilling = rememberedBillingSeed(homeModelDefaults);
   // Home obeys the same eligibility as an existing chat. A remembered explicit
   // subscription choice stays honored; a fresh signed-out choice cannot bypass
   // the credits lock merely because its chat has not been created (CAN-5349).
@@ -534,6 +568,51 @@ export function HomeComposerControls({
     routingActiveForChat: false,
     aiCreditsRoutingMode,
   });
+  // Same rule as `ChatInput`'s billing send block: a Claude or Codex model
+  // under the No billing source lock with no spendable credits. Home has no
+  // banner, so a blocked send opens the model picker, which shows the lock
+  // and its remedies; the draft stays.
+  // A confirmed lane dead end blocks too, as in `ChatInput` (plan fix 5).
+  // Home has no notice to say "contact your admin", so a policy dead end
+  // also opens the picker, which shows what the policy allows.
+  const laneDeadEnd = useMemo(
+    (): boolean =>
+      workspaceId !== null &&
+      !cloudTarget &&
+      resolveLaneForTarget(workspaceId, homeModelDefaults)?.outcome ===
+        'no-dispatchable-model',
+    // The lane and model fact versions stand for module-level runtimes the
+    // resolver reads.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      workspaceId,
+      cloudTarget,
+      homeModelDefaults,
+      laneFactsVersion,
+      modelFactsVersion,
+    ],
+  );
+  const billingSendBlocked =
+    isChatMode &&
+    !cloudTarget &&
+    (billingProvider === 'claude' || billingProvider === 'codex') &&
+    getProviderForModel(effectiveModel) === billingProvider &&
+    !isOrgGatewayRoute(effectiveModel) &&
+    ((billingResolution.lockKind === 'no-billing-source' &&
+      providerAvailability[billingProvider].creditsEligible !== true) ||
+      laneDeadEnd);
+  useEffect(() => {
+    if (!billingSendGuardRef) return undefined;
+    billingSendGuardRef.current = billingSendBlocked
+      ? (): boolean => {
+          setCommandModelPickerOpenSignal((signal) => signal + 1);
+          return true;
+        }
+      : null;
+    return (): void => {
+      billingSendGuardRef.current = null;
+    };
+  }, [billingSendBlocked, billingSendGuardRef]);
   // The exact speed the next chat requests: the staged choice, then the
   // Codex default; `undefined` for providers without a Codex speed.
   const resolvedSpeed = resolveHomeSpeed(

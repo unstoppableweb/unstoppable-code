@@ -134,6 +134,9 @@ function intersectOne(
           },
         }
       : {}),
+    ...(base.sharedArtifacts !== undefined
+      ? { sharedArtifacts: narrowSharedArtifacts(base.sharedArtifacts, limit) }
+      : {}),
   };
   for (const [key, value] of Object.entries(limit)) {
     if (value === false && isBooleanCapability(base, key)) {
@@ -141,6 +144,19 @@ function intersectOne(
     }
   }
   return result;
+}
+
+/**
+ * Each member is lowered by the limit, never raised, and `create` keeps its
+ * rule that it implies `view` (CAN-8015).
+ */
+function narrowSharedArtifacts(
+  base: NonNullable<CanopyCapabilities['sharedArtifacts']>,
+  limit: CapabilityLimit,
+): NonNullable<CanopyCapabilities['sharedArtifacts']> {
+  const view = base.view && limit.sharedArtifacts?.view !== false;
+  const create = view && base.create && limit.sharedArtifacts?.create !== false;
+  return { create, view };
 }
 
 function isBooleanCapability(

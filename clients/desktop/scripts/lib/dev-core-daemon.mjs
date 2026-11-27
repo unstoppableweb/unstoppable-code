@@ -9,7 +9,11 @@
  * inputs edited while dev runs. Only macOS, Windows and Linux (CAN-4966) can
  * launch the daemon, so other hosts build nothing.
  */
-import { readLocalOnlyBuildEnv } from './local-only-build-env.mjs';
+import {
+  readCloudBaseUrlForBundle,
+  readLocalOnlyBuildEnv,
+  readSelfHostBuildEnv,
+} from './local-only-build-env.mjs';
 import { spawnSync } from 'node:child_process';
 import {
   existsSync,
@@ -87,10 +91,14 @@ export function coreDaemonFacts({
     identity: { ...identity },
     releaseFlavor: daemonReleaseFlavor(env),
     secureStorageLayout: 'nested-v1',
-    // The pipeline host bundle inlines the local-only profile, so switching
-    // it must rebuild the daemon. Recorded only when on, so normal-build
-    // facts (and their up-to-date daemons) are unchanged.
+    // The pipeline host bundle inlines the local-only and self-host
+    // profiles (and a self-host build's server origin), so switching profile
+    // or server must rebuild the daemon. Recorded only when on, so
+    // normal-build facts (and their up-to-date daemons) are unchanged.
     ...(readLocalOnlyBuildEnv(env) ? { localOnlyBuild: true } : {}),
+    ...(readSelfHostBuildEnv(env)
+      ? { selfHostBuild: true, cloudOrigin: readCloudBaseUrlForBundle(env) }
+      : {}),
   };
 }
 

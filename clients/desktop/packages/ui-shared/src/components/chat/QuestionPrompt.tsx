@@ -8,7 +8,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
-import { CheckIcon } from '../../icons/AppIcons';
+import { CheckIcon, ChevronRightMediumIcon } from '../../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { Button } from '../../primitives/Button';
 import { Markdown } from '../Markdown';
@@ -20,6 +20,7 @@ import {
   COMPOSER_PROMPT_ROWS_CLASS,
   isTypingOutside,
 } from './ComposerPrompt';
+import { ComposerIconButton } from './ComposerIconButton';
 import {
   ComposerPromptHeader,
   closeComposerPromptOnEscape,
@@ -59,6 +60,8 @@ export interface QuestionPromptProps {
   readonly locked?: boolean;
   /** Why this viewer cannot answer; shown in place of the answers' notice. */
   readonly readOnlyHint?: string;
+  /** Render the question prompt as literal text instead of parsing Markdown. */
+  readonly plainTextQuestion?: boolean;
   /** Closes the prompt and keeps the question waiting. */
   readonly onClose: () => void;
   /** Re-sends the failed answer or skip. */
@@ -95,6 +98,7 @@ export function QuestionPrompt({
   disconnected = false,
   locked: answersLocked = false,
   readOnlyHint,
+  plainTextQuestion = false,
   onClose,
   onRetry,
   takeText,
@@ -105,11 +109,11 @@ export function QuestionPrompt({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const fieldRef = useRef<HTMLInputElement | null>(null);
   const { question, kind, step, stepCount } = prompt;
+  const answersReadOnly = readOnlyHint !== undefined;
   const locked =
-    busy !== null ||
-    disconnected ||
-    answersLocked ||
-    readOnlyHint !== undefined;
+    busy !== null || disconnected || answersLocked || answersReadOnly;
+  const navigationLocked =
+    busy !== null || (!answersReadOnly && (disconnected || answersLocked));
   const rows = kind === 'choice' || kind === 'multi' ? question.options : [];
 
   const focusRow = (index: number): void => {
@@ -216,12 +220,28 @@ export function QuestionPrompt({
                   back: {
                     label: 'Previous question',
                     onBack: prompt.back,
-                    disabled: locked,
+                    disabled: navigationLocked,
                     testId: 'chat-question-back',
                   },
                 }
               : {})}
             progress={{ step, count: stepCount }}
+            {...(answersReadOnly && stepCount > 1
+              ? {
+                  actions: (
+                    <ComposerIconButton
+                      capsule
+                      tone="strong"
+                      aria-label="Next question"
+                      onClick={prompt.next}
+                      disabled={navigationLocked || step >= stepCount - 1}
+                      data-testid="chat-question-next"
+                    >
+                      <ChevronRightMediumIcon size={16} />
+                    </ComposerIconButton>
+                  ),
+                }
+              : {})}
             close={{ onClose, testId: 'chat-question-close' }}
           >
             <div
@@ -232,7 +252,13 @@ export function QuestionPrompt({
                 <span className="fg-tertiary">{question.header}</span>
               )}
               <div className={`min-w-0 ${QUESTION_PROSE_CLASS}`}>
-                <Markdown>{question.question}</Markdown>
+                {plainTextQuestion ? (
+                  <span className="whitespace-pre-wrap">
+                    {question.question}
+                  </span>
+                ) : (
+                  <Markdown>{question.question}</Markdown>
+                )}
               </div>
               {optional && (
                 <span className="font-normal fg-tertiary">Optional</span>
@@ -311,7 +337,11 @@ export function QuestionPrompt({
                   prompt.setFieldValue(event.target.value)
                 }
                 onKeyDown={(event): void => {
-                  if (event.key !== 'Enter' || event.nativeEvent.isComposing)
+                  if (
+                    locked ||
+                    event.key !== 'Enter' ||
+                    event.nativeEvent.isComposing
+                  )
                     return;
                   event.preventDefault();
                   if (prompt.canSend('')) prompt.send('');

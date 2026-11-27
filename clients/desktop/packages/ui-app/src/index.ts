@@ -1065,8 +1065,12 @@ export {
   type RemoteControlPluginsPickerProps,
 } from './code/composer/RemoteControlPluginsPicker';
 export {
+  isPluginCatalogLoading,
   pluginCatalogFailureAfterLoad,
-  pluginCatalogLoadingAfterLoad,
+  pluginCatalogLoadsAfterSettle,
+  pluginCatalogLoadsAfterStart,
+  type PluginCatalogLoadScope,
+  type PluginCatalogScopeLoads,
 } from './code/composer/plugin-catalog-load-scope';
 export {
   MoveProjectToOrganizationDialog,

@@ -11,11 +11,11 @@ import {
 import type { ProjectStartPage } from '@canopy/protocol/start-page';
 import type { HomeDiscoveryTarget } from '@canopy/desktop-shared/types';
 import {
-  FloatingPickerMenu,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
+  Picker,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
   Button,
   PickerTriggerChevron,
   SearchField,
@@ -222,7 +222,7 @@ export function StartPageSettingControl({
             </Button>
           }
         />
-        <FloatingPickerMenu
+        <Picker
           id={choiceMenuId}
           open={choiceOpen}
           onOpenChange={setChoiceOpen}
@@ -234,7 +234,7 @@ export function StartPageSettingControl({
           data-testid="start-page-choice-menu"
         >
           {choices.map((option) => (
-            <PickerMenuOption
+            <PickerOption
               key={option}
               role="option"
               aria-selected={choice === option}
@@ -242,15 +242,13 @@ export function StartPageSettingControl({
               onClick={() => choose(option)}
               data-testid={`start-page-choice-${option}`}
             >
-              <PickerMenuOptionContent>
-                <PickerMenuOptionLabel>
-                  {CHOICE_LABELS[option]}
-                </PickerMenuOptionLabel>
-              </PickerMenuOptionContent>
-              <PickerMenuOptionCheck selected={choice === option} />
-            </PickerMenuOption>
+              <PickerOptionContent>
+                <PickerOptionLabel>{CHOICE_LABELS[option]}</PickerOptionLabel>
+              </PickerOptionContent>
+              <PickerOptionCheck selected={choice === option} />
+            </PickerOption>
           ))}
-        </FloatingPickerMenu>
+        </Picker>
 
         {choice === 'file' && (
           <div className="flex flex-col gap-1.5">
@@ -270,18 +268,18 @@ export function StartPageSettingControl({
               <Surface variant="outline" className="overflow-hidden">
                 <div className="max-h-44 overflow-y-auto p-1">
                   {files.map((file) => (
-                    <PickerMenuOption
+                    <PickerOption
                       key={`${file.repoId}:${file.relativePath}`}
                       onClick={() => chooseFile(file)}
                     >
-                      <PickerMenuOptionContent>
-                        <PickerMenuOptionLabel>
+                      <PickerOptionContent>
+                        <PickerOptionLabel>
                           {projectType === 'multi-repo'
                             ? `${file.repoName} / ${file.relativePath}`
                             : file.relativePath}
-                        </PickerMenuOptionLabel>
-                      </PickerMenuOptionContent>
-                    </PickerMenuOption>
+                        </PickerOptionLabel>
+                      </PickerOptionContent>
+                    </PickerOption>
                   ))}
                 </div>
               </Surface>

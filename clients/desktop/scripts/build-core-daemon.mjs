@@ -108,6 +108,7 @@ import { prepareBrand } from './brand/prepare-brand.mjs';
 import {
   readCloudBaseUrlForBundle,
   readLocalOnlyBuildEnv,
+  readSelfHostBuildEnv,
 } from './lib/local-only-build-env.mjs';
 import { SecretProtectionToolchainUnavailable } from './lib/secret-protection-toolchain.mjs';
 import { buildSecretProtection } from './build-secret-protection.mjs';
@@ -380,7 +381,11 @@ try {
       __CANOPY_NATIVE_ARTIFACT_CATALOG__: JSON.stringify(
         encodeNativeVaultCatalog(nativeCatalog),
       ),
-      __CANOPY_DAEMON_BUILD_VERSION__: JSON.stringify(rootPackage.version),
+      // The app's __CANOPY_APP_VERSION__ expression, so each release
+      // candidate's daemon and app report the same build (CAN-4729).
+      __CANOPY_DAEMON_BUILD_VERSION__: JSON.stringify(
+        process.env.CANOPY_VERSION?.trim() || rootPackage.version,
+      ),
       __CANOPY_DAEMON_BUILD_BRAND_ID__: JSON.stringify(brand.id),
       ...daemonSecureDirectoryDefines({ brand }),
       __CANOPY_DAEMON_BUILD_COWORK_DIR_NAME__: JSON.stringify(
@@ -509,6 +514,7 @@ try {
       ),
       // Same parser as electron.vite.config.ts and build-cli.mjs.
       __CANOPY_LOCAL_ONLY__: JSON.stringify(readLocalOnlyBuildEnv(process.env)),
+      __CANOPY_SELF_HOST__: JSON.stringify(readSelfHostBuildEnv(process.env)),
       __CANOPY_RELEASE_FLAVOR__: JSON.stringify(
         process.env.CANOPY_RELEASE_FLAVOR ?? 'stable',
       ),

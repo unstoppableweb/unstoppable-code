@@ -24,7 +24,7 @@ import type {
  */
 
 export const WORKTREE_DISCARD_DISCONNECTED_WARNING =
-  'If the repository is on a disconnected drive or share, reconnect it and retry instead.';
+  'If the repository is on a disconnected drive or share, reconnect it and try again instead.';
 
 /** A batch row's reason for a discardable worktree: the batch never discards. */
 export function worktreeDiscardBatchPointer(
@@ -56,21 +56,58 @@ function joinList(items: readonly string[]): string {
   return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }
 
-function isQuarantine(kind: WorktreeDiscardTargetKind): boolean {
-  return kind === 'git-quarantine' || kind === 'files-only-recovery';
+const AT_RISK_KINDS: readonly WorktreeDiscardTargetKind[] = [
+  'git-quarantine',
+  'files-only-recovery',
+  'retained-archive',
+];
+
+function targetLabels(
+  descriptions: readonly WorktreeDiscardDescription[],
+  include: (kind: WorktreeDiscardTargetKind) => boolean,
+): string[] {
+  const labels = new Set<string>();
+  for (const description of descriptions)
+    for (const target of description.targets)
+      if (include(target.kind))
+        labels.add(TARGET_LABELS[target.kind].toLowerCase());
+  return Array.from(labels);
 }
 
-function onlyCopyWarning(
-  description: WorktreeDiscardDescription,
+/**
+ * Names each at-risk folder by the label its row shows, so the warning reads
+ * as a note on those rows rather than a rule about quarantines in general.
+ * Project deletion passes every worktree it discards, so one warning covers
+ * them all.
+ */
+export function worktreeDiscardOnlyCopyWarning(
+  descriptions: readonly WorktreeDiscardDescription[],
 ): string | null {
-  const kinds = description.targets.map((target) => target.kind);
-  if (description.causes.includes('archive-recovery-unverified'))
-    return "The archive's saved copy couldn't be verified. The checkout may hold the only copy of edits made after it was archived.";
-  if (kinds.some(isQuarantine))
-    return 'A quarantined or recovery copy may hold the only copy of edits that were never saved anywhere else.';
-  if (kinds.includes('retained-archive'))
-    return 'The archived worktree may hold the only copy of edits that were never saved anywhere else.';
-  return null;
+  const unverified = descriptions.filter((description) =>
+    description.causes.includes('archive-recovery-unverified'),
+  );
+  const rest = descriptions.filter(
+    (description) => !unverified.includes(description),
+  );
+  // An unverified archive puts the checkout it would remove at risk, wherever
+  // that checkout now is; the archive itself is what couldn't be checked.
+  const checkouts = targetLabels(
+    unverified,
+    (kind) => kind !== 'retained-archive',
+  );
+  const atRisk = targetLabels(rest, (kind) => AT_RISK_KINDS.includes(kind));
+  const sentences: string[] = [];
+  if (unverified.length > 0)
+    sentences.push(
+      `The archive's saved copy couldn't be checked, so the ${
+        checkouts.length > 0 ? joinList(checkouts) : 'checkout'
+      } may hold the only copy of edits made since it was archived.`,
+    );
+  if (atRisk.length > 0)
+    sentences.push(
+      `The ${joinList(atRisk)} may hold edits that aren't saved anywhere else.`,
+    );
+  return sentences.length > 0 ? sentences.join(' ') : null;
 }
 
 export interface WorktreeDiscardPathRow {
@@ -109,35 +146,54 @@ function uncommittedDetails(target: WorktreeDiscardTarget): string[] {
 
 export interface WorktreeDiscardCopy {
   readonly confirmLabel: string;
-  /** What happens, and that it is permanent. */
+  /** What is deleted for good, and what is kept, in one paragraph. */
   readonly lead: string;
   readonly targets: readonly WorktreeDiscardPathRow[];
   /** Present when a quarantine or a retained archive is among the targets. */
   readonly onlyCopyWarning: string | null;
   readonly missingSources: readonly WorktreeDiscardPathRow[];
-  readonly alsoDeleted: string | null;
-  readonly preserved: string | null;
-  readonly disconnectedWarning: string;
+  /** Only beside a missing source, the one case a disconnected drive explains. */
+  readonly disconnectedWarning: string | null;
+}
+
+function discardLead(description: WorktreeDiscardDescription): string {
+  const deleted = joinList(
+    description.alsoDeleted.map((data) => DELETED_DATA_LABELS[data]),
+  );
+  const kept = description.preserved.includes('branches')
+    ? ' Its branches stay in the repository.'
+    : '';
+  const count = description.targets.length;
+  if (count === 0)
+    return (
+      (deleted
+        ? `Its folders are already gone. Discarding permanently deletes its ${deleted}.`
+        : 'Its folders are already gone. Discarding removes it from the list for good.') +
+      kept
+    );
+  const folders = count === 1 ? 'the folder below' : 'the folders below';
+  return `Discarding permanently deletes ${folders}${deleted ? `, along with its ${deleted}` : ''}.${kept}`;
 }
 
 export function worktreeDiscardCopy(
   description: WorktreeDiscardDescription,
 ): WorktreeDiscardCopy {
-  const { targets } = description;
-  const deleted = description.alsoDeleted.map(
-    (data) => DELETED_DATA_LABELS[data],
-  );
+  const missingSources = description.sources
+    .filter(
+      (source) =>
+        source.state === 'gone-absent' ||
+        source.state === 'gone-not-a-repository',
+    )
+    .map((source) => ({
+      label: 'Missing source repository',
+      path: source.path,
+    }));
   return {
-    confirmLabel: description.causes.includes('source-gone')
-      ? 'Discard worktree (source missing)'
-      : 'Discard worktree',
-    lead:
-      targets.length === 0
-        ? 'Its folders are already gone. Discarding removes it from the list for good.'
-        : targets.length === 1
-          ? "Discarding permanently deletes this folder. It can't be recovered."
-          : "Discarding permanently deletes these folders. They can't be recovered.",
-    targets: targets.map((target) => {
+    // The missing source is named in the body; the action stays the title's
+    // verb and noun.
+    confirmLabel: 'Discard worktree',
+    lead: discardLead(description),
+    targets: description.targets.map((target) => {
       const details = uncommittedDetails(target);
       return {
         label: TARGET_LABELS[target.kind],
@@ -145,23 +201,10 @@ export function worktreeDiscardCopy(
         ...(details.length > 0 ? { details } : {}),
       };
     }),
-    onlyCopyWarning: onlyCopyWarning(description),
-    missingSources: description.sources
-      .filter(
-        (source) =>
-          source.state === 'gone-absent' ||
-          source.state === 'gone-not-a-repository',
-      )
-      .map((source) => ({
-        label: 'Missing source repository',
-        path: source.path,
-      })),
-    alsoDeleted:
-      deleted.length > 0 ? `Its ${joinList(deleted)} are deleted too.` : null,
-    preserved: description.preserved.includes('branches')
-      ? 'Branches in the source repository are kept.'
-      : null,
-    disconnectedWarning: WORKTREE_DISCARD_DISCONNECTED_WARNING,
+    onlyCopyWarning: worktreeDiscardOnlyCopyWarning([description]),
+    missingSources,
+    disconnectedWarning:
+      missingSources.length > 0 ? WORKTREE_DISCARD_DISCONNECTED_WARNING : null,
   };
 }
 

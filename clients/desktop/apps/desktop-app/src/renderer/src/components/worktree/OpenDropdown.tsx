@@ -10,12 +10,12 @@ import {
 } from 'react';
 import {
   ActionMenuRowStyle,
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuLabel,
-  FloatingMenu,
-  PickerMenuOptionCheck,
+  MenuDivider,
+  MenuItem,
+  MenuItemIcon,
+  MenuLabel,
+  Menu,
+  PickerOptionCheck,
   Tooltip,
 } from '@canopy/ui-shared';
 import {
@@ -170,7 +170,7 @@ export function OpenDropdown({
         </Tooltip>
       </OpenAppSplitSurface>
 
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={open}
         onOpenChange={setOpen}
@@ -185,22 +185,18 @@ export function OpenDropdown({
             product marks and keep their own colors. */}
         <ActionMenuRowStyle>
           {!loaded ? (
-            <DropdownMenuLabel>
-              {pt(uiText.applications.detecting)}
-            </DropdownMenuLabel>
+            <MenuLabel>{pt(uiText.applications.detecting)}</MenuLabel>
           ) : visibleApps.length === 0 ? (
-            <DropdownMenuLabel>
-              {pt(uiText.applications.empty)}
-            </DropdownMenuLabel>
+            <MenuLabel>{pt(uiText.applications.empty)}</MenuLabel>
           ) : (
             visibleApps.map((appItem) => (
-              <DropdownMenuItem
+              <MenuItem
                 key={appItem.id}
                 data-testid={`worktree-open-app-${appItem.id}`}
                 className="min-w-0"
                 onClick={() => handleOpenApp(appItem.id)}
               >
-                <DropdownMenuItemIcon>
+                <MenuItemIcon>
                   {appItem.icon ? (
                     <img
                       src={appItem.icon}
@@ -209,41 +205,41 @@ export function OpenDropdown({
                       draggable={false}
                     />
                   ) : null}
-                </DropdownMenuItemIcon>
+                </MenuItemIcon>
                 <span className="min-w-0 flex-1 truncate whitespace-nowrap">
                   {appItem.name}
                 </span>
-                <PickerMenuOptionCheck selected={appItem.id === splitApp?.id} />
-              </DropdownMenuItem>
+                <PickerOptionCheck selected={appItem.id === splitApp?.id} />
+              </MenuItem>
             ))
           )}
-          <DropdownMenuDivider />
-          <DropdownMenuItem
+          <MenuDivider />
+          <MenuItem
             data-testid="worktree-open-copy-path"
             className="min-w-0"
             onClick={handleCopyPath}
           >
-            <DropdownMenuItemIcon>
+            <MenuItemIcon>
               <CopyIcon />
-            </DropdownMenuItemIcon>
+            </MenuItemIcon>
             <span className="min-w-0 flex-1 truncate whitespace-nowrap">
               Copy path
             </span>
-          </DropdownMenuItem>
-          <DropdownMenuItem
+          </MenuItem>
+          <MenuItem
             data-testid="worktree-open-settings"
             className="min-w-0"
             onClick={handleOpenSettings}
           >
-            <DropdownMenuItemIcon>
+            <MenuItemIcon>
               <SettingsIcon />
-            </DropdownMenuItemIcon>
+            </MenuItemIcon>
             <span className="min-w-0 flex-1 truncate whitespace-nowrap">
               Settings
             </span>
-          </DropdownMenuItem>
+          </MenuItem>
         </ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

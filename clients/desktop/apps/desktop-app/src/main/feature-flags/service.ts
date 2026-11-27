@@ -19,7 +19,7 @@ import { app as electronApp } from 'electron';
 import type * as LaunchDarklyClientModule from 'launchdarkly-node-client-sdk';
 import type { LDClient, LDContext } from 'launchdarkly-node-client-sdk';
 import { buildDesktopFeatureFlagContext } from './context';
-import { isLocalOnlyBuild } from '../local-only/profile';
+import { isLocalOnlyBuild, isSelfHostBuild } from '../local-only/profile';
 
 type SnapshotListener = (snapshot: FeatureFlagSnapshot) => void;
 
@@ -137,6 +137,11 @@ function readBundledLaunchDarklyDesktopClientSideId(): string {
 const LAUNCHDARKLY_DEV_OFF = 'off';
 
 function readLaunchDarklyDesktopClientSideId(isPackaged: boolean): string {
+  // Self-host chokepoint: no LaunchDarkly, whatever is bundled or in the
+  // environment. The no-ID path serves the `not_configured` defaults.
+  if (isSelfHostBuild()) {
+    return '';
+  }
   const bundledValue = readBundledLaunchDarklyDesktopClientSideId();
   if (isPackaged || bundledValue) {
     return bundledValue;

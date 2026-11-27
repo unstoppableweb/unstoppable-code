@@ -95,6 +95,13 @@ function candidateKeys(
 export function findEquivalentModel<T extends ModelIdentityCandidate>(
   targetId: string,
   candidates: readonly T[],
+  options: {
+    /**
+     * `false` skips tier 3, so a `[1m]` variant never matches its base model.
+     * For a swap that persists, where a smaller window would go unnoticed.
+     */
+    readonly allowVariantFallback?: boolean;
+  } = {},
 ): T | undefined {
   if (targetId === '' || candidates.length === 0) return undefined;
 
@@ -106,12 +113,16 @@ export function findEquivalentModel<T extends ModelIdentityCandidate>(
   if (byGatewayId.kind === 'match') return byGatewayId.candidate;
   if (byGatewayId.kind === 'ambiguous') return undefined;
 
-  for (const options of [{}, { stripVariant: true }]) {
-    const targetKey = modelIdentityKey(targetId, options);
+  const tiers: ModelIdentityKeyOptions[] =
+    options.allowVariantFallback === false
+      ? [{}]
+      : [{}, { stripVariant: true }];
+  for (const keyOptions of tiers) {
+    const targetKey = modelIdentityKey(targetId, keyOptions);
     if (targetKey === undefined) return undefined;
     const tier = uniqueMatch(
       candidates.filter((candidate) =>
-        candidateKeys(candidate, options).has(targetKey),
+        candidateKeys(candidate, keyOptions).has(targetKey),
       ),
     );
     if (tier.kind === 'match') return tier.candidate;

@@ -27,7 +27,7 @@ import { FolderIcon } from '@canopy/ui-shared/icons';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { isCoworkWorkspaceFileTreeRoot } from '@/components/activity/files-tree-tab-state';
 import { FileTypeIcon } from '@canopy/ui-shared/icons';
-import { Button, FloatingMenu } from '@canopy/ui-shared/components';
+import { Button, Menu } from '@canopy/ui-shared/components';
 import { LoadingSpinner } from '@/components/shared/loading';
 import { useChatStore } from '@/stores/chatStore';
 import { sandboxStatusOf } from '@canopy/protocol/cloud-session';
@@ -293,7 +293,7 @@ export function FilePathBreadcrumb({
     }
   };
 
-  // Stable RefObject identity (FloatingMenu keys effects on it); the live
+  // Stable RefObject identity (Menu keys effects on it); the live
   // anchor element is refreshed on every render.
   const anchorRef = useRef<HTMLElement | null>(null);
   anchorRef.current = menu?.anchorEl ?? null;
@@ -387,7 +387,7 @@ export function FilePathBreadcrumb({
           {fileName}
         </span>
       </Button>
-      <FloatingMenu
+      <Menu
         // Each segment's menu is its own: switching segments places it anew.
         key={menu?.segmentIndex ?? 'closed'}
         open={menu !== null}
@@ -417,7 +417,7 @@ export function FilePathBreadcrumb({
             onPickFile={handlePickFile}
           />
         )}
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

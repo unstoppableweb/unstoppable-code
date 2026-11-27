@@ -1,6 +1,6 @@
 import { useEffect, useState, type JSX } from 'react';
 import {
-  DropdownMenuSurface,
+  MenuSurface,
   Badge,
   Button,
   LoadingSpinner,
@@ -461,29 +461,17 @@ export function SlashCommandSection(): JSX.Element {
           </span>
         </SpecimenCell>
         <SpecimenCell label="group heading, default">
-          <DropdownMenuSurface
-            role="presentation"
-            padding="menu"
-            className="w-64"
-          >
+          <MenuSurface role="presentation" padding="menu" className="w-64">
             <SlashCommandGroupHeading label="Commands" />
-          </DropdownMenuSurface>
+          </MenuSurface>
         </SpecimenCell>
         <SpecimenCell label="group heading, compact">
-          <DropdownMenuSurface
-            role="presentation"
-            padding="menu"
-            className="w-64"
-          >
+          <MenuSurface role="presentation" padding="menu" className="w-64">
             <SlashCommandGroupHeading label="Recent" compact />
-          </DropdownMenuSurface>
+          </MenuSurface>
         </SpecimenCell>
         <SpecimenCell label="group heading with a divider, and the Available divider">
-          <DropdownMenuSurface
-            role="presentation"
-            padding="menu"
-            className="w-64"
-          >
+          <MenuSurface role="presentation" padding="menu" className="w-64">
             <div className="text-s">
               <div className="px-3 py-1">/review</div>
               <SlashCommandGroupHeading label="Skills" divider />
@@ -493,16 +481,12 @@ export function SlashCommandSection(): JSX.Element {
                 /translate <SlashCommandAvailabilityTag />
               </div>
             </div>
-          </DropdownMenuSurface>
+          </MenuSurface>
         </SpecimenCell>
         <SpecimenCell label="long heading truncation is the host’s; it wraps here">
-          <DropdownMenuSurface
-            role="presentation"
-            padding="menu"
-            className="w-48"
-          >
+          <MenuSurface role="presentation" padding="menu" className="w-48">
             <SlashCommandGroupHeading label="A very long group heading from a plugin" />
-          </DropdownMenuSurface>
+          </MenuSurface>
         </SpecimenCell>
       </SpecimenGrid>
     </SpecimenPanel>

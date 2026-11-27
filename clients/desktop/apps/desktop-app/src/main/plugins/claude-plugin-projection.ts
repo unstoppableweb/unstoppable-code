@@ -1,6 +1,6 @@
-import * as fs from 'node:fs';
+import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
-import { safeReadJson } from '../lib/fs-utils';
+import { safeReadJsonAsync } from '../lib/fs-utils';
 import { isPathInside } from '../lib/path-safety';
 export { projectClaudePluginForLaunch } from '@canopy/execution-engine/node/plugins/claude-mod-projection';
 
@@ -20,15 +20,37 @@ function safeSegment(value: string): string {
   return normalized;
 }
 
-function removePath(targetPath: string): void {
-  fs.rmSync(targetPath, { recursive: true, force: true });
+async function removePath(targetPath: string): Promise<void> {
+  await fs.rm(targetPath, { recursive: true, force: true });
 }
 
-function removeReferencedMcpFiles(
+/**
+ * Remove `targetPath` from the projected copy rooted at `copyRoot` (a real
+ * path) only when the folder holding it really is inside that copy. A link
+ * the copy kept to a folder of the installed plugin would otherwise let the
+ * removal reach the installed files. `rm` removes a link itself, never what
+ * it points to, so the target may be a link.
+ */
+async function removeInsideCopy(
+  copyRoot: string,
+  targetPath: string,
+): Promise<void> {
+  let parent: string;
+  try {
+    parent = await fs.realpath(path.dirname(targetPath));
+  } catch {
+    return;
+  }
+  if (parent !== copyRoot && !isPathInside(copyRoot, parent)) return;
+  await removePath(targetPath);
+}
+
+async function removeReferencedMcpFiles(
   sourcePluginPath: string,
   projectedPluginPath: string,
+  copyRoot: string,
   rawManifest: Record<string, unknown>,
-): void {
+): Promise<void> {
   const manifestValue = rawManifest.mcpServers;
   const relativePaths =
     typeof manifestValue === 'string'
@@ -47,20 +69,17 @@ function removeReferencedMcpFiles(
 
     const projectedPath = path.resolve(projectedPluginPath, relativePath);
     if (isPathInside(projectedPluginPath, projectedPath)) {
-      removePath(projectedPath);
+      await removeInsideCopy(copyRoot, projectedPath);
     }
   }
 
-  const defaultMcpPath = path.join(projectedPluginPath, '.mcp.json');
-  if (isPathInside(projectedPluginPath, defaultMcpPath)) {
-    removePath(defaultMcpPath);
-  }
+  await removeInsideCopy(copyRoot, path.join(projectedPluginPath, '.mcp.json'));
 }
 
-function writeProjectedManifest(
+async function writeProjectedManifest(
   projectedPluginPath: string,
   rawManifest: Record<string, unknown>,
-): void {
+): Promise<void> {
   const withoutMcpServers: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(rawManifest)) {
     if (key !== 'mcpServers') {
@@ -68,21 +87,27 @@ function writeProjectedManifest(
     }
   }
   const manifestDir = path.join(projectedPluginPath, '.claude-plugin');
-  fs.mkdirSync(manifestDir, { recursive: true });
-  fs.writeFileSync(
+  // A `.claude-plugin` link the copy kept would send the write to the
+  // installed plugin's manifest; the copy gets a folder of its own instead.
+  const existing = await fs
+    .lstat(manifestDir)
+    .catch((): undefined => undefined);
+  if (existing?.isSymbolicLink() === true) await removePath(manifestDir);
+  await fs.mkdir(manifestDir, { recursive: true });
+  await fs.writeFile(
     path.join(manifestDir, 'plugin.json'),
     JSON.stringify(withoutMcpServers, null, 2),
     'utf8',
   );
 }
 
-export function projectClaudePluginWithoutMcpServers(options: {
+export async function projectClaudePluginWithoutMcpServers(options: {
   sourcePluginPath: string;
   marketplaceId: string;
   pluginName: string;
   projectionRootDir: string;
   warnings: string[];
-}): string {
+}): Promise<string> {
   const projectedPluginPath = path.join(
     options.projectionRootDir,
     safeSegment(options.marketplaceId),
@@ -99,27 +124,59 @@ export function projectClaudePluginWithoutMcpServers(options: {
     '.claude-plugin',
     'plugin.json',
   );
-  const rawManifest = safeReadJson<Record<string, unknown>>(manifestPath);
-  if (!rawManifest || !isRecord(rawManifest)) {
+  const rawManifest =
+    await safeReadJsonAsync<Record<string, unknown>>(manifestPath);
+
+  // Copy from the real folder: an install path that is itself a link would
+  // otherwise be copied as that link, and every change below would land in
+  // the installed plugin.
+  let sourceRoot: string;
+  try {
+    sourceRoot = await fs.realpath(options.sourcePluginPath);
+  } catch {
     options.warnings.push(
-      `Plugin "${options.marketplaceId}/${options.pluginName}" has no readable Claude manifest; using original plugin path.`,
+      `Plugin "${options.marketplaceId}/${options.pluginName}" folder can't be read; using original plugin path.`,
     );
     return options.sourcePluginPath;
   }
-
-  removePath(projectedPluginPath);
-  fs.mkdirSync(path.dirname(projectedPluginPath), { recursive: true });
-  fs.cpSync(options.sourcePluginPath, projectedPluginPath, {
+  await removePath(projectedPluginPath);
+  await fs.mkdir(path.dirname(projectedPluginPath), { recursive: true });
+  await fs.cp(sourceRoot, projectedPluginPath, {
     recursive: true,
     force: true,
     dereference: false,
   });
+  const copied = await fs
+    .lstat(projectedPluginPath)
+    .catch((): undefined => undefined);
+  if (copied === undefined || !copied.isDirectory()) {
+    // Never change anything that isn't a folder of the copy's own.
+    await removePath(projectedPluginPath);
+    options.warnings.push(
+      `Plugin "${options.marketplaceId}/${options.pluginName}" couldn't be copied for this launch; using original plugin path.`,
+    );
+    return options.sourcePluginPath;
+  }
+  const copyRoot = await fs.realpath(projectedPluginPath);
 
-  removeReferencedMcpFiles(
+  // With no manifest, Claude still reads the root `.mcp.json`, so the copy
+  // drops it: the resolver owns these servers, and loading the plugin's own
+  // file beside them would run a server it bound to an account, or left
+  // out, under the plugin's own sign-in.
+  if (!rawManifest || !isRecord(rawManifest)) {
+    await removeInsideCopy(
+      copyRoot,
+      path.join(projectedPluginPath, '.mcp.json'),
+    );
+    return projectedPluginPath;
+  }
+
+  await removeReferencedMcpFiles(
     options.sourcePluginPath,
     projectedPluginPath,
+    copyRoot,
     rawManifest,
   );
-  writeProjectedManifest(projectedPluginPath, rawManifest);
+  await writeProjectedManifest(projectedPluginPath, rawManifest);
   return projectedPluginPath;
 }

@@ -34,8 +34,9 @@ import { isErrnoException } from './type-guards';
 
 /*
  * CAN-4498: Electron's composition of the exclusive offline window over the
- * six item stores. Callable only before admitDesktopW5Host joins root
- * presence; the window refuses `caller-admitted` otherwise. No production
+ * six item stores and preferences (CAN-7995). Callable only before
+ * admitDesktopW5Host joins root presence; the window refuses
+ * `caller-admitted` otherwise. No production
  * caller yet: CAN-4735 PR 7 places the call in the pre-admission launch slot.
  */
 

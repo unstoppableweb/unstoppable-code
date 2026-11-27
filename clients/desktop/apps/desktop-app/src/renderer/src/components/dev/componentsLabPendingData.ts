@@ -52,8 +52,8 @@ export const PENDING_UNIFICATIONS: readonly PendingUnification[] = [
     count:
       '32 sites to change · 40 ratcheted occurrences in 27 files, see Menus below',
     shared: [
-      'FloatingMenu (84 files)',
-      'PickList (3 files)',
+      'Menu (84 files)',
+      'PickerSearchList (3 files)',
       'Popover (7 files)',
     ],
     copies: [
@@ -62,7 +62,7 @@ export const PENDING_UNIFICATIONS: readonly PendingUnification[] = [
       `${DESKTOP}/shared/invite-teammate/LinkSharingSection.tsx`,
     ],
     planned:
-      'PickList for the 8 search pickers and 2 palettes, shared parts for / and @, and the small menus onto FloatingMenu',
+      'PickerSearchList for the 8 search pickers and 2 palettes, shared parts for / and @, and the small menus onto Menu',
     note: 'Highest risk: the palettes and the composer typeaheads, which no golden reaches. The model picker keeps its search and rail as a recorded exception.',
   },
   {

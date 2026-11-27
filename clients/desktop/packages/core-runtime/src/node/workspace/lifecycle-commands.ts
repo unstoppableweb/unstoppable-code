@@ -372,7 +372,7 @@ function createRequest(
             name: params.name,
           };
     case 'local_repository':
-      // No portable-root grant service exists yet (CAN-5487).
+      // No portable-root grant service exists yet (CAN-7908).
       return unserved(
         ['source.rootGrantId'],
         'Choosing a local folder is unavailable on this host.',

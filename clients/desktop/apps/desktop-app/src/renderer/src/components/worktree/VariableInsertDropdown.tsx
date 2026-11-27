@@ -2,8 +2,8 @@ import { useId, useRef, useState, type JSX } from 'react';
 import {
   ActionMenuRowStyle,
   Button,
-  DropdownMenuItem,
-  FloatingMenu,
+  MenuItem,
+  Menu,
   Tooltip,
 } from '@canopy/ui-shared';
 import { ChevronDownMediumIcon as AppCatalogChevronDownMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -22,7 +22,7 @@ interface VariableInsertDropdownProps {
 }
 
 /**
- * Inserts a template variable. The list is the shared `FloatingMenu`, so it
+ * Inserts a template variable. The list is the shared `Menu`, so it
  * places, flips and dismisses like every menu: the arrows (also from the
  * trigger), Home and End move over the rows and skip unavailable ones, and
  * Escape closes it and returns focus to the trigger.
@@ -55,7 +55,7 @@ export function VariableInsertDropdown({
         />
       </Button>
 
-      <FloatingMenu
+      <Menu
         open={open && variables.length > 0}
         onOpenChange={setOpen}
         anchorRef={buttonRef}
@@ -74,7 +74,7 @@ export function VariableInsertDropdown({
               disabled={!variable.disabled}
               className="w-full"
             >
-              <DropdownMenuItem
+              <MenuItem
                 multiline
                 aria-disabled={variable.disabled ? true : undefined}
                 onClick={(event) => {
@@ -93,11 +93,11 @@ export function VariableInsertDropdown({
                     {variable.description}
                   </span>
                 </span>
-              </DropdownMenuItem>
+              </MenuItem>
             </Tooltip>
           ))}
         </ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

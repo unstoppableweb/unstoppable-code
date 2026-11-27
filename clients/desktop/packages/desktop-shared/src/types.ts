@@ -7068,6 +7068,12 @@ export interface PreferencesLoadResult extends PreferencesData {
 
 export interface PreferencesSaveResult extends PreferencesData {
   __managedDelegationRevocationIncomplete?: boolean;
+  /**
+   * Only the client-local keys are saved values: the save was answered
+   * before main had read the domain preferences, so every other key is a
+   * default standing in for them (CAN-7991). Never apply or emit them.
+   */
+  __preferencesUnconfirmed?: boolean;
 }
 
 export interface RepoSelection {
@@ -18643,6 +18649,14 @@ export interface CanopyApi {
    * the renderer reads it only through `lib/local-only-build.ts`.
    */
   readonly localOnlyBuild?: boolean;
+  /**
+   * True in a self-host build ("Self-host profile" in
+   * docs/local-only-build.md). A static constant evaluated once in preload,
+   * never true together with `localOnlyBuild`. Absent means another build,
+   * including the Remote Control web shim; the renderer reads it only
+   * through `lib/local-only-build.ts`.
+   */
+  readonly selfHostBuild?: boolean;
   reloadWindow: () => Promise<boolean>;
   restartApp: () => Promise<boolean>;
   /** Local window boot barrier; does not route through a paired computer. */

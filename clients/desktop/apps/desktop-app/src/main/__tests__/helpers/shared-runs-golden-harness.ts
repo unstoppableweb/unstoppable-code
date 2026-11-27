@@ -154,19 +154,27 @@ export async function until(
   }
 }
 
-/** Wait until `fingerprint` holds still, so no tick is cut short. */
+const inFlight = new Set<Promise<unknown>>();
+
+/**
+ * Wait until `track()`ed work settles and `fingerprint` holds still, so no tick is
+ * cut short. A stable fingerprint alone is not enough: a slow registry write
+ * on a busy runner leaves the poll running past it, and the poller skips the
+ * next tick while one is still running.
+ */
 export async function quiet(fingerprint: () => string): Promise<void> {
   let stable = 0;
   let last = fingerprint();
   while (stable < 8) {
+    await until(() => inFlight.size === 0, 'quiet: tracked work settles');
     await sleep(10);
     const now = fingerprint();
-    stable = now === last ? stable + 1 : 0;
+    // A poll may have started during the sleep.
+    stable = now === last && inFlight.size === 0 ? stable + 1 : 0;
     last = now;
   }
 }
 
-const inFlight = new Set<Promise<unknown>>();
 /** Count background `work` a job starts without awaiting until it settles. */
 export function track<T>(work: Promise<T>): Promise<T> {
   inFlight.add(work);

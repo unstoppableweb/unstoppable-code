@@ -1,4 +1,4 @@
-import { FloatingMenu, HeaderActionButton } from '@canopy/ui-shared';
+import { Menu, HeaderActionButton } from '@canopy/ui-shared';
 import {
   Surface,
   ActionMenuItems,
@@ -166,7 +166,7 @@ export function EmbeddedFileTreeToolbar({
             <OverflowIcon size="sm" />
           </HeaderActionButton>
         </div>
-        <FloatingMenu
+        <Menu
           open={open}
           onOpenChange={setOpen}
           anchorRef={anchor}
@@ -175,7 +175,7 @@ export function EmbeddedFileTreeToolbar({
           <ActionMenuRowStyle>
             <ActionMenuItems items={menuItems} onSelect={selectMenuItem} />
           </ActionMenuRowStyle>
-        </FloatingMenu>
+        </Menu>
       </div>
     </Surface>
   );

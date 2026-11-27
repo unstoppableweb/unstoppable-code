@@ -5,11 +5,11 @@ import {
   Surface,
   Stack,
   Button,
-  FloatingMenu,
+  Menu,
   ListRow,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionTrailing,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionTrailing,
 } from '@canopy/ui-shared/components';
 import {
   useCallback,
@@ -587,7 +587,7 @@ export function BranchPicker({
               </FormField>
               {/* Suggestions while typing: focus stays in the field, and the
                   shared menu layer places and dismisses the list. */}
-              <FloatingMenu
+              <Menu
                 open={showBasePicker && baseFilteredBranches.length > 0}
                 onOpenChange={setShowBasePicker}
                 anchorRef={baseBranchInputRef}
@@ -605,7 +605,7 @@ export function BranchPicker({
                 {baseFilteredBranches.map((b) => {
                   const provenanceBadge = getBranchProvenanceBadge(b);
                   return (
-                    <PickerMenuOption
+                    <PickerOption
                       key={`base-${b.isRemote ? 'remote' : 'local'}-${b.name}`}
                       role="option"
                       aria-selected={b.name === newBaseBranch}
@@ -626,17 +626,15 @@ export function BranchPicker({
                         {b.name}
                       </span>
                       {provenanceBadge && (
-                        <PickerMenuOptionTrailing>
+                        <PickerOptionTrailing>
                           {provenanceBadge}
-                        </PickerMenuOptionTrailing>
+                        </PickerOptionTrailing>
                       )}
-                      <PickerMenuOptionCheck
-                        selected={b.name === newBaseBranch}
-                      />
-                    </PickerMenuOption>
+                      <PickerOptionCheck selected={b.name === newBaseBranch} />
+                    </PickerOption>
                   );
                 })}
-              </FloatingMenu>
+              </Menu>
             </div>
 
             <DesktopErrorBanner

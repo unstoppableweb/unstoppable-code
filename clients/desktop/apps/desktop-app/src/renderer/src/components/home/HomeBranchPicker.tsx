@@ -10,22 +10,22 @@ import {
 } from 'react';
 import { useShallow } from 'zustand/shallow';
 import {
-  FloatingPickerMenu,
-  PickerMenuList,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionDescription,
-  PickerMenuOptionLabel,
-  PickerMenuOptionLeading,
-  PickerMenuOptionTrailing,
-  PickerMenuSearchHeader,
-  PickListSearch,
-  PickerMenuSection,
-  PickerMenuSectionLabel,
-  PickerMenuState,
-  PickerMenuTab,
-  PickerMenuTabList,
+  Picker,
+  PickerList,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionDescription,
+  PickerOptionLabel,
+  PickerOptionLeading,
+  PickerOptionTrailing,
+  PickerSearchHeader,
+  PickerSearchCombobox,
+  PickerSection,
+  PickerSectionLabel,
+  PickerState,
+  PickerTab,
+  PickerTabList,
   PickerTrigger,
   PickerTriggerChevron,
   PullRequestPickerOption,
@@ -88,7 +88,7 @@ import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posth
 import { openIntegrationSettings } from '@/lib/navigation/settings-destinations';
 
 /** The four tabs of the Create-from dropdown, in render order. */
-type PickerTab = 'new' | 'prs' | 'branches' | 'issues';
+type HomeBranchTab = 'new' | 'prs' | 'branches' | 'issues';
 
 /** Lazy per-workspace fetch state for the PRs tab's open-PR list. */
 type PrFetchState =
@@ -190,7 +190,7 @@ function targetKey(target: HomeBranchTarget): string {
 
 /** The tab that owns a given selected target, used to restore the picker to
  * the right tab when it reopens. */
-function tabForTarget(target: HomeBranchTarget): PickerTab {
+function tabForTarget(target: HomeBranchTarget): HomeBranchTab {
   if (target.kind === 'branch') return 'branches';
   if (target.kind === 'pr') return 'prs';
   if (target.kind === 'linear-issue') return 'issues';
@@ -328,8 +328,8 @@ function BranchTargetPicker({
   const isOpen = worktreeHost ? worktreeHost.open : localOpen;
   const setIsOpen = worktreeHost ? worktreeHost.onOpenChange : setLocalOpen;
   const pickerTabs = worktreeHost ? WORKTREE_PICKER_TABS : PICKER_TABS;
-  const fallbackTab: PickerTab = worktreeHost ? 'branches' : 'new';
-  const [activeTab, setActiveTab] = useState<PickerTab>('new');
+  const fallbackTab: HomeBranchTab = worktreeHost ? 'branches' : 'new';
+  const [activeTab, setActiveTab] = useState<HomeBranchTab>('new');
   const [search, setSearch] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
@@ -1032,9 +1032,11 @@ function BranchTargetPicker({
   // One-shot "open on this tab" request (the onboarding suggestions module's
   // A staged Issues-tab request seeds and briefly highlights that tab. When
   // the picker is already open, it switches in place.
-  const pendingTabRequestRef = useRef<PickerTab | null>(null);
-  const pendingGrantRef = useRef<PickerTab | null>(null);
-  const [highlightedTab, setHighlightedTab] = useState<PickerTab | null>(null);
+  const pendingTabRequestRef = useRef<HomeBranchTab | null>(null);
+  const pendingGrantRef = useRef<HomeBranchTab | null>(null);
+  const [highlightedTab, setHighlightedTab] = useState<HomeBranchTab | null>(
+    null,
+  );
 
   /**
    * Lands a staged tab request. When Linear availability has settled this is
@@ -1047,7 +1049,7 @@ function BranchTargetPicker({
    * would conflate "loading" with "disconnected" and bounce the user's
    * first click to the New tab.
    */
-  const landStagedTab = (requestedTab: PickerTab): void => {
+  const landStagedTab = (requestedTab: HomeBranchTab): void => {
     if (requestedTab === 'issues' && !linearAvailabilitySettled) {
       setActiveTab(requestedTab);
       setActiveIndex(0);
@@ -1064,7 +1066,7 @@ function BranchTargetPicker({
   useEffect(() => {
     if (!pendingBranchPickerRequest) return;
     useHomeComposerStore.getState().consumeBranchPickerRequest();
-    const requestedTab: PickerTab = pendingBranchPickerRequest.tab;
+    const requestedTab: HomeBranchTab = pendingBranchPickerRequest.tab;
     if (isOpen) {
       landStagedTab(requestedTab);
       return;
@@ -1328,7 +1330,7 @@ function BranchTargetPicker({
     }
   }
 
-  function selectTab(tab: PickerTab): void {
+  function selectTab(tab: HomeBranchTab): void {
     setActiveTab(tab);
     setActiveIndex(0);
   }
@@ -1442,7 +1444,7 @@ function BranchTargetPicker({
           : 'Search worktrees…';
 
   const menu = (
-    <FloatingPickerMenu
+    <Picker
       id="home-branch-picker-menu"
       open={isOpen}
       onOpenChange={setIsOpen}
@@ -1457,8 +1459,8 @@ function BranchTargetPicker({
       aria-label="Select branch target"
       data-testid={worktreeHost?.['data-testid'] ?? 'home-branch-picker-menu'}
     >
-      <PickerMenuSearchHeader>
-        <PickListSearch
+      <PickerSearchHeader>
+        <PickerSearchCombobox
           ref={searchRef}
           type="text"
           value={search}
@@ -1484,13 +1486,13 @@ function BranchTargetPicker({
           }
           data-testid="home-branch-picker-search"
         />
-      </PickerMenuSearchHeader>
+      </PickerSearchHeader>
 
-      <PickerMenuTabList aria-label="Branch target sources">
+      <PickerTabList aria-label="Branch target sources">
         {pickerTabs.map((tab, index) => {
           const isActive = activeTab === tab.id;
           return (
-            <PickerMenuTab
+            <PickerTab
               key={tab.id}
               ref={(node) => {
                 tabRefs.current[index] = node;
@@ -1508,12 +1510,12 @@ function BranchTargetPicker({
               highlighted={highlightedTab === tab.id}
             >
               {tab.label}
-            </PickerMenuTab>
+            </PickerTab>
           );
         })}
-      </PickerMenuTabList>
+      </PickerTabList>
 
-      <PickerMenuList
+      <PickerList
         ref={listRef}
         id="home-branch-picker-options"
         aria-label="Select branch target"
@@ -1521,7 +1523,7 @@ function BranchTargetPicker({
         data-testid="home-branch-picker-list"
       >
         {activeTab === 'new' && (
-          <PickerMenuOption
+          <PickerOption
             role="option"
             id="home-branch-picker-option-new-worktree"
             aria-selected={branchTarget.kind === 'new-worktree'}
@@ -1532,43 +1534,41 @@ function BranchTargetPicker({
             active={activeKey === 'new-worktree'}
             selected={branchTarget.kind === 'new-worktree'}
           >
-            <PickerMenuOptionLeading>
+            <PickerOptionLeading>
               <WorktreeIcon />
-            </PickerMenuOptionLeading>
-            <PickerMenuOptionContent>
-              <PickerMenuOptionLabel>New worktree</PickerMenuOptionLabel>
+            </PickerOptionLeading>
+            <PickerOptionContent>
+              <PickerOptionLabel>New worktree</PickerOptionLabel>
               {newWorktreeNeedsCommit && (
-                <PickerMenuOptionDescription data-testid="home-branch-picker-new-worktree-no-commits">
+                <PickerOptionDescription data-testid="home-branch-picker-new-worktree-no-commits">
                   {SOURCE_NO_COMMITS_HINT}
-                </PickerMenuOptionDescription>
+                </PickerOptionDescription>
               )}
-            </PickerMenuOptionContent>
-            <PickerMenuOptionCheck
+            </PickerOptionContent>
+            <PickerOptionCheck
               selected={branchTarget.kind === 'new-worktree'}
             />
-          </PickerMenuOption>
+          </PickerOption>
         )}
 
         <>
           {activeTab === 'new' && (
             <>
               {filteredWorktrees.length === 0 && (
-                <PickerMenuState data-testid="home-branch-picker-empty">
+                <PickerState data-testid="home-branch-picker-empty">
                   No matching worktrees
-                </PickerMenuState>
+                </PickerState>
               )}
               {filteredWorktrees.length > 0 && (
-                <PickerMenuSection>
-                  <PickerMenuSectionLabel>
-                    Existing worktrees
-                  </PickerMenuSectionLabel>
+                <PickerSection>
+                  <PickerSectionLabel>Existing worktrees</PickerSectionLabel>
                   {filteredWorktrees.map((worktree) => {
                     const isSelected =
                       branchTarget.kind === 'worktree' &&
                       branchTarget.worktreeId === worktree.id;
                     const key = `worktree:${worktree.id}`;
                     return (
-                      <PickerMenuOption
+                      <PickerOption
                         key={worktree.id}
                         role="option"
                         id={`home-branch-picker-option-${key}`}
@@ -1586,21 +1586,21 @@ function BranchTargetPicker({
                         active={activeKey === key}
                         selected={isSelected}
                       >
-                        <PickerMenuOptionLeading>
+                        <PickerOptionLeading>
                           <WorktreeIcon />
-                        </PickerMenuOptionLeading>
-                        <PickerMenuOptionContent>
-                          <PickerMenuOptionLabel>
+                        </PickerOptionLeading>
+                        <PickerOptionContent>
+                          <PickerOptionLabel>
                             <span className={POSTHOG_REPLAY_MASK_CLASS}>
                               {worktree.branchName}
                             </span>
-                          </PickerMenuOptionLabel>
-                        </PickerMenuOptionContent>
-                        <PickerMenuOptionCheck selected={isSelected} />
-                      </PickerMenuOption>
+                          </PickerOptionLabel>
+                        </PickerOptionContent>
+                        <PickerOptionCheck selected={isSelected} />
+                      </PickerOption>
                     );
                   })}
-                </PickerMenuSection>
+                </PickerSection>
               )}
             </>
           )}
@@ -1608,23 +1608,23 @@ function BranchTargetPicker({
           {activeTab === 'prs' && (
             <>
               {!repoPath && (
-                <PickerMenuState data-testid="home-branch-picker-pr-error">
+                <PickerState data-testid="home-branch-picker-pr-error">
                   This project has no repository to list pull requests.
-                </PickerMenuState>
+                </PickerState>
               )}
               {repoPath &&
                 prState?.status === 'error' &&
                 !prConnectRowVisible && (
-                  <PickerMenuState data-testid="home-branch-picker-pr-error">
+                  <PickerState data-testid="home-branch-picker-pr-error">
                     {prState.message}
-                  </PickerMenuState>
+                  </PickerState>
                 )}
               {prConnectRowVisible && (
                 <>
-                  <PickerMenuState>
+                  <PickerState>
                     Connect GitHub to see pull requests.
-                  </PickerMenuState>
-                  <PickerMenuOption
+                  </PickerState>
+                  <PickerOption
                     role="option"
                     id="home-branch-picker-option-pr-connect"
                     aria-selected={false}
@@ -1636,56 +1636,52 @@ function BranchTargetPicker({
                     active={activeKey === 'pr-connect'}
                     tone="accent"
                   >
-                    <PickerMenuOptionLeading>
+                    <PickerOptionLeading>
                       <GitHubIcon />
-                    </PickerMenuOptionLeading>
-                    <PickerMenuOptionContent>
-                      <PickerMenuOptionLabel>
-                        Connect GitHub
-                      </PickerMenuOptionLabel>
-                    </PickerMenuOptionContent>
-                    <PickerMenuOptionCheck selected={false} />
-                  </PickerMenuOption>
+                    </PickerOptionLeading>
+                    <PickerOptionContent>
+                      <PickerOptionLabel>Connect GitHub</PickerOptionLabel>
+                    </PickerOptionContent>
+                    <PickerOptionCheck selected={false} />
+                  </PickerOption>
                 </>
               )}
               {repoPath && (!prState || prState.status === 'loading') && (
-                <PickerMenuState data-testid="home-branch-picker-pr-loading">
+                <PickerState data-testid="home-branch-picker-pr-loading">
                   Loading pull requests…
-                </PickerMenuState>
+                </PickerState>
               )}
               {repoPath && prState?.status === 'loaded' && (
                 <>
                   {filteredPrs.map(renderPullRequestOption)}
                   {prSearchView.status === 'searching' && (
-                    <PickerMenuState data-testid="home-branch-picker-pr-search-loading">
+                    <PickerState data-testid="home-branch-picker-pr-search-loading">
                       Searching GitHub…
-                    </PickerMenuState>
+                    </PickerState>
                   )}
                   {prSearchView.status === 'error' && (
-                    <PickerMenuState data-testid="home-branch-picker-pr-search-error">
+                    <PickerState data-testid="home-branch-picker-pr-search-error">
                       {prSearchView.message}
-                    </PickerMenuState>
+                    </PickerState>
                   )}
                   {prSearchResults.length > 0 && (
-                    <PickerMenuSection data-testid="home-branch-picker-pr-search-results">
-                      <PickerMenuSectionLabel>
-                        From GitHub
-                      </PickerMenuSectionLabel>
+                    <PickerSection data-testid="home-branch-picker-pr-search-results">
+                      <PickerSectionLabel>From GitHub</PickerSectionLabel>
                       {prSearchResults.map(renderPullRequestOption)}
-                    </PickerMenuSection>
+                    </PickerSection>
                   )}
                   {prSearchView.status === 'loaded' &&
                     prSearchResults.length === 0 && (
-                      <PickerMenuState data-testid="home-branch-picker-pr-empty">
+                      <PickerState data-testid="home-branch-picker-pr-empty">
                         No matching open pull requests
-                      </PickerMenuState>
+                      </PickerState>
                     )}
                   {prSearchView.status === 'idle' &&
                     filteredPrs.length === 0 &&
                     !showPrResolveRow && (
-                      <PickerMenuState data-testid="home-branch-picker-pr-empty">
+                      <PickerState data-testid="home-branch-picker-pr-empty">
                         No open pull requests
-                      </PickerMenuState>
+                      </PickerState>
                     )}
                 </>
               )}
@@ -1694,7 +1690,7 @@ function BranchTargetPicker({
                   dead-end resolve row. Replaces `-pr-resolve` in this state
                   (both are gated on the list fetch settling). */}
               {addWorkspaceOfferVisible && noWorkspaceMatch && (
-                <PickerMenuOption
+                <PickerOption
                   role="option"
                   id="home-branch-picker-option-pr-add-workspace"
                   aria-selected={false}
@@ -1705,22 +1701,22 @@ function BranchTargetPicker({
                   data-testid="home-branch-picker-pr-add-workspace"
                   active={activeKey === 'pr-add-workspace'}
                 >
-                  <PickerMenuOptionLeading>
+                  <PickerOptionLeading>
                     <GitHubIcon />
-                  </PickerMenuOptionLeading>
-                  <PickerMenuOptionContent>
-                    <PickerMenuOptionLabel>
+                  </PickerOptionLeading>
+                  <PickerOptionContent>
+                    <PickerOptionLabel>
                       Add {noWorkspaceMatch.owner}/{noWorkspaceMatch.repo} as a
                       project…
-                    </PickerMenuOptionLabel>
-                  </PickerMenuOptionContent>
-                  <PickerMenuOptionCheck selected={false} />
-                </PickerMenuOption>
+                    </PickerOptionLabel>
+                  </PickerOptionContent>
+                  <PickerOptionCheck selected={false} />
+                </PickerOption>
               )}
               {/* Rendered outside the `loaded`-only block so paste
                   resolution stays reachable in the fetch-error state too. */}
               {prResolveRowVisible && (
-                <PickerMenuOption
+                <PickerOption
                   role="option"
                   id="home-branch-picker-option-pr-resolve"
                   aria-selected={false}
@@ -1732,24 +1728,24 @@ function BranchTargetPicker({
                   data-testid="home-branch-picker-pr-resolve"
                   active={activeKey === 'pr-resolve'}
                 >
-                  <PickerMenuOptionLeading>
+                  <PickerOptionLeading>
                     <GitHubIcon />
-                  </PickerMenuOptionLeading>
-                  <PickerMenuOptionContent>
-                    <PickerMenuOptionLabel>
+                  </PickerOptionLeading>
+                  <PickerOptionContent>
+                    <PickerOptionLabel>
                       {prResolving
                         ? 'Resolving…'
                         : `Resolve PR ${search.trim()}…`}
-                    </PickerMenuOptionLabel>
-                  </PickerMenuOptionContent>
-                  <PickerMenuOptionCheck selected={false} />
-                </PickerMenuOption>
+                    </PickerOptionLabel>
+                  </PickerOptionContent>
+                  <PickerOptionCheck selected={false} />
+                </PickerOption>
               )}
               {(prState?.status === 'loaded' || prState?.status === 'error') &&
                 prResolveError && (
-                  <PickerMenuState data-testid="home-branch-picker-pr-resolve-error">
+                  <PickerState data-testid="home-branch-picker-pr-resolve-error">
                     {prResolveError}
-                  </PickerMenuState>
+                  </PickerState>
                 )}
             </>
           )}
@@ -1757,9 +1753,9 @@ function BranchTargetPicker({
           {activeTab === 'branches' && (
             <>
               {otherBranches.length === 0 && (
-                <PickerMenuState data-testid="home-branch-picker-branches-empty">
+                <PickerState data-testid="home-branch-picker-branches-empty">
                   No matching branches
-                </PickerMenuState>
+                </PickerState>
               )}
               {otherBranches.map((branch) => {
                 const isSelected =
@@ -1768,7 +1764,7 @@ function BranchTargetPicker({
                 const provenance = getBranchProvenanceBadge(branch);
                 const key = `branch:${branch.isRemote ? 'remote' : 'local'}:${branch.name}`;
                 return (
-                  <PickerMenuOption
+                  <PickerOption
                     key={`${branch.isRemote ? 'remote' : 'local'}-${branch.name}`}
                     role="option"
                     id={`home-branch-picker-option-${key}`}
@@ -1787,19 +1783,17 @@ function BranchTargetPicker({
                     active={activeKey === key}
                     selected={isSelected}
                   >
-                    <PickerMenuOptionLeading>
+                    <PickerOptionLeading>
                       <BranchIcon size="md" />
-                    </PickerMenuOptionLeading>
-                    <PickerMenuOptionContent>
-                      <PickerMenuOptionLabel>
-                        {branch.name}
-                      </PickerMenuOptionLabel>
-                    </PickerMenuOptionContent>
+                    </PickerOptionLeading>
+                    <PickerOptionContent>
+                      <PickerOptionLabel>{branch.name}</PickerOptionLabel>
+                    </PickerOptionContent>
                     {isSelected ? (
-                      <PickerMenuOptionCheck selected />
+                      <PickerOptionCheck selected />
                     ) : (
                       provenance && (
-                        <PickerMenuOptionTrailing
+                        <PickerOptionTrailing
                           aria-label={
                             provenance === 'local'
                               ? LOCAL_BRANCH_TOOLTIP
@@ -1831,10 +1825,10 @@ function BranchTargetPicker({
                               )}
                             </span>
                           </Tooltip>
-                        </PickerMenuOptionTrailing>
+                        </PickerOptionTrailing>
                       )
                     )}
-                  </PickerMenuOption>
+                  </PickerOption>
                 );
               })}
             </>
@@ -1844,10 +1838,8 @@ function BranchTargetPicker({
             <>
               {!linearAvailable && (
                 <>
-                  <PickerMenuState>
-                    Linear tasks require an API key.
-                  </PickerMenuState>
-                  <PickerMenuOption
+                  <PickerState>Linear tasks require an API key.</PickerState>
+                  <PickerOption
                     role="option"
                     id="home-branch-picker-option-issues-connect"
                     aria-selected={false}
@@ -1859,37 +1851,33 @@ function BranchTargetPicker({
                     active={activeKey === 'issues-connect'}
                     tone="accent"
                   >
-                    <PickerMenuOptionLeading>
+                    <PickerOptionLeading>
                       <LinearIcon size="md" />
-                    </PickerMenuOptionLeading>
-                    <PickerMenuOptionContent>
-                      <PickerMenuOptionLabel>
-                        Connect Linear
-                      </PickerMenuOptionLabel>
-                    </PickerMenuOptionContent>
-                    <PickerMenuOptionCheck selected={false} />
-                  </PickerMenuOption>
+                    </PickerOptionLeading>
+                    <PickerOptionContent>
+                      <PickerOptionLabel>Connect Linear</PickerOptionLabel>
+                    </PickerOptionContent>
+                    <PickerOptionCheck selected={false} />
+                  </PickerOption>
                 </>
               )}
               {linearAvailable && linearSearching && (
-                <PickerMenuState data-testid="home-branch-picker-issue-loading">
+                <PickerState data-testid="home-branch-picker-issue-loading">
                   Searching Linear…
-                </PickerMenuState>
+                </PickerState>
               )}
               {linearAvailable &&
                 !linearSearching &&
                 search.trim().length === 0 && (
-                  <PickerMenuState>
-                    Search Linear by id or title…
-                  </PickerMenuState>
+                  <PickerState>Search Linear by id or title…</PickerState>
                 )}
               {linearAvailable &&
                 !linearSearching &&
                 search.trim().length > 0 &&
                 linearResults.length === 0 && (
-                  <PickerMenuState data-testid="home-branch-picker-issue-empty">
+                  <PickerState data-testid="home-branch-picker-issue-empty">
                     No matching tickets
-                  </PickerMenuState>
+                  </PickerState>
                 )}
               {linearAvailable &&
                 linearResults.map((ticket) => {
@@ -1898,7 +1886,7 @@ function BranchTargetPicker({
                     branchTarget.identifier === ticket.identifier;
                   const key = `linear-issue:${ticket.identifier}`;
                   return (
-                    <PickerMenuOption
+                    <PickerOption
                       key={ticket.id}
                       role="option"
                       id={`home-branch-picker-option-${key}`}
@@ -1918,31 +1906,31 @@ function BranchTargetPicker({
                       active={activeKey === key}
                       selected={isSelected}
                     >
-                      <PickerMenuOptionLeading>
+                      <PickerOptionLeading>
                         <LinearIcon size="md" />
-                      </PickerMenuOptionLeading>
-                      <PickerMenuOptionContent>
-                        <PickerMenuOptionLabel>
+                      </PickerOptionLeading>
+                      <PickerOptionContent>
+                        <PickerOptionLabel>
                           <WordBoundaryTruncatedText
                             text={ticket.title}
                             hoverTitle
                             data-testid="home-branch-picker-issue-title"
                             className="block"
                           />
-                        </PickerMenuOptionLabel>
-                        <PickerMenuOptionDescription>
+                        </PickerOptionLabel>
+                        <PickerOptionDescription>
                           {ticket.identifier}
-                        </PickerMenuOptionDescription>
-                      </PickerMenuOptionContent>
-                      <PickerMenuOptionCheck selected={isSelected} />
-                    </PickerMenuOption>
+                        </PickerOptionDescription>
+                      </PickerOptionContent>
+                      <PickerOptionCheck selected={isSelected} />
+                    </PickerOption>
                   );
                 })}
             </>
           )}
         </>
-      </PickerMenuList>
-    </FloatingPickerMenu>
+      </PickerList>
+    </Picker>
   );
 
   if (worktreeHost) return menu;

@@ -247,6 +247,28 @@ export function canopyOwnerProofMatches(
   return proofMatches(expected, actual);
 }
 
+/** Keeps a desktop peer proof from ever matching an owner proof. */
+export const CANOPY_DESKTOP_PEER_PROOF_LABEL = 'canopy-daemon-desktop-peer-v1';
+
+/**
+ * Base64url HMAC-SHA256, keyed by a daemon's owner secret, over this
+ * connection's server-issued id and the data root hash: proves an
+ * ordinary connection comes from the desktop that launched the daemon. Valid
+ * on that one connection only, and never as an owner proof.
+ */
+export function createCanopyDesktopPeerProof(
+  secret: Uint8Array,
+  connectionId: string,
+  dataRootHash: string,
+): string {
+  return createHmac('sha256', secret)
+    .update(
+      `${CANOPY_DESKTOP_PEER_PROOF_LABEL}\n${connectionId}\n${dataRootHash}`,
+      'utf8',
+    )
+    .digest('base64url');
+}
+
 interface Waiter<T> {
   resolve(value: T): void;
   reject(error: CanopyTransportError): void;

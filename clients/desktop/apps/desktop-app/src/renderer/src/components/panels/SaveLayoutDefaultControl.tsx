@@ -1,8 +1,8 @@
 import { useCallback, useId, useRef, useState, type JSX } from 'react';
 import {
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  FloatingMenu,
+  MenuItem,
+  MenuItemIcon,
+  Menu,
   TitlebarIconButton,
 } from '@canopy/ui-shared';
 import { ActionMenuRowStyle } from '@canopy/ui-shared/components';
@@ -58,7 +58,7 @@ export function SaveLayoutDefaultControl({
         aria-label="Layout options"
         title="Layout options"
       />
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={menuOpen}
         onOpenChange={setMenuOpen}
@@ -74,20 +74,20 @@ export function SaveLayoutDefaultControl({
             `resetLayoutToDefault` library path survives for the App Advisor
             action. */}
         <ActionMenuRowStyle>
-          <DropdownMenuItem
+          <MenuItem
             data-testid="save-layout-default-item"
             className="min-w-0"
             onClick={handleSave}
           >
-            <DropdownMenuItemIcon>
+            <MenuItemIcon>
               <BoardIcon />
-            </DropdownMenuItemIcon>
+            </MenuItemIcon>
             <span className="min-w-0 flex-1 truncate whitespace-nowrap">
               Save layout as default
             </span>
-          </DropdownMenuItem>
+          </MenuItem>
         </ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

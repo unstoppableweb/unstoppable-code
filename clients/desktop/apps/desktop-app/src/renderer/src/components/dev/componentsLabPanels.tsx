@@ -11,7 +11,7 @@ import type {
   OpenCodeAccountSnapshot,
 } from '@canopy/protocol/remote-control/shell';
 import {
-  DropdownMenuSurface,
+  MenuSurface,
   Button,
   CodeBlock,
   ComposerDrawer,
@@ -22,20 +22,20 @@ import {
   OnboardingTip,
   OpenCodeAccountCard,
   PageColumn,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-  PickerMenuOptionTrailing,
-  PickerMenuSearchHeader,
-  PickerMenuTab,
-  PickerMenuTabList,
-  PickList,
-  PickListResults,
+  PickerOptionContent,
+  PickerOptionLabel,
+  PickerOptionTrailing,
+  PickerSearchHeader,
+  PickerTab,
+  PickerTabList,
+  PickerSearchList,
+  PickerSearchResults,
   PipelineDispatchedTime,
   SearchField,
   Surface,
-  pickListOptionId,
-  resolvePickListActiveKey,
-  usePickListKeys,
+  pickerSearchOptionId,
+  resolvePickerSearchActiveKey,
+  usePickerSearchKeys,
   type CodeBlockSize,
   type CodeBlockTone,
   type CodeBlockVariant,
@@ -771,13 +771,9 @@ const getLabel = (item: Command): string => item.label;
  */
 function Frame({ children }: { readonly children: ReactNode }): JSX.Element {
   return (
-    <DropdownMenuSurface
-      shell="picker"
-      role="group"
-      aria-label="Picker preview"
-    >
+    <MenuSurface shell="picker" role="group" aria-label="Picker preview">
       {children}
-    </DropdownMenuSurface>
+    </MenuSurface>
   );
 }
 
@@ -792,7 +788,7 @@ function LivePickList(): JSX.Element {
       }
     >
       <Frame>
-        <PickList
+        <PickerSearchList
           items={COMMANDS}
           getKey={getKey}
           getLabel={getLabel}
@@ -805,11 +801,11 @@ function LivePickList(): JSX.Element {
           selectedKey="settings"
           renderItem={(item) => (
             <>
-              <PickerMenuOptionContent>
-                <PickerMenuOptionLabel>{item.label}</PickerMenuOptionLabel>
-              </PickerMenuOptionContent>
+              <PickerOptionContent>
+                <PickerOptionLabel>{item.label}</PickerOptionLabel>
+              </PickerOptionContent>
               {item.hint ? (
-                <PickerMenuOptionTrailing>{item.hint}</PickerMenuOptionTrailing>
+                <PickerOptionTrailing>{item.hint}</PickerOptionTrailing>
               ) : null}
             </>
           )}
@@ -847,8 +843,8 @@ function LivePickListResults(): JSX.Element {
     () => rows.filter((item) => !isArchivedRow(item)).map(getKey),
     [rows],
   );
-  const activeKey = resolvePickListActiveKey(keys, moved);
-  const handleKeys = usePickListKeys({
+  const activeKey = resolvePickerSearchActiveKey(keys, moved);
+  const handleKeys = usePickerSearchKeys({
     keys,
     activeKey,
     onActiveKeyChange: setMoved,
@@ -863,7 +859,7 @@ function LivePickListResults(): JSX.Element {
       }
     >
       <Frame>
-        <PickerMenuSearchHeader>
+        <PickerSearchHeader>
           <SearchField
             value={query}
             onValueChange={(next): void => {
@@ -880,12 +876,12 @@ function LivePickListResults(): JSX.Element {
             aria-activedescendant={
               activeKey === null
                 ? undefined
-                : pickListOptionId(listId, activeKey)
+                : pickerSearchOptionId(listId, activeKey)
             }
           />
-        </PickerMenuSearchHeader>
+        </PickerSearchHeader>
         <div className="flex max-h-64 min-h-0 flex-col">
-          <PickListResults
+          <PickerSearchResults
             items={rows}
             getKey={getKey}
             getLabel={getLabel}
@@ -904,25 +900,25 @@ function LivePickListResults(): JSX.Element {
   );
 }
 
-function PickListTabs(): JSX.Element {
+function PickerSearchTabs(): JSX.Element {
   const [tab, setTab] = useState('branches');
   return (
-    <PickerMenuTabList>
+    <PickerTabList>
       {['Branches', 'Worktrees'].map((label) => (
-        <PickerMenuTab
+        <PickerTab
           key={label}
           active={tab === label.toLowerCase()}
           onClick={(): void => setTab(label.toLowerCase())}
         >
           {label}
-        </PickerMenuTab>
+        </PickerTab>
       ))}
-    </PickerMenuTabList>
+    </PickerTabList>
   );
 }
 
-/** PickListResults and the PickList slots built on it. */
-export function PickListResultsSpecimen(): JSX.Element {
+/** PickerSearchResults and the PickerSearchList slots built on it. */
+export function PickerSearchResultsSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
       <SpecimenPanel
@@ -937,12 +933,12 @@ export function PickListResultsSpecimen(): JSX.Element {
         <SpecimenGrid min={320}>
           <SpecimenCell label="A header between the search and the list">
             <Frame>
-              <PickList
+              <PickerSearchList
                 items={COMMANDS.slice(0, 3)}
                 getKey={getKey}
                 getLabel={getLabel}
                 onPick={noop}
-                header={<PickListTabs />}
+                header={<PickerSearchTabs />}
                 searchLabel="Search branches"
                 listLabel="Branches"
                 emptyLabel="No branches match."
@@ -952,7 +948,7 @@ export function PickListResultsSpecimen(): JSX.Element {
           </SpecimenCell>
           <SpecimenCell label="A control beside each row, outside its option">
             <Frame>
-              <PickList
+              <PickerSearchList
                 items={COMMANDS.slice(0, 3)}
                 getKey={getKey}
                 getLabel={getLabel}
@@ -977,7 +973,7 @@ export function PickListResultsSpecimen(): JSX.Element {
           </SpecimenCell>
           <SpecimenCell label="Default rows mark the current value">
             <Frame>
-              <PickList
+              <PickerSearchList
                 items={COMMANDS.slice(0, 3)}
                 getKey={getKey}
                 getLabel={getLabel}
@@ -1030,8 +1026,8 @@ export function ComposerSuggestionMenuSpecimen(): JSX.Element {
   );
 }
 
-/** PickList: live, empty, loading and server-search states. */
-export function PickListSpecimen(): JSX.Element {
+/** PickerSearchList: live, empty, loading and server-search states. */
+export function PickerSearchListSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
       <SpecimenPanel title="Search-and-pick list">
@@ -1039,7 +1035,7 @@ export function PickListSpecimen(): JSX.Element {
           <LivePickList />
           <SpecimenCell label="Plain rows, no selection">
             <Frame>
-              <PickList
+              <PickerSearchList
                 items={COMMANDS.slice(0, 3)}
                 getKey={getKey}
                 getLabel={getLabel}
@@ -1053,7 +1049,7 @@ export function PickListSpecimen(): JSX.Element {
           </SpecimenCell>
           <SpecimenCell label="Empty: the search returned nothing">
             <Frame>
-              <PickList
+              <PickerSearchList
                 items={[]}
                 getKey={getKey}
                 getLabel={getLabel}
@@ -1069,7 +1065,7 @@ export function PickListSpecimen(): JSX.Element {
           </SpecimenCell>
           <SpecimenCell label="Loading: placeholder rows replace the list (busy)">
             <Frame>
-              <PickList
+              <PickerSearchList
                 items={[]}
                 getKey={getKey}
                 getLabel={getLabel}
@@ -1085,7 +1081,7 @@ export function PickListSpecimen(): JSX.Element {
           </SpecimenCell>
           <SpecimenCell label="Server search: controlled query, results as given">
             <Frame>
-              <PickList
+              <PickerSearchList
                 items={COMMANDS.slice(0, 2)}
                 getKey={getKey}
                 getLabel={getLabel}
@@ -1101,7 +1097,7 @@ export function PickListSpecimen(): JSX.Element {
           </SpecimenCell>
           <SpecimenCell label="Focused search field">
             <Frame>
-              <PickList
+              <PickerSearchList
                 items={COMMANDS.slice(0, 3)}
                 getKey={getKey}
                 getLabel={getLabel}

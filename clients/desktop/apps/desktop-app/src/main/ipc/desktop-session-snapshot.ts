@@ -59,9 +59,8 @@ export function registerDesktopSessionSnapshotHandlers(
   unsubscribeChatSessionActivity = subscribeChatSessionActivity((): void => {
     requestDesktopSessionSnapshotInvalidation('chat.session-activity');
   });
-  // Mark the snapshot stale on discrete workflow lifecycle transitions so
-  // paired computers refresh active running/completed workflow state live.
-  // Durable "paused" status after a run leaves active handles is deferred to CAN-7945.
+  // Mark the snapshot stale when workflows start, pause, resume, or finish so
+  // paired computers refresh each task's live pipelineStatus badge.
   unsubscribePipelineLifecycle?.();
   unsubscribePipelineLifecycle = subscribePipelineLifecycleTransitions(
     (): void => {

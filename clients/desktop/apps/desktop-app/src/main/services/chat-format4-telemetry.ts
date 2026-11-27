@@ -22,6 +22,7 @@ export const CHAT_FORMAT4_EVENTS = [
   'sweep_pass_completed',
   'sweep_paused',
   'sweep_scope_backed_off',
+  'sweep_scope_quarantined',
   'prehandoff_completed',
   'prehandoff_bound_exceeded',
 ] as const;
@@ -34,6 +35,8 @@ export const CHAT_FORMAT4_REASONS = [
   'permission',
   'io',
   'integrity',
+  'unrecoverable',
+  'unrecoverable_journal',
   'other',
 ] as const;
 export type ChatFormat4Reason = (typeof CHAT_FORMAT4_REASONS)[number];
@@ -102,6 +105,8 @@ export type ChatFormat4Outcome = (
       readonly event: 'sweep_scope_backed_off';
       readonly reason: ChatFormat4Reason;
     }
+  /** Unrecoverable legacy snapshots were set aside and the scope promoted. */
+  | { readonly event: 'sweep_scope_quarantined' }
   | {
       readonly event: 'prehandoff_completed' | 'prehandoff_bound_exceeded';
       readonly durationMs: number;
@@ -256,6 +261,15 @@ function outcomeLabels(
       return {
         format4_event: outcome.event,
         format4_reason: reasonLabel(outcome.reason),
+        format4_attempt: 0,
+        format4_duration_bucket: 'none',
+        format4_remaining_bucket: 'none',
+        format4_pause_reason: 'none',
+      };
+    case 'sweep_scope_quarantined':
+      return {
+        format4_event: outcome.event,
+        format4_reason: 'unrecoverable',
         format4_attempt: 0,
         format4_duration_bucket: 'none',
         format4_remaining_bucket: 'none',

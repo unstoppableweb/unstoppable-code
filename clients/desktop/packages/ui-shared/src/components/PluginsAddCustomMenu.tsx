@@ -1,9 +1,6 @@
 import { type JSX, useRef, useState } from 'react';
-import {
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-} from '../primitives/DropdownMenu';
-import { FloatingMenu } from '../primitives/FloatingMenu';
+import { MenuItem, MenuItemIcon } from '../primitives/MenuItem';
+import { Menu } from '../primitives/Menu';
 import { ActionMenuRowStyle } from '../primitives/ActionMenuItems';
 import { Button } from '../primitives/Button';
 import { menuDismissalSwallowsClick } from '../lib/menu-open-body-flag';
@@ -97,7 +94,7 @@ export function PluginsAddCustomMenu({
         {/* The chevron sits 2px past the label, inside the button's gap. */}
         <ChevronDownMediumIcon size={16} aria-hidden="true" className="-ml-1" />
       </Button>
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={setOpen}
         anchorRef={anchorRef}
@@ -109,73 +106,73 @@ export function PluginsAddCustomMenu({
       >
         <ActionMenuRowStyle>
           {onAddMcpServer && (
-            <DropdownMenuItem
+            <MenuItem
               data-testid="plugins-add-custom-mcp"
               onClick={onAddMcpServer}
             >
-              <DropdownMenuItemIcon data-testid="plugins-add-custom-mcp-icon">
+              <MenuItemIcon data-testid="plugins-add-custom-mcp-icon">
                 <McpServerIcon />
-              </DropdownMenuItemIcon>
+              </MenuItemIcon>
               Add custom MCP server…
-            </DropdownMenuItem>
+            </MenuItem>
           )}
           {onAddMarketplace && (
-            <DropdownMenuItem
+            <MenuItem
               data-testid="plugins-add-custom-marketplace"
               onClick={onAddMarketplace}
             >
-              <DropdownMenuItemIcon data-testid="plugins-add-custom-marketplace-icon">
+              <MenuItemIcon data-testid="plugins-add-custom-marketplace-icon">
                 <StorefrontIcon />
-              </DropdownMenuItemIcon>
+              </MenuItemIcon>
               Add marketplace…
-            </DropdownMenuItem>
+            </MenuItem>
           )}
           {onInstallSkillsFromGitHub && (
-            <DropdownMenuItem
+            <MenuItem
               data-testid="plugins-add-custom-skills-github"
               onClick={onInstallSkillsFromGitHub}
             >
-              <DropdownMenuItemIcon data-testid="plugins-add-custom-skills-github-icon">
+              <MenuItemIcon data-testid="plugins-add-custom-skills-github-icon">
                 <GitHubIcon />
-              </DropdownMenuItemIcon>
+              </MenuItemIcon>
               Install skills from GitHub…
-            </DropdownMenuItem>
+            </MenuItem>
           )}
           {onCreateCustomSkill && (
-            <DropdownMenuItem
+            <MenuItem
               data-testid="plugins-add-custom-skill-custom"
               onClick={onCreateCustomSkill}
             >
-              <DropdownMenuItemIcon data-testid="plugins-add-custom-skill-custom-icon">
+              <MenuItemIcon data-testid="plugins-add-custom-skill-custom-icon">
                 <SquarePlusIcon />
-              </DropdownMenuItemIcon>
+              </MenuItemIcon>
               Create custom skill…
-            </DropdownMenuItem>
+            </MenuItem>
           )}
           {onCreateCollection && (
-            <DropdownMenuItem
+            <MenuItem
               data-testid="plugins-add-custom-collection"
               onClick={onCreateCollection}
             >
-              <DropdownMenuItemIcon data-testid="plugins-add-custom-collection-icon">
+              <MenuItemIcon data-testid="plugins-add-custom-collection-icon">
                 <BundleIcon />
-              </DropdownMenuItemIcon>
+              </MenuItemIcon>
               Add collection…
-            </DropdownMenuItem>
+            </MenuItem>
           )}
           {onCreateAgent && (
-            <DropdownMenuItem
+            <MenuItem
               data-testid="plugins-add-custom-agent"
               onClick={onCreateAgent}
             >
-              <DropdownMenuItemIcon data-testid="plugins-add-custom-agent-icon">
+              <MenuItemIcon data-testid="plugins-add-custom-agent-icon">
                 <AgentIcon />
-              </DropdownMenuItemIcon>
+              </MenuItemIcon>
               New model preset…
-            </DropdownMenuItem>
+            </MenuItem>
           )}
         </ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

@@ -1,8 +1,14 @@
 import { useState, type JSX } from 'react';
 import { useShallow } from 'zustand/react/shallow';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { Notice, NoticeButton } from '@canopy/ui-shared/components';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useChatStore } from '@/stores/chatStore';
+import {
+  pairedComputerConnectionForProject,
+  usePairedComputerConnectionStore,
+  type PairedComputerConnectionEntry,
+} from '@/stores/chat/paired-computer/connection-store';
 import {
   CHAT_STATE_COMMAND_FAILED_TITLE,
   CHAT_STATE_CONFLICT_TITLE,
@@ -13,12 +19,71 @@ import {
   CHAT_STATE_REFRESH_RETRY_LABEL,
 } from '@/stores/chat/revisioned-copy';
 
+function pairedConnectionBanner(
+  entry: PairedComputerConnectionEntry | undefined,
+): {
+  readonly intent: 'neutral' | 'attention';
+  readonly message: string;
+} | null {
+  if (entry === undefined) return null;
+  switch (entry.state.status) {
+    case 'connected':
+    case 'idle':
+      return null;
+    case 'connecting':
+      return {
+        intent: 'neutral',
+        message: entry.everConnected
+          ? 'Reconnecting to paired computer…'
+          : 'Connecting to paired computer…',
+      };
+    case 'needs-update':
+      return {
+        intent: 'attention',
+        message: 'Paired computer needs an update to open this chat.',
+      };
+    case 'unavailable':
+      switch (entry.state.reason) {
+        case 'offline':
+          return {
+            intent: 'attention',
+            message: 'Paired computer is offline. Waiting to reconnect.',
+          };
+        case 'not-paired':
+          return {
+            intent: 'attention',
+            message: 'This computer is no longer paired.',
+          };
+        case 'ended':
+          return {
+            intent: 'attention',
+            message: 'Connection to paired computer ended.',
+          };
+        case 'one-window-off':
+        case 'remote-control-off':
+          return {
+            intent: 'attention',
+            message: 'Remote Control is turned off.',
+          };
+        case 'error':
+          return {
+            intent: 'attention',
+            message: entry.everConnected
+              ? 'Connection lost. Reconnecting to paired computer…'
+              : 'Could not connect to paired computer. Trying again…',
+          };
+      }
+  }
+}
+
 /**
  * Revisioned chat-state recovery treatments (frontend plan, "Required UI
  * Behavior"). Renders nothing in the normal live path:
  *
  * - While a delta gap forces a one-shot snapshot refresh, the last good
  *   transcript stays visible above and this shows the refreshing toast.
+ * - When a paired computer disconnects or reconnects, a status notice keeps
+ *   the last transcript visible until live state resumes.
  * - When the refresh fails, an inline error keeps the last transcript and
  *   offers an explicit Retry (destructive commands are never auto-retried).
  * - Stale-conflict and non-conflict command failures surface their approved
@@ -38,12 +103,19 @@ export function ChatStateRecoveryBanner({
   worktreeId,
 }: ChatStateRecoveryBannerProps): JSX.Element {
   const key = `${projectId}/${worktreeId}`;
+  const isPaired = isPairedComputerId(projectId);
   // Optional-chained: host surfaces render this banner unconditionally, and
   // partial store doubles in tests may omit the revisioned slice.
   const phase = useChatStore((s) => s.chatStateSync?.[key]?.phase);
   const notice = useChatStore(useShallow((s) => s.chatStateNotices?.[key]));
   const retryChatStateRefresh = useChatStore((s) => s.retryChatStateRefresh);
   const dismissChatStateNotice = useChatStore((s) => s.dismissChatStateNotice);
+  const pairedConnection = usePairedComputerConnectionStore((state) =>
+    isPaired ? pairedComputerConnectionForProject(state, projectId) : undefined,
+  );
+  const pairedBanner = isPaired
+    ? pairedConnectionBanner(pairedConnection)
+    : null;
 
   const showRefreshing = phase === 'refreshing';
   // The close icon hides this failure; the next failed refresh shows it again.
@@ -56,7 +128,7 @@ export function ChatStateRecoveryBanner({
     phase === 'refresh_error' && refreshErrorDismissedFor !== key;
   useCurrentUiStateReporter(
     'chat.stateRecovery',
-    showRefreshing || showRefreshError || notice
+    showRefreshing || showRefreshError || notice || pairedBanner
       ? {
           ...(showRefreshing
             ? { phase: 'refreshing' }
@@ -64,12 +136,15 @@ export function ChatStateRecoveryBanner({
               ? { phase: 'refresh_error' }
               : {}),
           ...(notice ? { noticeKind: notice.kind } : {}),
+          ...(pairedConnection
+            ? { pairedComputerStatus: pairedConnection.state.status }
+            : {}),
           retryAvailable: showRefreshError,
           dismissAvailable: Boolean(notice),
         }
       : null,
   );
-  if (!showRefreshing && !showRefreshError && !notice) {
+  if (!showRefreshing && !showRefreshError && !notice && !pairedBanner) {
     return <></>;
   }
 
@@ -78,6 +153,15 @@ export function ChatStateRecoveryBanner({
       data-testid="chat-state-recovery-banner"
       className="mx-auto flex w-full max-w-[var(--chat-composer-shell-width)] chat-width-transition shrink-0 flex-col gap-2 px-4 pt-2"
     >
+      {pairedBanner && (
+        <Notice
+          intent={pairedBanner.intent}
+          role="status"
+          data-testid="paired-computer-connection-banner"
+        >
+          {pairedBanner.message}
+        </Notice>
+      )}
       {showRefreshing && (
         <Notice
           intent="neutral"

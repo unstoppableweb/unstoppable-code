@@ -395,6 +395,23 @@ export function recordCodeGraphReadRoute(
   counters.route.add(`codeGraph.${operation}.${outcome}`, 1);
 }
 
+/** A `worker.script.execution` write Electron main routes (CAN-7663). */
+export type ScriptWriteRouteOperation = 'clear';
+
+/**
+ * Where one routed script run write ran, counted once per write (CAN-7663):
+ * `daemon.served` when the daemon answered, `daemon.failed` when it was sent
+ * and the daemon refused it or its answer was lost, `daemon.fallback` when the
+ * daemon was unreachable before the send and Electron main wrote it, and
+ * `direct` when the host or scope never selects the daemon.
+ */
+export function recordScriptWriteRoute(
+  operation: ScriptWriteRouteOperation,
+  outcome: 'daemon.served' | 'daemon.failed' | 'daemon.fallback' | 'direct',
+): void {
+  counters.route.add(`scripts.${operation}.${outcome}`, 1);
+}
+
 /** The W5 work an IPC handler's caller is charged with (CAN-6944). */
 type W5CallerWork = 'capture' | 'storeRead';
 

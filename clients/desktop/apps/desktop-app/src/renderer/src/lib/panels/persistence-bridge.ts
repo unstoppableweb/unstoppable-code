@@ -126,6 +126,7 @@ import {
 } from '@/stores/workspaceLayoutModeStore';
 import { maybeOpenStartPage } from './start-page';
 import { webCorePanelLayouts } from './panel-layout-storage';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import {
   ensureScopePanelRules,
@@ -555,9 +556,10 @@ function saveNow(worktreeKey: string): Promise<void> {
   // A layout read ahead before this save no longer says what is saved. It is
   // dropped again once the save settles, for a read that went out meanwhile.
   dropWorktreeLayoutReadAhead(worktreeKey);
-  const promise = isWebCoreScope(projectId)
-    ? Promise.resolve(webCorePanelLayouts.saveLayout(request))
-    : window.api.panelLayout.saveWorktreeLayout(request);
+  const promise =
+    isWebCoreScope(projectId) || isPairedComputerId(projectId)
+      ? Promise.resolve(webCorePanelLayouts.saveLayout(request))
+      : window.api.panelLayout.saveWorktreeLayout(request);
   inFlightSaves.set(worktreeKey, promise);
   void promise.then(
     () => {
@@ -1096,7 +1098,7 @@ async function readSavedWorktreeLayout(
   const readAhead = savedWorktreeLayoutReadAhead(worktreeKey);
   if (readAhead !== undefined) return readAhead;
   const { projectId, worktreeId } = splitWorktreeKey(worktreeKey);
-  return isWebCoreScope(projectId)
+  return isWebCoreScope(projectId) || isPairedComputerId(projectId)
     ? webCorePanelLayouts.loadLayout({ projectId, worktreeId })
     : window.api.panelLayout.loadWorktreeLayout({ projectId, worktreeId });
 }

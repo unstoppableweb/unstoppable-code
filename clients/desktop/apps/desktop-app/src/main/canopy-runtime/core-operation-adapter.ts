@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { dirname } from 'node:path';
 
 import {
+  OperationLedgerError,
   OperationService,
   RemoteOperationService,
   createCoreOperationHandlers,
@@ -10,6 +12,10 @@ import {
   type OperationLedgerTransport,
   type OperationServicePort,
 } from '@canopy/core-runtime/node/operations';
+import {
+  assertRowWritable,
+  StorageRowOwnerError,
+} from '@canopy/core-runtime/node/pipeline/store';
 import {
   logMainProcessInfo,
   logMainProcessWarn,
@@ -31,6 +37,25 @@ export interface CoreOperationAdapter extends CoreOperationHandlers {
   close(): void;
 }
 
+async function assertLedgerWritable(ledgerFile: string): Promise<void> {
+  try {
+    // The owner record sits under the data root, beside operations/.
+    await assertRowWritable(
+      dirname(dirname(ledgerFile)),
+      'operation_ledger',
+      'electron_main',
+    );
+  } catch (error) {
+    if (error instanceof StorageRowOwnerError)
+      throw new OperationLedgerError(
+        'WRITER_UNAVAILABLE',
+        error.message,
+        error,
+      );
+    throw error;
+  }
+}
+
 export function createCoreOperationAdapter(
   options: { ledgerPath?: () => string } = {},
 ): Omit<CoreOperationAdapter, 'service'> & {
@@ -39,9 +64,11 @@ export function createCoreOperationAdapter(
   const ledgerPath = options.ledgerPath ?? getOperationLedgerPath;
   const service = new OperationService({
     openLedger: async (): Promise<OperationLedger> => {
+      const ledgerFile = ledgerPath();
+      await assertLedgerWritable(ledgerFile);
       const { OperationLedger } =
         await import('@canopy/core-runtime/node/operations/ledger');
-      return OperationLedger.open(ledgerPath(), {
+      return OperationLedger.open(ledgerFile, {
         onIdentityRetention: (result): void => {
           if (result.status === 'pruned')
             logMainProcessInfo(

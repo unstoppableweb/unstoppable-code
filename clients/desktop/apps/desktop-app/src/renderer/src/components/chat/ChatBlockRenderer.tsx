@@ -124,6 +124,7 @@ import {
   type PluginMentionIndex,
 } from '@/lib/pluginMentionIndex';
 import { PluginMention } from './PluginMention';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { ChatMarkdownFileTargetContext } from './chat-markdown-file-target';
 import { ChatMarkdownLink } from './ChatMarkdownLink';
 import { openOrchestratorResponseLink } from './chat-message-link-actions';
@@ -244,7 +245,9 @@ const ChatMarkdownImage = memo(function ChatMarkdownImage({
   // unavailable instead of the transcript making a request.
   const remoteImages = useRemoteImagesAllowed();
   const [resolvedSrc, setResolvedSrc] = useState<string | null | undefined>();
-  const shouldResolve = target !== null && isAbsoluteLocalImageSource(rawSrc);
+  const isPairedScope = target !== null && isPairedComputerId(target.projectId);
+  const shouldResolve =
+    target !== null && !isPairedScope && isAbsoluteLocalImageSource(rawSrc);
 
   useEffect(() => {
     if (!shouldResolve || !target) return;
@@ -277,9 +280,13 @@ const ChatMarkdownImage = memo(function ChatMarkdownImage({
     };
   }, [rawSrc, shouldResolve, target]);
 
+  const trimmedSrc = rawSrc.trimStart();
+  const isAllowedPairedImageSource =
+    /^https?:\/\//i.test(trimmedSrc) || /^data:image\//i.test(trimmedSrc);
   if (
     isNetworkPathImageSource(rawSrc) ||
-    (!remoteImages && /^https?:/i.test(rawSrc.trimStart()))
+    (isPairedScope && !isAllowedPairedImageSource) ||
+    (!remoteImages && /^https?:/i.test(trimmedSrc))
   ) {
     return <MarkdownImageUnavailable alt={alt} />;
   }
@@ -307,6 +314,8 @@ const ChatImageBlock = memo(function ChatImageBlock({
   dataUrl,
   alt,
 }: ChatImageBlockProps): JSX.Element {
+  const target = useContext(ChatMarkdownFileTargetContext);
+  const isPairedScope = target !== null && isPairedComputerId(target.projectId);
   const [src, setSrc] = useState<string | null | undefined>();
 
   useEffect(() => {
@@ -314,6 +323,10 @@ const ChatImageBlock = memo(function ChatImageBlock({
     setSrc(undefined);
     if (dataUrl !== undefined) {
       setSrc(isSafeCodexInlineImage(dataUrl) ? dataUrl : null);
+      return;
+    }
+    if (isPairedScope || path.trim() === '') {
+      setSrc(null);
       return;
     }
     const windowsPath = path.replace(/\//g, '\\');
@@ -343,7 +356,7 @@ const ChatImageBlock = memo(function ChatImageBlock({
     return (): void => {
       cancelled = true;
     };
-  }, [path, dataUrl]);
+  }, [path, dataUrl, isPairedScope]);
 
   if (src === undefined) {
     return (
@@ -1303,16 +1316,21 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
   const textMarkdownOptions = preserveLineBreaks
     ? MENTION_MARKDOWN_OPTIONS_WITH_LINE_BREAKS
     : MENTION_MARKDOWN_OPTIONS;
+  const chatTarget = useContext(ChatMarkdownFileTargetContext);
+  const isPairedScope =
+    (chatTarget !== null && isPairedComputerId(chatTarget.projectId)) ||
+    (originChatTabId !== undefined && isPairedComputerId(originChatTabId));
   const blockText = block.type === 'text' ? block.text : '';
   // Pure scans, once per settled text; prose without reference candidates
-  // never reads preview state.
+  // never reads preview state. Paired transcripts stay isolated from local
+  // Linear/GitHub probes.
   const linearCandidates = useMemo(
-    () => (settled ? scanLinearCandidates(blockText) : null),
-    [blockText, settled],
+    () => (settled && !isPairedScope ? scanLinearCandidates(blockText) : null),
+    [blockText, isPairedScope, settled],
   );
   const githubCandidates = useMemo(
-    () => (settled ? scanGitHubCandidates(blockText) : null),
-    [blockText, settled],
+    () => (settled && !isPairedScope ? scanGitHubCandidates(blockText) : null),
+    [blockText, isPairedScope, settled],
   );
   // Recursive sub-block renderer passed down to AgentBlock so the AgentBlock
   // module does not need to import ChatBlockRenderer (which would create a
@@ -1388,7 +1406,11 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
         );
       }
       if (isClaudeAiCreditsFallbackErrorCode(block.errorCode)) {
-        return <ClaudeAiCreditsFallbackError />;
+        return isPairedScope ? (
+          <ChatAppNote text="Sign in on the paired computer." />
+        ) : (
+          <ClaudeAiCreditsFallbackError />
+        );
       }
       if (block.asyncQuestionAnswer) {
         const { answers } = block.asyncQuestionAnswer;
@@ -1441,7 +1463,9 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
       // raw `Error:` text is not rendered for it. The action re-checks live
       // tab state before it resends.
       if (block.modelAccessFailure) {
-        return (
+        return isPairedScope ? (
+          <ChatAppNote text={text} />
+        ) : (
           <CodexAccountModelNoticeAction
             failure={block.modelAccessFailure}
             originChatTabId={originChatTabId}
@@ -1456,12 +1480,19 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
       // is the single switch between the two paths.
       // The desktop's own account proxy failure: only proxy settings fix it.
       if (isSystemMessage && isAccountProxySettingsFailure(text)) {
-        return <AccountProxyFailureNoticeAction text={text} />;
+        return isPairedScope ? (
+          <ChatAppNote text={text} />
+        ) : (
+          <AccountProxyFailureNoticeAction text={text} />
+        );
       }
       const proxyError =
         isSystemMessage || (isAssistantMessage && isCanopyProxyErrorBody(text))
           ? parseCanopyProxyError(text)
           : null;
+      if (proxyError && isPairedScope) {
+        return <CanopyProxyErrorSummary error={proxyError} />;
+      }
       if (proxyError?.code === 'no_billing_source') {
         return (
           <CreditsNotice
@@ -1507,6 +1538,7 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
         return (
           <AuthRecoveryCard
             failures={[legacyProviderAuthFailure(connectionProvider, text)]}
+            originChatTabId={originChatTabId}
           />
         );
       }

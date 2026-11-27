@@ -460,6 +460,18 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         ],
       },
       {
+        id: 'no-billing-source-zero-credits',
+        title: 'No billing source: signed out with 0 AI Credits',
+        note: 'A remembered AI Credits choice at a settled zero balance no longer counts as a way to pay. This notice owns the slot alone: no Using AI Credits card beside it, and Send opens the provider list with the draft kept.',
+        intent: 'attention',
+        heading: NO_PROVIDER_COPY.title,
+        message: NO_PROVIDER_COPY.message,
+        actions: [
+          { label: 'Connect Claude' },
+          { label: SWITCH_PROVIDER_LABEL, variant: 'primary' },
+        ],
+      },
+      {
         id: 'no-billing-source-one-ready',
         title: 'No billing source: one provider ready',
         note: 'The message names the one ready source, as the Continue menu does.',
@@ -751,6 +763,16 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
             Covered by Acme
           </span>
         ),
+      },
+      {
+        id: 'routing-status-empty',
+        title: 'AI Credits routing: empty wallet',
+        note: 'A known zero (or negative) balance with no org pool: the card never claims the session is paid with AI Credits. Only shows while a provider sign-in still carries the chat; signed out, the No billing source notice owns the slot.',
+        intent: 'neutral',
+        icon: <CoinsIcon size={16} aria-hidden="true" />,
+        heading: 'Using AI Credits',
+        message: 'No AI Credits left.',
+        actions: [{ label: 'Switch to subscription' }],
       },
       {
         id: 'resource-guard-memory',

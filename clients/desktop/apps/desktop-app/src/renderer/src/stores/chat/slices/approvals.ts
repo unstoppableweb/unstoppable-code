@@ -21,6 +21,7 @@ import {
   getApprovalDefaultsGeneration,
 } from '../approval-defaults';
 import { pendingTabCreation } from '../pending-tab-creation';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import {
   chatBackendFor,
@@ -53,7 +54,7 @@ async function liveApprovalEvent(
   requestId: string,
 ): Promise<ApprovalRequestEvent | undefined> {
   try {
-    return (await chatBackendFor(scope).approvals.pendingRequests()).find(
+    return (await chatBackendFor(scope).approvals.pendingRequests(scope)).find(
       (event) => event.requestId === requestId,
     );
   } catch (cause) {
@@ -219,7 +220,8 @@ export const createApprovalsSlice: StateCreator<
     // its `worktreeChats` entry.
     if (
       !hydratedKeys.has(key) &&
-      !isSyntheticChatTarget(event.projectId, event.worktreeId)
+      !isSyntheticChatTarget(event.projectId, event.worktreeId) &&
+      !isPairedComputerId(event.projectId)
     ) {
       ensureHydratedAndReplayPendingEvents(event.projectId, event.worktreeId);
     }

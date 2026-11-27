@@ -1282,3 +1282,22 @@ describe('a sweep that stays paced (review round 7)', () => {
     ).toBeLessThanOrEqual(4);
   });
 });
+
+describe('a legacy scope left with only its quarantined files (CAN-7851)', () => {
+  it('is still found by its quarantined tabs file or tabs backup, so the sweep never completes over it', async () => {
+    const scope = { projectId: 'project-legacy', worktreeId: 'old' };
+    const { tabs } = pathsFor(scope);
+    await mkdir(join(tabs, '..'), { recursive: true });
+    await writeFile(`${tabs}.unrecoverable-1`, '{ corrupt');
+    await writeFile(`${tabs}.bak.unrecoverable-1`, '{ corrupt too');
+    const inventory = await listChatFormat4SweepCandidates(
+      dataDir,
+      resolveStore,
+    );
+    expect(
+      inventory.candidates.map(
+        (item) => `${item.scope.worktreeId}:${item.format}`,
+      ),
+    ).toEqual(['old:v1']);
+  });
+});

@@ -7,6 +7,7 @@
  * own enumerated files, never through a symlink and never outside the scope.
  */
 import {
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
@@ -1290,5 +1291,339 @@ describe('cleanup with no legacy files left (review of #10097, round 4)', () => 
     await visit('open', repository());
     const evidence = join(storeFor().directory, 'recovery-evidence');
     expect(mockReadLog.filter((path) => path.startsWith(evidence))).toEqual([]);
+  });
+});
+
+describe('a legacy tabs file no reader can recover (CAN-7851, design A)', () => {
+  /** A tabs file that doesn't parse, and a readable archive beside it. */
+  const CORRUPT = '{ "version": 1, "tabs": [ { "id": "lost"';
+
+  async function seedCorrupt(text: string = CORRUPT): Promise<void> {
+    const { tabs, archives } = pathsFor(SCOPE);
+    await put(tabs, text);
+    await put(archives, archivesFile([tab('old', 'Archived chat')]));
+  }
+
+  const quarantined = (path: string, n = 1): string =>
+    `${path}.unrecoverable-${n}`;
+
+  /** The bytes of every recovery-evidence copy the store records. */
+  async function evidenceTexts(): Promise<string[]> {
+    const recovery = JSON.parse(
+      await readFile(join(storeFor().directory, 'recovery-index.json'), 'utf8'),
+    ) as { legacyEvidence?: Array<{ relativePath: string }> };
+    return Promise.all(
+      (recovery.legacyEvidence ?? []).map((entry) =>
+        readFile(join(storeFor().directory, entry.relativePath), 'utf8'),
+      ),
+    );
+  }
+
+  /**
+   * `count` app launches, each a fresh repository and sweep with its own
+   * session, eight passes an hour apart. `between` runs after each launch.
+   * With `open`, the user opens the worktree before the sweep's first pass.
+   */
+  async function launches(
+    count: number,
+    between: (launch: number) => Promise<void> = (): Promise<void> =>
+      Promise.resolve(),
+    { open = false }: { open?: boolean } = {},
+  ): Promise<void> {
+    let now = 0;
+    for (let launch = 0; launch < count; launch += 1) {
+      const target = repository();
+      const sweep = new ChatFormat4Sweep({
+        dataDir,
+        target: {
+          ...repositoryChatFormat4SweepTarget(target, () => promotion),
+          sweepAllowed: (): boolean => true,
+        },
+        resolveStore: storeFor,
+        conditions: {
+          turnInFlight: (): boolean => false,
+          idleMs: (): number => Number.MAX_SAFE_INTEGER,
+          onBattery: (): boolean => false,
+          freeBytes: (): Promise<number | undefined> =>
+            Promise.resolve(1024 ** 4),
+        },
+        clock: {
+          now: (): number => now,
+          sleep: (): Promise<void> => Promise.resolve(),
+        },
+      });
+      await sweep.beginLaunch();
+      if (open) await target.getState(SCOPE).catch(() => undefined);
+      for (let pass = 0; pass < 8; pass += 1) {
+        now += 3_600_000;
+        await sweep.runPass();
+      }
+      await target.drainAll();
+      await between(launch);
+    }
+  }
+
+  it('fails the first session without touching the file, then a later session with the same file quarantines it, keeps its bytes as evidence and promotes the scope', async () => {
+    await seedCorrupt();
+    const { tabs } = pathsFor(SCOPE);
+    await launches(1);
+    expect(await storeFor().format()).toBe('v1');
+    expect(await readFile(tabs, 'utf8')).toBe(CORRUPT);
+    expect(await absent(quarantined(tabs))).toBe(true);
+    // Today the whole scope fails to open, readable archive included.
+    const open = repository();
+    await expect(open.getState(SCOPE)).rejects.toBeDefined();
+    await open.drainAll();
+
+    await launches(4);
+    expect(await storeFor().format()).toBe('v4');
+    expect(await chatFormat4SweepComplete(dataDir)).toBe(true);
+    expect(await absent(tabs)).toBe(true);
+    expect(await readFile(quarantined(tabs), 'utf8')).toBe(CORRUPT);
+    expect(
+      (await evidenceTexts()).filter((text) => text === CORRUPT),
+    ).toHaveLength(1);
+    expect(await chatsOf()).toEqual({ old: ['Archived chat'] });
+  });
+
+  it('never quarantines a file whose bytes change between sessions, and keeps counting the scope', async () => {
+    const { tabs } = pathsFor(SCOPE);
+    await seedCorrupt(`${CORRUPT} 0`);
+    await launches(5, async (launch) => {
+      await put(tabs, `${CORRUPT} ${launch + 1}`);
+    });
+    expect(await storeFor().format()).toBe('v1');
+    expect(await readFile(tabs, 'utf8')).toBe(`${CORRUPT} 5`);
+    expect(await absent(quarantined(tabs))).toBe(true);
+    expect(await chatFormat4SweepComplete(dataDir)).toBe(false);
+  });
+
+  it('never quarantines a file it cannot read: the bytes stay and the scope keeps counting', async () => {
+    if (process.getuid?.() === 0) return;
+    await seedCorrupt();
+    const { tabs } = pathsFor(SCOPE);
+    await chmod(tabs, 0o000);
+    try {
+      await launches(5);
+    } finally {
+      await chmod(tabs, 0o600);
+    }
+    expect(await storeFor().format()).toBe('v1');
+    expect(await readFile(tabs, 'utf8')).toBe(CORRUPT);
+    expect(await absent(quarantined(tabs))).toBe(true);
+    expect(await chatFormat4SweepComplete(dataDir)).toBe(false);
+  });
+
+  it('recovers a corrupt tabs file from its valid backup in the first session, with no quarantine', async () => {
+    await seedCorrupt();
+    const { tabs } = pathsFor(SCOPE);
+    await put(`${tabs}.bak`, tabsFile([tab('live', 'Live chat')]));
+    await launches(1);
+    expect(await storeFor().format()).toBe('v4');
+    expect(await absent(quarantined(tabs))).toBe(true);
+    expect(await absent(quarantined(`${tabs}.bak`))).toBe(true);
+    expect(await chatsOf()).toEqual({
+      live: ['Live chat'],
+      old: ['Archived chat'],
+    });
+  });
+
+  it('never quarantines for a journal whose records conflict: that stays a migration failure, and every file stays', async () => {
+    const { tabs, journal } = pathsFor(SCOPE);
+    await put(tabs, tabsFile([tab('live', 'Live chat')]));
+    const [first = ''] = journalFile([tab('one', 'One')]).split('\n');
+    const [second = ''] = journalFile([tab('two', 'Two')]).split('\n');
+    await put(journal, `${first}\n${second}\n`);
+    const before = await legacyBytes(legacyFamily());
+    await launches(5);
+    expect(await storeFor().format()).toBe('v1');
+    expect(await legacyBytes(legacyFamily())).toEqual(before);
+    for (const path of legacyFamily())
+      expect(await absent(quarantined(path))).toBe(true);
+  });
+
+  it('quarantines the file even when the user opens the worktree before the sweep in every launch (review of #10972)', async () => {
+    await seedCorrupt();
+    const { tabs } = pathsFor(SCOPE);
+    await launches(5, (): Promise<void> => Promise.resolve(), { open: true });
+    expect(await storeFor().format()).toBe('v4');
+    expect(await chatFormat4SweepComplete(dataDir)).toBe(true);
+    expect(await readFile(quarantined(tabs), 'utf8')).toBe(CORRUPT);
+    expect(await chatsOf()).toEqual({ old: ['Archived chat'] });
+  });
+
+  it('quarantines a tabs file whose bytes are not UTF-8, as it does one that does not parse (review of #10972)', async () => {
+    const { tabs, archives } = pathsFor(SCOPE);
+    const bytes = Buffer.from([0x7b, 0x22, 0xff, 0x22, 0x7d, 0x0a]);
+    await put(archives, archivesFile([tab('old', 'Archived chat')]));
+    await mkdir(dirname(tabs), { recursive: true });
+    await writeFile(tabs, bytes);
+    await launches(5);
+    expect(await storeFor().format()).toBe('v4');
+    expect(await absent(tabs)).toBe(true);
+    expect(await readFile(quarantined(tabs))).toEqual(bytes);
+    expect(await chatsOf()).toEqual({ old: ['Archived chat'] });
+  });
+
+  it('never sets the file aside while the journal still needs it: a message for a chat only that file held keeps the scope counting, every byte in place (review of #10972)', async () => {
+    await seedCorrupt();
+    const { journal } = pathsFor(SCOPE);
+    await put(
+      journal,
+      JSON.stringify({
+        v: 1,
+        revision: 1,
+        mutationId: 'later-lost',
+        occurredAt: '2026-11-12T00:00:01Z',
+        source: 'migration',
+        mutations: [
+          {
+            type: 'message.upserted',
+            chatId: 'lost',
+            message: {
+              id: 'lost-m2',
+              role: 'user',
+              timestamp: 2,
+              blocks: [{ type: 'text', text: 'Later' }],
+            },
+          },
+        ],
+      }) + '\n',
+    );
+    const before = await legacyBytes(legacyFamily());
+    await launches(5);
+    expect(await storeFor().format()).toBe('v1');
+    expect(await chatFormat4SweepComplete(dataDir)).toBe(false);
+    expect(await legacyBytes(legacyFamily())).toEqual(before);
+    for (const path of legacyFamily())
+      expect(await absent(quarantined(path))).toBe(true);
+  });
+
+  it('never sets the file aside when recovering without it would skip a journal write: the scope keeps counting, every byte in place (review of #10972)', async () => {
+    const { tabs, archives, journal } = pathsFor(SCOPE);
+    await put(tabs, CORRUPT);
+    await put(
+      archives,
+      JSON.stringify({
+        version: 1,
+        revision: 1,
+        archived: [
+          {
+            tab: tab('old', 'Archived chat'),
+            archivedAt: '2026-11-12T00:00:00Z',
+            turnCount: 1,
+          },
+        ],
+      }) + '\n',
+    );
+    await put(
+      journal,
+      JSON.stringify({
+        v: 1,
+        revision: 3,
+        mutationId: 'after-gap-lost',
+        occurredAt: '2026-11-12T00:00:03Z',
+        source: 'migration',
+        mutations: [
+          {
+            type: 'message.upserted',
+            chatId: 'lost',
+            message: {
+              id: 'lost-m3',
+              role: 'user',
+              timestamp: 3,
+              blocks: [{ type: 'text', text: 'After the gap' }],
+            },
+          },
+        ],
+      }) + '\n',
+    );
+    const before = await legacyBytes(legacyFamily());
+    await launches(5);
+    expect(await storeFor().format()).toBe('v1');
+    expect(await chatFormat4SweepComplete(dataDir)).toBe(false);
+    expect(await legacyBytes(legacyFamily())).toEqual(before);
+    for (const path of legacyFamily())
+      expect(await absent(quarantined(path))).toBe(true);
+  });
+
+  it('never sets the file aside while a journal runtime record refers to a chat only that file held, though migration would drop it unseen (review of #10972)', async () => {
+    await seedCorrupt();
+    const { journal } = pathsFor(SCOPE);
+    await put(
+      journal,
+      JSON.stringify({
+        v: 1,
+        revision: 1,
+        mutationId: 'runtime-lost',
+        occurredAt: '2026-11-12T00:00:01Z',
+        source: 'migration',
+        mutations: [
+          {
+            type: 'runtime.patched',
+            chatId: 'lost',
+            runtime: { status: 'idle', queuedMessageIds: [] },
+          },
+        ],
+      }) + '\n',
+    );
+    const before = await legacyBytes(legacyFamily());
+    await launches(5);
+    expect(await storeFor().format()).toBe('v1');
+    expect(await chatFormat4SweepComplete(dataDir)).toBe(false);
+    expect(await legacyBytes(legacyFamily())).toEqual(before);
+    for (const path of legacyFamily())
+      expect(await absent(quarantined(path))).toBe(true);
+  });
+
+  it('sets the file aside when the journal only adds chats of its own, and the scope reaches format 4 with them (review of #10972)', async () => {
+    await seedCorrupt();
+    const { tabs, journal } = pathsFor(SCOPE);
+    await put(journal, journalFile([tab('fresh', 'Fresh chat')]));
+    await launches(5);
+    expect(await storeFor().format()).toBe('v4');
+    expect(await readFile(quarantined(tabs), 'utf8')).toBe(CORRUPT);
+    expect(await chatsOf()).toEqual({
+      fresh: ['Fresh chat'],
+      old: ['Archived chat'],
+    });
+  });
+
+  it('a crash after the quarantine and before the promotion: the next inventory still finds the scope by its quarantined file, and promotes it with the bytes kept once', async () => {
+    const { tabs } = pathsFor(SCOPE);
+    await put(quarantined(tabs), CORRUPT);
+    await launches(1);
+    expect(await storeFor().format()).toBe('v4');
+    expect(await chatFormat4SweepComplete(dataDir)).toBe(true);
+    expect(await readFile(quarantined(tabs), 'utf8')).toBe(CORRUPT);
+    expect(
+      (await evidenceTexts()).filter((text) => text === CORRUPT),
+    ).toHaveLength(1);
+  });
+
+  it('when copying the quarantined file into the evidence fails, the migration fails, the bytes stay, and a later session promotes the scope', async () => {
+    await seedCorrupt();
+    const { tabs } = pathsFor(SCOPE);
+    mockCopyFault.suffix = '.unrecoverable-1';
+    await launches(5);
+    expect(await storeFor().format()).toBe('v1');
+    expect(await chatFormat4SweepComplete(dataDir)).toBe(false);
+    expect(await readFile(quarantined(tabs), 'utf8')).toBe(CORRUPT);
+    mockCopyFault.suffix = undefined;
+    await launches(4);
+    expect(await storeFor().format()).toBe('v4');
+    expect(
+      (await evidenceTexts()).filter((text) => text === CORRUPT),
+    ).toHaveLength(1);
+  });
+
+  it('cleanup after format 4 keeps the quarantined file: it is outside the six-path family, and its bytes are in the evidence', async () => {
+    await seedCorrupt();
+    const { tabs } = pathsFor(SCOPE);
+    await launches(5);
+    expect(await storeFor().format()).toBe('v4');
+    await visit('open', repository());
+    expect(await readFile(quarantined(tabs), 'utf8')).toBe(CORRUPT);
+    for (const path of legacyFamily()) expect(await absent(path)).toBe(true);
   });
 });

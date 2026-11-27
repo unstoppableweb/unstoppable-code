@@ -1883,15 +1883,17 @@ function PluginEntryDetailContent({
         enabled={customizeLogoPlate}
         notAddedYet={notAddedYet}
         sourceKey={catalogSource}
-        load={async () => {
+        load={async ({ retry }) => {
+          // Only Try again asks main to drop a remembered failure.
           const read = await window.plugins.previewManifest(
             resolved.marketplace.id,
             resolved.plugin.name,
+            ...(retry ? [{ retry }] : []),
           );
           return read.success ? (read.data ?? null) : null;
         }}
       >
-        {(shown, checking, preview) => (
+        {(shown, checking, preview, contentsRead) => (
           <PluginCatalogDetail
             entry={{
               name: entry.name,
@@ -1928,6 +1930,7 @@ function PluginEntryDetailContent({
                   // checkout, as the full detail view opened them.
                   readComponent: catalogReadComponent,
                   sourceKey: catalogSource,
+                  contentsRead,
                   logo: (
                     <CustomizeEntryLogo
                       entry={shownLogo}

@@ -43,11 +43,16 @@ export function createPluginsAPI(): PluginsAPI {
         componentFile,
         ...(mode ? [mode] : []),
       ),
-    previewManifest: (marketplaceId: string, pluginName: string) =>
+    previewManifest: (
+      marketplaceId: string,
+      pluginName: string,
+      options?: { readonly retry?: boolean },
+    ) =>
       ipcRenderer.invoke(
         PLUGINS_CHANNELS.PREVIEW_MANIFEST,
         marketplaceId,
         pluginName,
+        ...(options?.retry ? [{ retry: true }] : []),
       ),
     installPlugin: (
       marketplaceId: string,

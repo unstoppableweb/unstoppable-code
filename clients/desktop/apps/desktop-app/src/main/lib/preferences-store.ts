@@ -13,7 +13,6 @@ import {
 import { resolveAvailableModel } from './model-availability';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { readFile, stat } from 'node:fs/promises';
-import { trackDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
 import { dirname } from 'node:path';
 import {
   USAGE_DATA_KEYS,
@@ -24,10 +23,7 @@ import {
   recordUsageDataRevocations,
   type ConsentJournal,
 } from './usage-data-consent-document';
-import {
-  getUsageDataPolicy,
-  usageDataConsentStateOf,
-} from './usage-data-policy';
+import { getUsageDataPolicy } from './usage-data-policy';
 import {
   type PreferencesData,
   type PreferencesLoadErrorDetails,
@@ -43,10 +39,19 @@ import {
 } from './preferences-file-paths';
 import { getResolvedCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { pruneDamagedCopies } from '@canopy/execution-engine/node/lib/damaged-copies';
-import { commitSuggestionsGate } from './suggestions-gate';
-import { publishCommittedPreferences } from './preferences-committed';
-import { applyOneWindowChoice, isOneWindowEnabled } from './one-window-switch';
-import { broadcastPreferencesChanged } from './preferences-broadcast';
+import { isOneWindowEnabled } from './one-window-switch';
+import {
+  applyCommittedDomainPreferences,
+  applyForeignCommitOrdered,
+  applyForeignHostEffects,
+  applyPreferencesRecovered,
+  applyPreferencesRecoveryLatched,
+  claimPreferenceRevision,
+  settleDomainPreferenceCommit,
+  type DomainPreferenceChange,
+  type ForeignPreferenceCommit,
+  type ForeignPreferenceCommitChange,
+} from './preference-commit-effects';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { toShortcutPlatform } from '@canopy/desktop-shared/lib/global-shortcut-accelerator';
 import { installPreferencesNormalizationEnvironment } from '@canopy/desktop-shared/node/preferences/normalization-environment';
@@ -73,7 +78,6 @@ import { DESKTOP_PREFERENCES_CODEC } from '@canopy/desktop-shared/node/preferenc
 import {
   mergeClientLocalPreferences,
   splitPreferencesPatch,
-  storedClientLocalValues,
   type ClientLocalPreferences,
   type DomainPreferencesData,
   type StoredDomainPreferences,
@@ -81,11 +85,18 @@ import {
 import {
   selectDomainPreferences,
   type DomainPreferencesUpdateOptions,
+  type StoredProductAnalyticsChoice,
 } from './preferences-domain-port';
 import {
   createClientLocalPreferencesStore,
   type LegacyClientLocalSource,
 } from './client-preferences-store';
+import {
+  createDaemonPreferencesClient,
+  type DaemonPreferencesClient,
+  type DaemonPreferencesHooks,
+  type PreferencesDocumentRoute,
+} from '../canopy-runtime/preferences-daemon-client';
 
 export { normalizePreferences } from '@canopy/desktop-shared/node/preferences/normalize-preferences';
 
@@ -212,11 +223,7 @@ async function readUsageDataDenialJournal(
   }
 }
 
-export type StoredProductAnalyticsChoice =
-  | 'allowed'
-  | 'denied'
-  | 'unconfirmed'
-  | 'denial-journal-unreadable';
+export type { StoredProductAnalyticsChoice };
 
 /**
  * The member's stored Usage analytics choice, from one authority read of the
@@ -233,15 +240,19 @@ export type StoredProductAnalyticsChoice =
  * applied, so a journal denial never repairs one. A missing file is a fresh
  * install, whose default is allowed, and so is a field that is absent.
  */
-export async function readStoredProductAnalyticsChoice(): Promise<StoredProductAnalyticsChoice> {
+export function readStoredProductAnalyticsChoice(): Promise<StoredProductAnalyticsChoice> {
+  return domainPreferences.readStoredProductAnalyticsChoice();
+}
+
+/** The in-process port's source: what one authority read of the document saw. */
+async function observeStoredProductAnalyticsChoice(): Promise<StoredProductAnalyticsChoice> {
   const observation: StoredChoiceReadObservation = {
     journal: [],
     primaryText: null,
   };
-  // Needs the in-process document to record what this read saw; a remote
-  // port needs another source for it (CAN-5722, slice E2).
+  // Only the in-process document can record what this read saw.
   const read = await storedChoiceReadObservation.run(observation, () =>
-    domainPreferences.readAuthority(),
+    preferencesRepository.readAuthority(),
   );
   if (observation.journal.includes('unreadable')) {
     return 'denial-journal-unreadable';
@@ -306,13 +317,16 @@ function createUsageDataConsentJournal(
         admittedWriter: PREFERENCES_WRITER,
       });
     },
-    deny: (denied): void => {
-      const policy = getUsageDataPolicy();
-      const preferences = policy.getUsageDataPolicySnapshot().preferences;
-      for (const key of denied) preferences[key] = false;
-      policy.setPreferences(preferences);
-    },
+    deny: denyUsageData,
   };
+}
+
+/** Turns `denied` off in main's live usage-data policy. */
+function denyUsageData(denied: readonly UsageDataKey[]): void {
+  const policy = getUsageDataPolicy();
+  const preferences = policy.getUsageDataPolicySnapshot().preferences;
+  for (const key of denied) preferences[key] = false;
+  policy.setPreferences(preferences);
 }
 
 /** Preferences sit in the data root itself (`getPreferencesFilePath`). */
@@ -407,22 +421,47 @@ function withClientLocal(domain: StoredDomainPreferences): PreferencesData {
   return mergeClientLocalPreferences(domain, clientLocalPreferences.current());
 }
 
-const preferencesHooks: PreferencesRepositoryHooks<StoredDomainPreferences> = {
-  beforeSave: async ({ previous, next }, document): Promise<void> => {
-    if (
-      copilotSelectionObservers.size > 0 &&
-      JSON.stringify(previous.copilotVaultSelection) !==
-        JSON.stringify(next.copilotVaultSelection)
-    )
-      notifyCopilotSelectionAuthority({
-        kind: 'changing',
-        selection: next.copilotVaultSelection,
-      });
-    await recordUsageDataRevocations(
-      createUsageDataConsentJournal(document.key),
-      next.usageData,
-    );
-  },
+/** The store's own state for a domain commit, then the consumer's settle stage. */
+async function settleDomainCommit(
+  change: DomainPreferenceChange,
+): Promise<void> {
+  if (change.previous.opencodeEnabled !== change.next.opencodeEnabled)
+    openCodeEnabledRevision++;
+  rendererPreferencesCache = clientLocalPreferences.isReady()
+    ? withClientLocal(change.next)
+    : null;
+  await settleDomainPreferenceCommit(change);
+}
+
+function applyDomainCommitted(next: StoredDomainPreferences): void {
+  applyCommittedDomainPreferences(
+    next,
+    withClientLocal(next),
+    arePreferencesUnconfirmed(),
+  );
+}
+
+/** An own save is about to change the Copilot selection: its pre-commit notice. */
+function noticeCopilotSelectionChanging({
+  previous,
+  next,
+}: DomainPreferenceChange): void {
+  if (
+    copilotSelectionObservers.size > 0 &&
+    JSON.stringify(previous.copilotVaultSelection) !==
+      JSON.stringify(next.copilotVaultSelection)
+  )
+    notifyCopilotSelectionAuthority({
+      kind: 'changing',
+      selection: next.copilotVaultSelection,
+    });
+}
+
+/** What every own save runs around its commit, on either port. */
+const saveHooks: Omit<
+  DaemonPreferencesHooks<StoredDomainPreferences>,
+  'beforeSave'
+> = {
   trackSave: (save, change) =>
     approvalChange(change).authorityChanged
       ? trackPreferencesAuthoritySave(save, {
@@ -446,77 +485,29 @@ const preferencesHooks: PreferencesRepositoryHooks<StoredDomainPreferences> = {
       markGlobalApprovalRulesChanged();
     markPreferencesAuthorityConfirmed();
   },
-  afterSave: async ({ previous, next }): Promise<void> => {
-    if (
-      previous.googleSubscriptionDisconnected !==
-      next.googleSubscriptionDisconnected
-    ) {
-      // All admitted writers invalidate in serialized commit order. A late
-      // discovery or sign-in cannot restore a disconnected model catalog.
-      const { retireAntigravityConnection } =
-        await import('../antigravity/connection-generation');
-      // The generation changes before this commit settles. A disconnect
-      // notifies running delegates synchronously; they stop themselves.
-      retireAntigravityConnection(next.googleSubscriptionDisconnected === true);
-      const { invalidateAntigravityModels } =
-        await import('../antigravity/models');
-      invalidateAntigravityModels();
-      const { broadcastModelRegistryUpdated } =
-        await import('../models/model-registry');
-      const { notifyModelCatalogChanged } =
-        await import('../remote-projection/agent-catalog-compatibility');
-      broadcastModelRegistryUpdated();
-      // Catalog projection may read preferences. Do not await it while this
-      // serialized preferences commit still owns the write queue.
-      trackDetachedWork(() => notifyModelCatalogChanged());
-    }
-    if (previous.opencodeEnabled !== next.opencodeEnabled)
-      openCodeEnabledRevision++;
-    rendererPreferencesCache = clientLocalPreferences.isReady()
-      ? withClientLocal(next)
-      : null;
-    if (
-      JSON.stringify(previous.disabledInstalledItems ?? []) !==
-        JSON.stringify(next.disabledInstalledItems ?? []) ||
-      JSON.stringify(previous.parkedCodexPlugins ?? []) !==
-        JSON.stringify(next.parkedCodexPlugins ?? [])
-    ) {
-      const { notifyInstalledItemsChanged } =
-        await import('../installed-items/installed-item-events');
-      notifyInstalledItemsChanged();
-    }
-  },
-  onCommitted: (next) => {
-    commitSuggestionsGate(next);
-    publishCommittedPreferences(withClientLocal(next));
-    // Every durable commit, whichever writer made it, carries the stored
-    // one-window choice, so main's read follows the file even when an
-    // earlier save's own callback never ran.
-    applyOneWindowChoice(next.oneWindowEnabled, arePreferencesUnconfirmed());
-    // Consent and choices from the same committed object, in one recompute.
-    getUsageDataPolicy().setStored(
-      next.usageData,
-      usageDataConsentStateOf(next),
+  afterSave: (change) => settleDomainCommit(change),
+  onCommitted: (next) => applyDomainCommitted(next),
+};
+
+const preferencesHooks: PreferencesRepositoryHooks<StoredDomainPreferences> = {
+  ...saveHooks,
+  beforeSave: async (change, document): Promise<void> => {
+    noticeCopilotSelectionChanging(change);
+    await recordUsageDataRevocations(
+      createUsageDataConsentJournal(document.key),
+      change.next.usageData,
     );
   },
   onRecoveryLatched: () => {
     notifyCopilotSelectionAuthority({ kind: 'unavailable' });
-    markGlobalApprovalRulesChanged();
     invalidateRendererPreferencesCache();
-    // The one-window switch reads off while unconfirmed; a switch that was
-    // on turns off now, and windows re-read it.
-    applyOneWindowChoice(undefined, true);
-    broadcastPreferencesChanged();
+    applyPreferencesRecoveryLatched();
   },
   onRecovered: (restored) => {
-    markGlobalApprovalRulesChanged();
     rendererPreferencesCache = clientLocalPreferences.isReady()
       ? withClientLocal(restored)
       : null;
-    applyOneWindowChoice(
-      restored.oneWindowEnabled,
-      arePreferencesUnconfirmed(),
-    );
+    applyPreferencesRecovered(restored, arePreferencesUnconfirmed());
   },
 };
 // The domain document keeps a frozen copy of whatever it stored for the
@@ -538,19 +529,65 @@ const preferencesRepository =
       },
     },
   });
-// Every domain read and write goes through the port (CAN-5722, slice E1).
-const domainPreferences = selectDomainPreferences(preferencesRepository);
+/**
+ * An own save's pre-commit steps on the daemon client (CAN-7991). The
+ * in-process `beforeSave` splits in two: the Copilot notice and the live
+ * policy's denial are main's, so they run here before each send; the
+ * revocation journal is the document's, which the daemon's module writes in
+ * its own `beforeSave` (core-runtime `consent-journal.ts`).
+ */
+const daemonPreferencesHooks: DaemonPreferencesHooks<StoredDomainPreferences> =
+  {
+    ...saveHooks,
+    beforeSave: (change): Promise<void> => {
+      noticeCopilotSelectionChanging(change);
+      // As the in-process journal's `deny`: a revoked flow stops in main
+      // before the save can land, so an unknown outcome never leaves it on.
+      const revoked = USAGE_DATA_KEYS.filter(
+        (key) => change.next.usageData[key] === false,
+      );
+      if (revoked.length > 0) denyUsageData(revoked);
+      return Promise.resolve();
+    },
+  };
 
-/** The seed source: the domain's own recovery verdict, never a bypass of it. */
+/**
+ * The daemon-backed domain port over `route`, with the store's own hooks
+ * and commit consumer (CAN-5722 E2). Nothing selects it yet: the flip passes
+ * it to `selectDomainPreferences`.
+ */
+export function createDaemonDomainPreferences(
+  route: PreferencesDocumentRoute,
+): DaemonPreferencesClient<StoredDomainPreferences> {
+  const filePath = getPreferencesFilePath();
+  return createDaemonPreferencesClient<StoredDomainPreferences>({
+    route,
+    codec: preserveStoredKeys(
+      DESKTOP_PREFERENCES_CODEC,
+      CLIENT_LOCAL_PREFERENCE_KEYS,
+    ),
+    hooks: daemonPreferencesHooks,
+    applyForeignCommit: applyForeignPreferenceCommit,
+    paths: {
+      document: filePath,
+      lastGood: createPreferencesLastGoodPath(filePath),
+    },
+    log: {
+      error: (message, error) => {
+        // eslint-disable-next-line no-console
+        console.error(message, error);
+      },
+    },
+  });
+}
+
+// Every domain read and write goes through the port (CAN-5722, slice E1).
+const domainPreferences = selectDomainPreferences(preferencesRepository, {
+  readStoredProductAnalyticsChoice: observeStoredProductAnalyticsChoice,
+});
+
 const legacyClientLocalSource: LegacyClientLocalSource = {
-  read: async () => {
-    const stored = await domainPreferences.read('persisted');
-    if (domainPreferences.isRecoveryLatched())
-      return { kind: 'pending', served: storedClientLocalValues(stored) };
-    if (!(await domainPreferences.hasPersistedState()))
-      return { kind: 'missing' };
-    return { kind: 'read', values: storedClientLocalValues(stored) };
-  },
+  read: () => domainPreferences.readLegacyClientLocal(),
 };
 
 const clientLocalPreferences = createClientLocalPreferencesStore({
@@ -796,15 +833,22 @@ function notificationOfferMigrationTimestamp(): string {
  * the client-local part, so a domain refusal (a latch, a corrupt record)
  * refuses the whole save with no client-local change, as before the split.
  * `previous` and `next` are distinct merged values; `onCommitted` sees the
- * merged commit once, in commit order, for every non-null patch. `route`
- * defaults to `internal`; only a caller-supplied patch passes `caller`. The
- * updater may run more than once (see `DomainPreferencesPort`).
+ * merged commit once, in commit order, for every non-null patch, except a
+ * client-only save the port answered `unread`: its domain part is the
+ * defaults standing in for an unread document, and the result says so with
+ * `domainUnread` (`arePreferencesUnconfirmed()` may already be false by
+ * then). `route` defaults to `internal`; only a caller-supplied patch passes
+ * `caller`. The updater may run more than once (see `DomainPreferencesPort`).
  */
 export async function updatePreferencesFileWithPrevious(
   updater: PreferencesUpdater,
   onCommitted?: PreferencesCommitObserver,
   { route }: DomainPreferencesUpdateOptions = { route: 'internal' },
-): Promise<{ previous: PreferencesData; next: PreferencesData }> {
+): Promise<{
+  previous: PreferencesData;
+  next: PreferencesData;
+  domainUnread?: true;
+}> {
   // Queued synchronously, as the engine queues its saves: from here quit's
   // flush waits for this save, seed included.
   return enqueueCompositeWrite(async () => {
@@ -812,10 +856,12 @@ export async function updatePreferencesFileWithPrevious(
     const clientBefore = clientLocalPreferences.current();
     let clientPatch: Partial<ClientLocalPreferences> = {};
     let patched = false;
+    let clientOnly = false;
     const change = await domainPreferences.update(
       async (latest) => {
         clientPatch = {};
         patched = false;
+        clientOnly = false;
         const patch = await updater(
           mergeClientLocalPreferences(latest, clientBefore),
         );
@@ -825,14 +871,12 @@ export async function updatePreferencesFileWithPrevious(
         clientPatch = split.clientLocal;
         // A purely client-local save leaves preferences.json untouched; an
         // empty patch still saves it, as `stampGeneration` relies on. The
-        // port gets the whole patch: it drops client-local keys itself, and
-        // classification counts them.
-        return hasKeys(split.clientLocal) && !hasKeys(split.domain)
-          ? null
-          : patch;
+        // port gets the whole patch: it drops client-local keys itself.
+        clientOnly = hasKeys(split.clientLocal) && !hasKeys(split.domain);
+        return clientOnly ? null : patch;
       },
       undefined,
-      { route },
+      { route, isClientOnly: () => clientOnly },
     );
     const clientAfter = hasKeys(clientPatch)
       ? await clientLocalPreferences.write(clientPatch)
@@ -841,12 +885,55 @@ export async function updatePreferencesFileWithPrevious(
       previous: mergeClientLocalPreferences(change.previous, clientBefore),
       next: mergeClientLocalPreferences(change.next, clientAfter),
     };
+    // A port refuses every save while latched, except a remote port's
+    // client-only save on a domain document it has not read: that answers
+    // the codec's defaults (see `PreferencesPort`), which no observer or
+    // cache may take as the stored preferences. Judged by this save's own
+    // answer: a read landing during the client write ends the latch.
+    if (change.unread === true) return { ...result, domainUnread: true };
     if (patched) {
       rendererPreferencesCache = result.next;
       onCommitted?.(result.next);
     }
     return result;
   });
+}
+
+/**
+ * Another client's committed revision (CAN-5722, slice F): its domain stages
+ * in order with this process's writes, then its host effects, once per
+ * revision. The daemon-backed port (E2) feeds it; nothing in process does.
+ */
+export async function applyForeignPreferenceCommit(
+  commit: ForeignPreferenceCommit,
+): Promise<void> {
+  if (!claimPreferenceRevision(commit.revision)) return;
+  const change = await enqueueCompositeWrite(async () => {
+    await clientLocalPreferences.ready();
+    // What an own save's pre-commit and durability hooks apply, once durable.
+    if (
+      JSON.stringify(commit.previous.copilotVaultSelection) !==
+      JSON.stringify(commit.next.copilotVaultSelection)
+    )
+      notifyCopilotSelectionAuthority({
+        kind: 'changing',
+        selection: commit.next.copilotVaultSelection,
+      });
+    if (approvalChange(commit).authorityChanged)
+      markGlobalApprovalRulesChanged();
+    markPreferencesAuthorityConfirmed();
+    await settleDomainCommit(commit);
+    applyDomainCommitted(commit.next);
+    const merged: ForeignPreferenceCommitChange = {
+      origin: 'foreign',
+      previous: withClientLocal(commit.previous),
+      next: withClientLocal(commit.next),
+      changedKeys: commit.changedKeys,
+    };
+    applyForeignCommitOrdered(merged);
+    return merged;
+  });
+  await applyForeignHostEffects(change);
 }
 
 /**

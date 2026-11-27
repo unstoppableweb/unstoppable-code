@@ -119,3 +119,4 @@ export * from './workspaceRecovery/registry';
 export * from './memory/cloud-consent';
 export * from './organizationTranscripts/operations';
 export * from './sharing/operations';
+export * from './sharedArtifact/operations';

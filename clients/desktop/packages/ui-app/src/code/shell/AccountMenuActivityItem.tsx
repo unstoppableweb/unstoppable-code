@@ -5,10 +5,7 @@ import type {
   WorkspaceContext,
   WorkspaceContextOrganization,
 } from '@canopy/protocol/workspace-context';
-import {
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-} from '@canopy/ui-shared/components';
+import { MenuItem, MenuItemIcon } from '@canopy/ui-shared/components';
 import {
   BarChart3,
   FeedIcon,
@@ -62,17 +59,17 @@ export function SidebarFeedMenuItem({
   readonly onOpenPath: (path: string) => void;
 }): JSX.Element {
   return (
-    <DropdownMenuItem
+    <MenuItem
       onClick={(): void => onOpenPath(path)}
       // Historical name: it also marks the organization destination, and is
       // kept so existing flow and capture specs keep their selector.
       data-testid="account-personal-activity-row"
     >
-      <DropdownMenuItemIcon>
+      <MenuItemIcon>
         <FeedIcon />
-      </DropdownMenuItemIcon>
+      </MenuItemIcon>
       Timeline
-    </DropdownMenuItem>
+    </MenuItem>
   );
 }
 
@@ -88,15 +85,15 @@ export function SidebarStatisticsMenuItem({
   readonly onOpenPath: (path: string) => void;
 }): JSX.Element {
   return (
-    <DropdownMenuItem
+    <MenuItem
       onClick={(): void => onOpenPath(path)}
       data-testid="account-context-statistics-row"
     >
-      <DropdownMenuItemIcon>
+      <MenuItemIcon>
         <BarChart3 size="xl" />
-      </DropdownMenuItemIcon>
+      </MenuItemIcon>
       Statistics
-    </DropdownMenuItem>
+    </MenuItem>
   );
 }
 
@@ -112,7 +109,7 @@ export function SidebarInviteTeamMenuItem({
   readonly onClick: () => void;
 }): JSX.Element {
   return (
-    <DropdownMenuItem
+    <MenuItem
       onClick={onClick}
       data-testid={
         kind === 'create-team'
@@ -120,11 +117,11 @@ export function SidebarInviteTeamMenuItem({
           : 'account-invite-team-row'
       }
     >
-      <DropdownMenuItemIcon>
+      <MenuItemIcon>
         <UserPlus size="xl" />
-      </DropdownMenuItemIcon>
+      </MenuItemIcon>
       Invite your team
-    </DropdownMenuItem>
+    </MenuItem>
   );
 }
 
@@ -139,14 +136,14 @@ export function SidebarCreateOrganizationMenuItem({
   readonly onClick: () => void;
 }): JSX.Element {
   return (
-    <DropdownMenuItem
+    <MenuItem
       onClick={onClick}
       data-testid="sidebar-context-create-organization"
     >
-      <DropdownMenuItemIcon>
+      <MenuItemIcon>
         <Plus size="xl" />
-      </DropdownMenuItemIcon>
+      </MenuItemIcon>
       Create an organization
-    </DropdownMenuItem>
+    </MenuItem>
   );
 }

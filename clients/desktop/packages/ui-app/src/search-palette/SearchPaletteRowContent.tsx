@@ -18,7 +18,7 @@ import {
 import {
   Badge,
   HighlightedSegments,
-  PickerMenuOptionTrailing,
+  PickerOptionTrailing,
   ProjectAvatarBadge,
   SearchPaletteRowContext,
   rangesToIndices,
@@ -176,9 +176,7 @@ export function SearchPaletteRowContent({
             </Badge>
           )}
           {/* The picker row's trailing part sets the quiet type. */}
-          {context && (
-            <PickerMenuOptionTrailing>{context}</PickerMenuOptionTrailing>
-          )}
+          {context && <PickerOptionTrailing>{context}</PickerOptionTrailing>}
         </span>
       )}
     </>

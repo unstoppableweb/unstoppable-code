@@ -4,9 +4,9 @@ import { useId, useRef, useState, type JSX } from 'react';
 import {
   CHOOSE_PROVIDER_LABEL,
   CONTINUE_MENU_LABEL,
-  DropdownMenuItem,
-  FLOATING_MENU_GAP,
-  FloatingMenu,
+  MenuItem,
+  MENU_GAP,
+  Menu,
   NoticeButton,
   type NoticeButtonVariant,
 } from '@canopy/ui-shared/components';
@@ -67,7 +67,7 @@ export function ProviderChoiceContinueMenu({
           <ChevronDown size="sm" aria-hidden="true" />
         </NoticeButton>
       </span>
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={open}
         onOpenChange={setOpen}
@@ -75,28 +75,28 @@ export function ProviderChoiceContinueMenu({
         returnFocusRef={buttonRef}
         // The notice sits above the composer, so the menu opens upward.
         placement="top-right"
-        gap={FLOATING_MENU_GAP}
+        gap={MENU_GAP}
         interaction="menu"
         aria-label={CONTINUE_MENU_LABEL}
         {...(testId !== undefined ? { 'data-testid': `${testId}-menu` } : {})}
       >
-        <DropdownMenuItem
+        <MenuItem
           onClick={select(onContinue)}
           {...(testId !== undefined
             ? { 'data-testid': `${testId}-continue` }
             : {})}
         >
           {continueLabel}
-        </DropdownMenuItem>
-        <DropdownMenuItem
+        </MenuItem>
+        <MenuItem
           onClick={select(onChooseProvider)}
           {...(testId !== undefined
             ? { 'data-testid': `${testId}-choose` }
             : {})}
         >
           {CHOOSE_PROVIDER_LABEL}
-        </DropdownMenuItem>
-      </FloatingMenu>
+        </MenuItem>
+      </Menu>
     </>
   );
 }

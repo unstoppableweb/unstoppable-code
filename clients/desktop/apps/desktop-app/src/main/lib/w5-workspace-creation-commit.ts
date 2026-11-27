@@ -1,6 +1,5 @@
 import { w5RecordReadPaths } from './paths';
 import type { W5RepositoryLock } from './w5-repository-locks';
-import type { SidebarItem } from '@canopy/desktop-shared/types';
 import { randomUUID } from 'node:crypto';
 import { lstat } from 'node:fs/promises';
 import { isMissingFileError } from './fs-utils';
@@ -120,7 +119,7 @@ function refuseBotProjectId(workspaceId: string): void {
 }
 
 /** Enter inside the existing workspace mutation queue, which covers application. */
-export async function commitWorkspaceCreation<T extends SidebarItem>(
+export async function commitWorkspaceCreation<T>(
   work: () => Promise<T>,
   workspaceIds: readonly string[] = [],
 ): Promise<T> {

@@ -28,7 +28,7 @@ import {
   type MergeQueueStep,
 } from '../lib/merge-queue-display';
 import { ControlButton, Button } from '../primitives/Button';
-import { FloatingMenu } from '../primitives/FloatingMenu';
+import { Menu } from '../primitives/Menu';
 import { Notice } from '../primitives/Notice';
 import { RunSpinner } from './RunSpinner';
 import { Stack } from '../primitives/Stack';
@@ -753,7 +753,7 @@ export function MergeQueueStatus({
         positionClassName={positionClassName}
         data-testid={testId}
       />
-      <FloatingMenu
+      <Menu
         id={popoverId}
         open={open}
         onOpenChange={onOpenChange}
@@ -784,7 +784,7 @@ export function MergeQueueStatus({
             <OpenQueueLink url={single.queueUrl} label="Open queue on GitHub" />
           ) : null}
         </div>
-      </FloatingMenu>
+      </Menu>
     </>
   );
 }

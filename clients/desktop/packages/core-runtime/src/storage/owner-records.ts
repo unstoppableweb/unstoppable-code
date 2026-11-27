@@ -185,7 +185,9 @@ export function decideRowWrite(
     message:
       read.record.toOwner === 'daemon'
         ? 'The background service keeps this data now, so this version of the app can’t change it. Nothing was saved.'
-        : 'The app keeps this data again, so the background service didn’t change it. Nothing was saved.',
+        : read.record.toOwner === 'offline'
+          ? 'This data is being restored, so nothing was saved.'
+          : 'The app keeps this data again, so the background service didn’t change it. Nothing was saved.',
   };
 }
 

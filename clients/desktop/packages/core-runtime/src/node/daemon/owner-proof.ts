@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer';
 import {
   canopyOwnerProofMatches,
+  createCanopyDesktopPeerProof,
   createCanopyOwnerProof,
 } from '@canopy/core-transport';
 
@@ -8,6 +9,11 @@ import {
 export interface CanopyOwnerProofVerifier {
   /** True only for a proof made with this daemon's owner secret for `connectionId`. */
   verify(connectionId: string, proof: string): boolean;
+  /**
+   * True only for a `client.desktopPeerProof` made with this daemon's owner
+   * secret for `connectionId`. An owner proof never passes.
+   */
+  verifyPeer(connectionId: string, proof: string): boolean;
 }
 
 const OWNER_SECRET_BYTES = 32;
@@ -24,20 +30,22 @@ export function createCanopyOwnerProofVerifier(options: {
   const secret = Buffer.from(options.secret);
   const { dataRootHash } = options;
   let disposed = false;
+  const matches = (
+    create: typeof createCanopyOwnerProof,
+    connectionId: string,
+    proof: string,
+  ): boolean =>
+    !disposed &&
+    secret.length === OWNER_SECRET_BYTES &&
+    connectionId.length > 0 &&
+    OWNER_PROOF_PATTERN.test(proof) &&
+    canopyOwnerProofMatches(create(secret, connectionId, dataRootHash), proof);
   const verifier = {
     verify(connectionId: string, proof: string): boolean {
-      if (
-        disposed ||
-        secret.length !== OWNER_SECRET_BYTES ||
-        connectionId.length === 0 ||
-        !OWNER_PROOF_PATTERN.test(proof)
-      ) {
-        return false;
-      }
-      return canopyOwnerProofMatches(
-        createCanopyOwnerProof(secret, connectionId, dataRootHash),
-        proof,
-      );
+      return matches(createCanopyOwnerProof, connectionId, proof);
+    },
+    verifyPeer(connectionId: string, proof: string): boolean {
+      return matches(createCanopyDesktopPeerProof, connectionId, proof);
     },
     dispose(): void {
       disposed = true;

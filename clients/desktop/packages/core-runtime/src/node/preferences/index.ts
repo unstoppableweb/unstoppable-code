@@ -26,6 +26,7 @@ export {
   type ClientLocalPreferenceKey,
 } from './client-local-keys';
 export {
+  pickStoredKeys,
   preserveStoredKeys,
   type WithStoredKeys,
 } from './preserve-stored-keys';

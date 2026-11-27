@@ -34,6 +34,13 @@ export function scopeAiCreditsBalanceToWorkOwner(
 export type AiCreditsFundingSource =
   | { kind: 'personal'; credits: number }
   | { kind: 'org-pool'; orgName: string }
+  /**
+   * Connected with no error, a numeric personal balance at or below 0 and no
+   * org pool: nothing can pay. Readers must not claim the session is "paid
+   * with AI Credits" for this kind. Carries no number, so the "never show
+   * `0 credits`" invariant still holds.
+   */
+  | { kind: 'empty' }
   | { kind: 'unknown' };
 
 /**
@@ -46,6 +53,7 @@ export type AiCreditsFundingSource =
  * - Personal wallet has credits → `personal`.
  * - Personal wallet is empty but the server named the org pool the gateway would
  *   debit next → `org-pool`.
+ * - A numeric personal balance at or below 0 with no org pool → `empty`.
  * - Otherwise → `unknown`. Note `orgPool` is optional on the wire (older servers
  *   omit it), so a missing value is treated exactly like an absent pool.
  */
@@ -66,6 +74,9 @@ export function resolveAiCreditsFundingSource(
   const orgName = balance.orgPool?.orgName;
   if (typeof orgName === 'string' && orgName.length > 0) {
     return { kind: 'org-pool', orgName };
+  }
+  if (typeof credits === 'number' && !balance.orgPool) {
+    return { kind: 'empty' };
   }
   return { kind: 'unknown' };
 }

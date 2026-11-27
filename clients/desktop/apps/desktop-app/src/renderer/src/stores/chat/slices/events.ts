@@ -1,4 +1,5 @@
 import { isAgentDelegationTranscript } from '@canopy/protocol/delegation';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isBotProjectId } from '@canopy/protocol/chat-targets';
 import { isPlanProposal } from '@canopy/desktop-shared/plan-review';
 import { useDelegationTranscriptStore } from '../../delegationTranscriptStore';
@@ -179,6 +180,10 @@ import {
 import type { StateCreator } from 'zustand';
 import type { ChatState, ChatEventsSlice } from '../state';
 import { useOllamaConnectionBannerStore } from '../../ollamaConnectionBannerStore';
+import { getHarnessConnectionProvider } from '@/components/chat/chatConnectionErrors';
+import { claudeResultErrorMessage } from '@canopy/agent-transcript';
+import { invalidateClaudeAuthStatusCache } from '@/hooks/useClaudeAuthStatus';
+import { invalidateCodexAuthStatusCache } from '@/hooks/useCodexAuthStatus';
 import { useNavigationStore } from '../../navigationStore';
 import { chatStoreApi } from '../store-ref';
 import { parseOrgMemoryUsedEvent } from '../memory';
@@ -186,6 +191,29 @@ import { isCoworkChatTarget } from '@/lib/cowork';
 import { chatBackendFor } from '../backend';
 
 const pendingCodexCompletionResults = new Set<string>();
+
+/**
+ * Minimum gap between two auth-status invalidations for the same provider
+ * after a turn fails authentication. Invalidating the renderer cache re-reads
+ * with `forceRefresh`, which bypasses main's TTL cache and spawns a fresh
+ * probe, so without this every repeated failure would re-probe and defeat
+ * main's own cooldown (`NATIVE_AUTH_FAILURE_REPROBE_COOLDOWN_MS` in
+ * `main/auth/provider-auth-state.ts`; keep the two equal). The first failure
+ * in a window joins main's in-flight forced probe, which main starts before
+ * it emits the error.
+ */
+const AUTH_FAILURE_INVALIDATE_COOLDOWN_MS = 60_000;
+const lastAuthFailureInvalidateAtMs = new Map<'claude' | 'codex', number>();
+
+function invalidateAuthStatusAfterFailure(provider: 'claude' | 'codex'): void {
+  const now = Date.now();
+  const last = lastAuthFailureInvalidateAtMs.get(provider);
+  if (last !== undefined && now - last < AUTH_FAILURE_INVALIDATE_COOLDOWN_MS)
+    return;
+  lastAuthFailureInvalidateAtMs.set(provider, now);
+  if (provider === 'claude') invalidateClaudeAuthStatusCache();
+  else invalidateCodexAuthStatusCache();
+}
 
 /**
  * The divergence detector subscribes to the assembled store, which registers
@@ -447,7 +475,7 @@ export const createEventsSlice: StateCreator<
         return;
       }
       if (isTurnDiffEventData(rawData)) {
-        if (rawData.files.length > 0) {
+        if (rawData.files.length > 0 && !isPairedComputerId(event.projectId)) {
           useProjectsStore
             .getState()
             .fastRefreshWorktreeDiffStats(event.projectId, event.worktreeId);
@@ -531,7 +559,7 @@ export const createEventsSlice: StateCreator<
         };
       });
       // Checkpoint-based changes for this turn -> fast-track a scoped refresh.
-      if (rawData.files.length > 0) {
+      if (rawData.files.length > 0 && !isPairedComputerId(event.projectId)) {
         useProjectsStore
           .getState()
           .fastRefreshWorktreeDiffStats(event.projectId, event.worktreeId);
@@ -785,6 +813,34 @@ export const createEventsSlice: StateCreator<
       });
     }
 
+    // A turn that failed provider authentication (a stale credential the
+    // cached status still reads as signed in): main forces one fresh probe for
+    // a native turn before it emits the error, so drop the renderer's cached
+    // status and re-read it. A confirmed sign-out then reaches billing
+    // readiness and the No billing source notice instead of waiting out the
+    // cache. The re-read forces a probe in main, so it is rate-limited here
+    // with the same cooldown main applies to its own forced probe. Native
+    // turns only, as in main: a turn main routed (AI Credits, a gateway, an
+    // account proxy) reports that route on the tab, and its auth failure says
+    // nothing about the native login.
+    if (
+      (data.type === 'error' ||
+        (data.type === 'result' && data.is_error === true)) &&
+      currentTabForTurnEvent?.aiCreditsRouted !== true &&
+      currentTabForTurnEvent?.accountProxyRouted !== true
+    ) {
+      const failureText =
+        data.type === 'result'
+          ? claudeResultErrorMessage(data)
+          : typeof data.error === 'string'
+            ? data.error
+            : typeof data.message === 'string'
+              ? data.message
+              : '';
+      const authProvider = getHarnessConnectionProvider(failureText);
+      if (authProvider !== null) invalidateAuthStatusAfterFailure(authProvider);
+    }
+
     // Un-archive on new response: if a content-bearing turn event arrives for a
     // chat that is currently archived (no live tab), bring it back so the
     // resumed turn streams into a live tab. Terminal/result events are excluded
@@ -1029,6 +1085,7 @@ export const createEventsSlice: StateCreator<
         );
       }
       if (
+        !isPairedComputerId(event.projectId) &&
         data.turnDiffs &&
         Object.values(data.turnDiffs).some((turnDiff) => turnDiff.files.length)
       ) {
@@ -1295,9 +1352,11 @@ export const createEventsSlice: StateCreator<
       }
 
       if (isTerminal) {
-        useProjectsStore
-          .getState()
-          .fastRefreshWorktreeDiffStats(event.projectId, event.worktreeId);
+        if (!isPairedComputerId(event.projectId)) {
+          useProjectsStore
+            .getState()
+            .fastRefreshWorktreeDiffStats(event.projectId, event.worktreeId);
+        }
         scheduleIdleChatUnload();
       }
 
@@ -1562,12 +1621,14 @@ export const createEventsSlice: StateCreator<
 
     // Refresh diff stats when an agent turn completes
     if (isTerminal) {
-      useProjectsStore
-        .getState()
-        .fastRefreshWorktreeDiffStats(event.projectId, event.worktreeId);
-      void useGitHubStore
-        .getState()
-        .requestKnownPrFastRefresh(event.projectId, event.worktreeId);
+      if (!isPairedComputerId(event.projectId)) {
+        useProjectsStore
+          .getState()
+          .fastRefreshWorktreeDiffStats(event.projectId, event.worktreeId);
+        void useGitHubStore
+          .getState()
+          .requestKnownPrFastRefresh(event.projectId, event.worktreeId);
+      }
       scheduleIdleChatUnload();
     }
 

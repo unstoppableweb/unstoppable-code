@@ -497,10 +497,10 @@ export async function chooseScanModel(
   // treats this skip as not run, so the partition stays eligible.
   const provider = getProviderForModel(helperModel.model);
   if (provider === 'claude' || provider === 'codex') {
-    const { isNoBillingSourceRefusalCached } =
+    const { isHelperNoBillingSourceRefusalCached } =
       await import('../agents/no-billing-source-refusal');
     if (
-      isNoBillingSourceRefusalCached(
+      isHelperNoBillingSourceRefusalCached(
         { model: helperModel.model, projectId: workspaceId },
         provider,
       )

@@ -41,6 +41,10 @@ import type { PostHogSessionState } from '@canopy/execution-engine/types/observa
 import { isCloudProjectSetupProgress } from '@canopy/desktop-shared/lib/cloud-project-setup';
 import { isWebCoreTarget } from '../shared/web-core-scope';
 import {
+  hasPairedComputerTarget,
+  rejectPairedComputerLocalIpc,
+} from '../shared/paired-computer-target';
+import {
   isOrgProjectSetupProgress,
   type OrgProjectDeepLinkOpenEvent,
   type OrgProjectSetupProgress,
@@ -360,6 +364,16 @@ async function invokeOptionalSharedContainerReplicaState(
     throw new Error('Main returned an invalid shared-container replica state');
   }
   return response;
+}
+
+function invokeLocalScopedIpc<T>(
+  channel: string,
+  request: unknown,
+): Promise<T> {
+  if (hasPairedComputerTarget(request)) {
+    return rejectPairedComputerLocalIpc(channel);
+  }
+  return ipcRenderer.invoke(channel, request);
 }
 
 function serializeAppAdvisorSettingsSaveRequest(
@@ -2302,8 +2316,18 @@ const localOnlyBuild =
     __CANOPY_E2E__ &&
     process.env.CANOPY_E2E_LOCAL_ONLY === '1');
 
+// The self-host build profile, the same rule as `isSelfHostBuild()`: false
+// whenever the local-only profile is on, so the two never both report true.
+const selfHostBuild =
+  !localOnlyBuild &&
+  ((typeof __CANOPY_SELF_HOST__ === 'boolean' && __CANOPY_SELF_HOST__) ||
+    (typeof __CANOPY_E2E__ === 'boolean' &&
+      __CANOPY_E2E__ &&
+      process.env.CANOPY_E2E_SELF_HOST === '1'));
+
 const canopyApi: CanopyApi = {
   localOnlyBuild,
+  selfHostBuild,
   reloadWindow: () => ipcRenderer.invoke(IPC_CHANNELS.appWindowReload),
   restartApp: () => ipcRenderer.invoke(IPC_CHANNELS.appWindowRestart),
   waitForWorkspaceStartup: () =>
@@ -3619,9 +3643,9 @@ const canopyApi: CanopyApi = {
       ? Promise.reject(
           new Error('A cloud task has no folder on this computer.'),
         )
-      : ipcRenderer.invoke(IPC_CHANNELS.worktreeGetPath, request),
+      : invokeLocalScopedIpc(IPC_CHANNELS.worktreeGetPath, request),
   listWorktreeRepoEntries: (request) =>
-    ipcRenderer.invoke(IPC_CHANNELS.worktreeListRepoEntries, request),
+    invokeLocalScopedIpc(IPC_CHANNELS.worktreeListRepoEntries, request),
   showInFinder: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.fileShowInFinder, request),
   openExternalFile: (request) =>
@@ -3636,46 +3660,49 @@ const canopyApi: CanopyApi = {
     ipcRenderer.invoke(IPC_CHANNELS.fileSaveContent, request),
   activity: {
     getChangedFiles: (request) =>
-      ipcRenderer.invoke(IPC_CHANNELS.activityChangedFiles, request),
+      invokeLocalScopedIpc(IPC_CHANNELS.activityChangedFiles, request),
     revertFile: (request) =>
-      ipcRenderer.invoke(IPC_CHANNELS.activityRevertFile, request),
+      invokeLocalScopedIpc(IPC_CHANNELS.activityRevertFile, request),
     loadWorktreeSummary: (request) =>
-      ipcRenderer.invoke(IPC_CHANNELS.worktreeSummaryLoad, request),
+      invokeLocalScopedIpc(IPC_CHANNELS.worktreeSummaryLoad, request),
     loadWorktreeSummaries: (request) =>
-      ipcRenderer.invoke(IPC_CHANNELS.worktreeSummaryLoadBatch, request),
+      invokeLocalScopedIpc(IPC_CHANNELS.worktreeSummaryLoadBatch, request),
     refreshWorktreeSummary: (request) =>
-      ipcRenderer.invoke(IPC_CHANNELS.worktreeSummaryRefresh, request),
+      invokeLocalScopedIpc(IPC_CHANNELS.worktreeSummaryRefresh, request),
     getFileDiff: (request) =>
-      ipcRenderer.invoke(IPC_CHANNELS.activityFileDiff, request),
+      invokeLocalScopedIpc(IPC_CHANNELS.activityFileDiff, request),
     getTurnFileDiff: (request) =>
-      ipcRenderer.invoke(IPC_CHANNELS.activityTurnFileDiff, request),
+      invokeLocalScopedIpc(IPC_CHANNELS.activityTurnFileDiff, request),
     plans: {
       list: (request) =>
-        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansList, request),
+        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansList, request),
       listWithSkipped: (request) =>
-        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansListWithSkipped, request),
+        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansListWithSkipped, request),
       get: (request) =>
-        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansGet, request),
+        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansGet, request),
       create: (request) =>
-        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansCreate, request),
+        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansCreate, request),
       update: (request) =>
-        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansUpdate, request),
+        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansUpdate, request),
       delete: (request) =>
-        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansDelete, request),
+        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansDelete, request),
       saveComments: (request) =>
-        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansSaveComments, request),
+        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansSaveComments, request),
       generateDiagrams: (request) =>
-        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansGenerateDiagrams, request),
+        invokeLocalScopedIpc(
+          IPC_CHANNELS.trackedPlansGenerateDiagrams,
+          request,
+        ),
       share: (request) =>
-        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansShare, request),
+        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansShare, request),
       unshare: (request) =>
-        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansUnshare, request),
+        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansUnshare, request),
       import: (request) =>
-        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansImport, request),
+        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansImport, request),
       refreshComments: (request) =>
-        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansRefreshComments, request),
+        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansRefreshComments, request),
       setFileVisibility: (request) =>
-        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansFileVisibility, request),
+        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansFileVisibility, request),
     },
     // A cloud task is not this computer's: main can't resolve its ids
     // (CAN-6395).
@@ -3684,15 +3711,15 @@ const canopyApi: CanopyApi = {
         ? Promise.reject(
             new Error('A cloud task has no Stop on this computer.'),
           )
-        : ipcRenderer.invoke(IPC_CHANNELS.activityStopBgProcess, request),
+        : invokeLocalScopedIpc(IPC_CHANNELS.activityStopBgProcess, request),
     startOutputPolling: (request) =>
-      ipcRenderer.invoke(IPC_CHANNELS.activityStartOutputPolling, request),
+      invokeLocalScopedIpc(IPC_CHANNELS.activityStartOutputPolling, request),
     stopOutputPolling: (request) =>
-      ipcRenderer.invoke(IPC_CHANNELS.activityStopOutputPolling, request),
+      invokeLocalScopedIpc(IPC_CHANNELS.activityStopOutputPolling, request),
     readFullOutput: (request) =>
       ipcRenderer.invoke(IPC_CHANNELS.activityReadFullOutput, request),
     listLiveBgTasks: (request) =>
-      ipcRenderer.invoke(IPC_CHANNELS.activityListLiveBgTasks, request),
+      invokeLocalScopedIpc(IPC_CHANNELS.activityListLiveBgTasks, request),
     onLiveBgTasksChanged: (callback) => {
       const handler = (
         _event: Electron.IpcRendererEvent,
@@ -3764,11 +3791,11 @@ const canopyApi: CanopyApi = {
     },
     detectedPlans: {
       scan: (request) =>
-        ipcRenderer.invoke(IPC_CHANNELS.detectedPlansScan, request),
+        invokeLocalScopedIpc(IPC_CHANNELS.detectedPlansScan, request),
       list: (request) =>
-        ipcRenderer.invoke(IPC_CHANNELS.detectedPlansList, request),
+        invokeLocalScopedIpc(IPC_CHANNELS.detectedPlansList, request),
       update: (request) =>
-        ipcRenderer.invoke(IPC_CHANNELS.detectedPlansUpdate, request),
+        invokeLocalScopedIpc(IPC_CHANNELS.detectedPlansUpdate, request),
     },
     onDetectedPlansUpdated: (callback) => {
       const handler = (
@@ -5906,29 +5933,29 @@ const canopyApi: CanopyApi = {
     message: (
       req: ManagedDelegationMessageRequest,
     ): Promise<ManagedDelegationMessageResult> =>
-      ipcRenderer.invoke(IPC_CHANNELS.managedDelegationMessage, req),
+      invokeLocalScopedIpc(IPC_CHANNELS.managedDelegationMessage, req),
     tree: (
       req: ManagedDelegationTreeRequest,
     ): Promise<ManagedDelegationTreeResult> =>
-      ipcRenderer.invoke(IPC_CHANNELS.managedDelegationTree, req),
+      invokeLocalScopedIpc(IPC_CHANNELS.managedDelegationTree, req),
     transcriptPage: (
       req: ManagedDelegationTranscriptPageRequest,
     ): Promise<ManagedDelegationTranscriptPageResult> =>
-      ipcRenderer.invoke(IPC_CHANNELS.managedDelegationTranscriptPage, req),
+      invokeLocalScopedIpc(IPC_CHANNELS.managedDelegationTranscriptPage, req),
     roots: (
       req: ManagedDelegationRootsRequest,
     ): Promise<ManagedDelegationRootsResult> =>
-      ipcRenderer.invoke(IPC_CHANNELS.managedDelegationRoots, req),
+      invokeLocalScopedIpc(IPC_CHANNELS.managedDelegationRoots, req),
     worktreeSummary: (
       req: ManagedDelegationWorktreeSummaryRequest,
     ): Promise<ManagedDelegationWorktreeSummaryResult> =>
-      ipcRenderer.invoke(IPC_CHANNELS.managedDelegationWorktreeSummary, req),
+      invokeLocalScopedIpc(IPC_CHANNELS.managedDelegationWorktreeSummary, req),
     getModelPolicyCatalog: (): Promise<ManagedDelegationPolicyCatalogResult> =>
       ipcRenderer.invoke(IPC_CHANNELS.managedDelegationModelPolicyCatalog),
     getLifetimeStatus: (
       req: ManagedDelegationLifetimeStatusRequest,
     ): Promise<ManagedDelegationLifetimeStatus> =>
-      ipcRenderer.invoke(IPC_CHANNELS.managedDelegationLifetimeStatus, req),
+      invokeLocalScopedIpc(IPC_CHANNELS.managedDelegationLifetimeStatus, req),
     onLifetimeChanged: (
       cb: (event: ManagedDelegationLifetimeChangedEvent) => void,
     ): (() => void) => {
@@ -5947,7 +5974,7 @@ const canopyApi: CanopyApi = {
     extendLifetimeLimit: (
       req: ManagedDelegationExtendLifetimeLimitRequest,
     ): Promise<ManagedDelegationExtendLifetimeLimitResult> =>
-      ipcRenderer.invoke(
+      invokeLocalScopedIpc(
         IPC_CHANNELS.managedDelegationExtendLifetimeLimit,
         req,
       ),
@@ -5972,19 +5999,19 @@ const canopyApi: CanopyApi = {
     stop: (
       req: ManagedDelegationStopRequest,
     ): Promise<ManagedDelegationStopResult> =>
-      ipcRenderer.invoke(IPC_CHANNELS.managedDelegationStop, req),
+      invokeLocalScopedIpc(IPC_CHANNELS.managedDelegationStop, req),
     stopAll: (
       req: ManagedDelegationStopAllRequest,
     ): Promise<ManagedDelegationStopAllResult> =>
-      ipcRenderer.invoke(IPC_CHANNELS.managedDelegationStopAll, req),
+      invokeLocalScopedIpc(IPC_CHANNELS.managedDelegationStopAll, req),
     changes: (
       req: ManagedDelegationChangesRequest,
     ): Promise<ManagedDelegationChangesResult> =>
-      ipcRenderer.invoke(IPC_CHANNELS.managedDelegationChanges, req),
+      invokeLocalScopedIpc(IPC_CHANNELS.managedDelegationChanges, req),
     transcript: (
       req: ManagedDelegationTranscriptRequest,
     ): Promise<ManagedDelegationTranscriptResult> =>
-      ipcRenderer.invoke(IPC_CHANNELS.managedDelegationTranscript, req),
+      invokeLocalScopedIpc(IPC_CHANNELS.managedDelegationTranscript, req),
   },
   referencePreview: {
     linearScope: () =>

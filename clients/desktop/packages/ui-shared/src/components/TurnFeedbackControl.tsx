@@ -10,10 +10,7 @@ import { ThumbsDownIcon } from '../icons/ThumbsDownIcon';
 import { ThumbsUpIcon } from '../icons/ThumbsUpIcon';
 import { Button } from '../primitives/Button';
 import { CLEAN_ICON_BUTTON_VARIANT } from './chat-look';
-import {
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-} from '../primitives/DropdownMenu';
+import { MenuItem, MenuItemIcon } from '../primitives/MenuItem';
 
 /**
  * Set by a menu that hosts the thumbs (the clean chat look's "•••" menu):
@@ -71,7 +68,7 @@ export function TurnFeedbackControl({
     // A rating reads through the filled icon and `aria-checked`.
     return (
       <>
-        <DropdownMenuItem
+        <MenuItem
           role="menuitemcheckbox"
           aria-checked={upSelected}
           data-testid="turn-feedback-up"
@@ -79,15 +76,15 @@ export function TurnFeedbackControl({
             onRate(upSelected ? null : 'up');
           }}
         >
-          <DropdownMenuItemIcon>
+          <MenuItemIcon>
             <ThumbsUpIcon
               aria-hidden="true"
               {...(upSelected ? { fill: 'currentColor' } : {})}
             />
-          </DropdownMenuItemIcon>
+          </MenuItemIcon>
           Good response
-        </DropdownMenuItem>
-        <DropdownMenuItem
+        </MenuItem>
+        <MenuItem
           role="menuitemcheckbox"
           aria-checked={downSelected}
           data-testid="turn-feedback-down"
@@ -95,14 +92,14 @@ export function TurnFeedbackControl({
             onRate(downSelected ? null : 'down');
           }}
         >
-          <DropdownMenuItemIcon>
+          <MenuItemIcon>
             <ThumbsDownIcon
               aria-hidden="true"
               {...(downSelected ? { fill: 'currentColor' } : {})}
             />
-          </DropdownMenuItemIcon>
+          </MenuItemIcon>
           Bad response
-        </DropdownMenuItem>
+        </MenuItem>
       </>
     );
   }

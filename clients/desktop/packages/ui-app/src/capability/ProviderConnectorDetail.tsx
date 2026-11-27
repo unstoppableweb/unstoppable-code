@@ -3,7 +3,6 @@
 import { ProviderRecheckRow } from '@canopy/ui-shared/components';
 import { type ComponentType, type JSX, useState } from 'react';
 import type {
-  ProviderConnectorListResult,
   ProviderConnectorProvider,
   ProviderConnectorRow,
 } from '@canopy/protocol/mcp-servers';
@@ -24,7 +23,11 @@ import {
   mcpProviderRoutesDescription,
 } from './mcpConnectionCopy';
 import { ClaudeConnectorRoutingGuidance } from './ClaudeConnectorRoutingGuidance';
-import { buildProviderConnectorRows } from './providerConnectorRows';
+import {
+  buildProviderConnectorRows,
+  providerConnectorCatalogEntry,
+  type ProviderConnectorInput,
+} from './providerConnectorRows';
 import {
   ArrowUpRightIcon,
   CheckIcon as AppCatalogCheckIcon,
@@ -61,8 +64,9 @@ export interface ProviderConnectorDetailProps {
    */
   variant?: 'page' | 'section';
   displayName: string;
-  results: ProviderConnectorListResult[];
-  curatedMcpServers: CuratedMcpServerEntry[];
+  /** Each provider's read; a host may pass only the display and link facts. */
+  results: readonly ProviderConnectorInput[];
+  curatedMcpServers: readonly CuratedMcpServerEntry[];
   /** True while a connector read is in flight. */
   loading: boolean;
   onConnected: () => void;
@@ -114,8 +118,9 @@ export function ProviderConnectorDetail({
   );
   // Resolved by key where there is one, exactly as the list entry resolves it;
   // two catalog entries can share a display name.
-  const catalogEntry = curatedMcpServers.find((entry) =>
-    row?.curatedKey ? entry.key === row.curatedKey : entry.name === displayName,
+  const catalogEntry = providerConnectorCatalogEntry(
+    row ?? { displayName },
+    curatedMcpServers,
   );
 
   const handleConnect = async (
@@ -228,7 +233,7 @@ export function ProviderConnectorDetail({
             data-testid="provider-connector-detail-header"
           >
             <McpServerLogoComponent
-              curatedKey={row?.curatedKey}
+              curatedKey={catalogEntry?.key}
               logoUrl={catalogEntry?.logoUrl}
               name={displayName}
               size={40}

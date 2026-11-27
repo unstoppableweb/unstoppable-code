@@ -1,6 +1,6 @@
 import { type JSX } from 'react';
 import { useShallow } from 'zustand/shallow';
-import { DropdownMenuDivider } from '@canopy/ui-shared/components';
+import { MenuDivider } from '@canopy/ui-shared/components';
 import { useRemoteControlStore } from '@/stores/remoteControlStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import {
@@ -110,7 +110,7 @@ export function AccountMenuComputersItem({
         onClose={onClose}
         testIdPrefix="sidebar-account-menu-computers"
       />
-      <DropdownMenuDivider />
+      <MenuDivider />
     </>
   );
 }

@@ -1,17 +1,14 @@
 'use client';
 
 import type { JSX, ReactNode, RefObject } from 'react';
-import {
-  FloatingMenu,
-  type FloatingMenuProps,
-} from '../primitives/FloatingMenu';
+import { Menu, type MenuProps } from '../primitives/Menu';
 
 export interface ComposerSuggestionMenuProps {
   readonly open: boolean;
   readonly onDismiss: () => void;
   /**
    * A non-interactive element spanning the composer box; the menu sits above
-   * it at its width. It must not contain the editor (FloatingMenu opens on
+   * it at its width. It must not contain the editor (Menu opens on
    * ArrowDown/ArrowUp pressed inside its anchor).
    */
   readonly anchorRef: RefObject<HTMLElement | null>;
@@ -26,7 +23,7 @@ export interface ComposerSuggestionMenuProps {
   readonly returnFocusRef?: RefObject<HTMLElement | null>;
   /** Flip below the composer when there is no room above it (default true). */
   readonly allowFlip?: boolean;
-  readonly role?: FloatingMenuProps['role'];
+  readonly role?: MenuProps['role'];
   readonly 'aria-label': string;
   readonly 'data-testid'?: string;
   /** Default 280px. */
@@ -56,7 +53,7 @@ export function ComposerSuggestionMenu({
   children,
 }: ComposerSuggestionMenuProps): JSX.Element {
   return (
-    <FloatingMenu
+    <Menu
       open={open}
       onOpenChange={(next) => {
         if (!next) onDismiss();
@@ -79,6 +76,6 @@ export function ComposerSuggestionMenu({
       heightLimit={heightLimit}
     >
       {children}
-    </FloatingMenu>
+    </Menu>
   );
 }

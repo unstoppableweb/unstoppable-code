@@ -3,19 +3,22 @@
 // only when the daemon was never reached and no result arrived; anything a
 // reached daemon answers stays typed. The rule sits outside the route, which
 // it drives here unchanged.
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CanopyOperationError } from '@canopy/core-runtime';
+import type { GitChangeSetSample } from '@canopy/core-runtime/node/git';
 import type {
   CanopyCallerDescriptor,
   CanopyHostExecution,
   WorkerGitBranchListParams,
   WorkerGitBranchListResult,
+  WorkerGitDiffGetResult,
   WorkerGitWorktreeHealthGetResult,
 } from '@canopy/protocol/canopy-core';
 import {
   createDaemonGitRoute,
+  type DaemonChangeSetParams,
   type DaemonGitQueryClient,
   type DaemonGitRoute,
 } from '../daemon-git-route';
@@ -28,6 +31,7 @@ import { createElectronDaemonHealth } from '../electron-daemon-health';
 import { createElectronDaemonCallerLifetime } from '../electron-daemon-caller-lifetime';
 import { markUnreachable } from '../electron-daemon-connection';
 import type { ReadRoutePlatform } from '../daemon-read-route-guard';
+import { withWorkingDirectoryReadCheck } from '@canopy/desktop-shared/node/lib/working-directory';
 import { FakeSender } from './daemon-files-route-harness';
 
 const caller: CanopyCallerDescriptor = {
@@ -112,6 +116,14 @@ interface Harness {
     []
   >;
   readonly health: () => Promise<WorkerGitWorktreeHealthGetResult>;
+  readonly changeSetDirect: jest.Mock<Promise<GitChangeSetSample | null>, []>;
+  readonly changeSet: (
+    params?: DaemonChangeSetParams,
+    repoPath?: string,
+    sender?: FakeSender,
+  ) => Promise<GitChangeSetSample | null>;
+  /** The daemon instance and build the next connection reports. */
+  readonly attach: (identity: DaemonGitQueryClient['identity']) => void;
 }
 
 function harness(
@@ -120,6 +132,7 @@ function harness(
     readonly latched?: boolean;
     readonly reachability?: DaemonGitReachability;
     readonly queryDeadlineMs?: number;
+    readonly admitted?: boolean | (() => Promise<boolean>);
     readonly createRoute?: (inputs: DaemonGitRouteInputs) => DaemonGitRoute;
   } = {},
 ): Harness {
@@ -127,8 +140,16 @@ function harness(
   const query = jest.fn(
     (): Promise<WorkerGitBranchListResult> => Promise.resolve(fromDaemon),
   );
-  const client: DaemonGitQueryClient = { signal: connection.signal, query };
-  const get = jest.fn(() => Promise.resolve({ client }));
+  let identity: DaemonGitQueryClient['identity'];
+  const get = jest.fn(() =>
+    Promise.resolve({
+      client: {
+        signal: connection.signal,
+        query,
+        ...(identity && { identity }),
+      } satisfies DaemonGitQueryClient,
+    }),
+  );
   const hostContext = jest.fn(() =>
     Promise.resolve({ authorityId: 'authority' }),
   );
@@ -163,6 +184,11 @@ function harness(
             worktreeId,
           }),
           workspaceManifestReadable: () => Promise.resolve(true),
+          diffRepositoryPath: () => Promise.resolve(dir),
+          diffScopeAdmitted: () =>
+            typeof options.admitted === 'function'
+              ? options.admitted()
+              : Promise.resolve(options.admitted ?? true),
           execution: (): CanopyHostExecution => ({
             childEnvironment: { GIT_TERMINAL_PROMPT: '0' },
           }),
@@ -172,13 +198,27 @@ function harness(
           ...inputs,
         })),
     record,
+    appVersion: APP_VERSION,
   });
   routes.push(route);
   const healthDirect = jest.fn(
     (): Promise<WorkerGitWorktreeHealthGetResult> =>
       Promise.resolve(healthInProcess),
   );
+  const changeSetDirect = jest.fn(
+    (): Promise<GitChangeSetSample | null> => Promise.resolve(inProcessSample),
+  );
   return {
+    changeSetDirect,
+    changeSet: (
+      diff = diffParams,
+      repoPath = dir,
+      sender = new FakeSender(1),
+    ) =>
+      route.changeSet(diff, repoPath, { caller }, { sender }, changeSetDirect),
+    attach: (next) => {
+      identity = next;
+    },
     healthDirect,
     health: () =>
       route.worktreeHealth(
@@ -204,6 +244,50 @@ function harness(
       ),
   };
 }
+
+const APP_VERSION = '1.2.0';
+const thisBuild = {
+  runtimeId: 'runtime',
+  daemonEpoch: 'epoch-1',
+  buildVersion: APP_VERSION,
+};
+const olderBuild = { ...thisBuild, buildVersion: '1.1.0' };
+const diffParams: DaemonChangeSetParams = {
+  scope: { workspaceId: 'ws', worktreeId: 'wt' },
+  repoId: '__workspace_root__',
+  base: 'HEAD',
+  head: 'WORKTREE',
+};
+const diffAnswer: WorkerGitDiffGetResult = {
+  files: [],
+  truncated: false,
+  reads: {
+    nameStatus: { ok: true, fields: ['M', 'a.txt', 'R100', 'old', 'new'] },
+    numstat: { ok: true, fields: [], overCap: true },
+    untracked: { ok: true, fields: ['n.txt', 'skipped.txt'] },
+    unmerged: { ok: false, exitCode: 128 },
+    untrackedEstimates: [
+      { insertions: 2, binary: false },
+      { insertions: 1, binary: true },
+    ],
+  },
+};
+const inProcessSample: GitChangeSetSample = {
+  range: { kind: 'worktree', base: 'HEAD' },
+  nameStatus: { ok: true, stdout: '' },
+  numstat: { ok: true, stdout: '' },
+  untracked: { ok: true, stdout: '' },
+  unmerged: { ok: true, stdout: '' },
+  untrackedEstimates: [],
+};
+const refusedAs = (
+  kind: 'invalid_argument' | 'capability_unavailable' | 'failed_precondition',
+): CanopyOperationError =>
+  new CanopyOperationError({
+    kind,
+    message: 'Refused.',
+    retry: { kind: 'never' },
+  });
 
 /** Telemetry is recorded after the current task. */
 const settle = (): Promise<void> =>
@@ -367,6 +451,9 @@ describe('daemon branch lists under the background-service rule (CAN-4729)', () 
             return direct();
           },
           worktreeHealth: (_requested, _context, _request, direct) => direct(),
+          changeSet: (_requested, _repoPath, _context, _request, direct) =>
+            direct(),
+          ownerFor: (sender) => lifetime.ownerFor(sender),
           dispose: (): void => undefined,
         };
       },
@@ -545,6 +632,334 @@ describe('daemon worktree health under the background-service rule (CAN-4729)', 
     await expect(h.health()).resolves.toEqual(healthInProcess);
     expect(h.hostContext).not.toHaveBeenCalled();
     expect(h.healthDirect).toHaveBeenCalledTimes(1);
+    await settle();
+    expect(h.record).not.toHaveBeenCalled();
+  });
+});
+
+// CAN-4729: `activity:changed-files` reads revision 3 from the daemon. Only an
+// older daemon build refusing the revision reads in process, and that daemon
+// instance stays in process until it restarts; nothing else changes the rule.
+describe('daemon changed files under the background-service rule (CAN-4729)', () => {
+  it("serves revision 3's reads as the sample the legacy lists are built from", async () => {
+    const h = harness();
+    h.attach(thisBuild);
+    h.query.mockResolvedValueOnce(diffAnswer);
+    const sample = await h.changeSet();
+    expect((h.query.mock.calls[0] as unknown[]).slice(0, 2)).toEqual([
+      'worker.git.diff.get',
+      {
+        scope: {
+          workspaceId: 'ws',
+          worktreeId: 'wt',
+          authorityId: 'authority',
+        },
+        repoId: '__workspace_root__',
+        base: 'HEAD',
+        head: 'WORKTREE',
+        revision: 3,
+      },
+    ]);
+    expect(sample).toEqual({
+      range: { kind: 'worktree', base: 'HEAD' },
+      nameStatus: { ok: true, stdout: 'M\0a.txt\0R100\0old\0new\0' },
+      // Over its bound, as legacy blanks an over-long list.
+      numstat: { ok: false, error: diffAnswer.reads?.numstat },
+      untracked: { ok: true, stdout: 'n.txt\0skipped.txt\0' },
+      unmerged: { ok: false, error: { ok: false, exitCode: 128 } },
+      untrackedEstimates: [
+        { insertions: 2, binary: false },
+        { insertions: 1, binary: true },
+      ],
+    });
+    expect(h.changeSetDirect).not.toHaveBeenCalled();
+    expect(h.record.mock.calls).toEqual([['served']]);
+  });
+
+  it('reads a commit range with no untracked or unmerged reads', async () => {
+    const h = harness();
+    h.query.mockResolvedValueOnce({
+      ...diffAnswer,
+      reads: { ...diffAnswer.reads, untracked: null, unmerged: null },
+    });
+    const sample = await h.changeSet({
+      ...diffParams,
+      base: 'abc',
+      head: 'HEAD',
+    });
+    expect(sample).toMatchObject({
+      range: { kind: 'objects', base: 'abc', head: 'HEAD' },
+      untracked: null,
+      unmerged: null,
+    });
+  });
+
+  it.each(['invalid_argument', 'capability_unavailable'] as const)(
+    'reads in process once an older daemon build refuses the revision as %s, and stops asking that daemon',
+    async (kind) => {
+      const h = harness();
+      h.attach(olderBuild);
+      h.query.mockRejectedValueOnce(refusedAs(kind));
+      await expect(h.changeSet()).resolves.toBe(inProcessSample);
+      await expect(h.changeSet()).resolves.toBe(inProcessSample);
+      expect(h.query).toHaveBeenCalledTimes(1);
+      expect(h.changeSetDirect).toHaveBeenCalledTimes(2);
+      // Not a background-service outage: no notice.
+      expect(h.noteFallback).not.toHaveBeenCalled();
+      expect(h.record.mock.calls).toEqual([['version_skew'], ['version_skew']]);
+      // Branch lists still go to that daemon.
+      await expect(h.list()).resolves.toEqual(fromDaemon);
+      expect(h.query).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('asks a restarted daemon again', async () => {
+    const h = harness();
+    h.attach(olderBuild);
+    h.query.mockRejectedValueOnce(refusedAs('invalid_argument'));
+    await h.changeSet();
+    h.attach({ ...thisBuild, daemonEpoch: 'epoch-2' });
+    h.query.mockResolvedValueOnce(diffAnswer);
+    await expect(h.changeSet()).resolves.toMatchObject({
+      untracked: { ok: true, stdout: 'n.txt\0skipped.txt\0' },
+    });
+    expect(h.query).toHaveBeenCalledTimes(2);
+    expect(h.changeSetDirect).toHaveBeenCalledTimes(1);
+    expect(h.record.mock.calls).toEqual([['version_skew'], ['served']]);
+  });
+
+  it('keeps the same build refusing the revision typed, with no latch', async () => {
+    const h = harness();
+    h.attach(thisBuild);
+    h.query.mockRejectedValueOnce(refusedAs('invalid_argument'));
+    await expect(h.changeSet()).rejects.toMatchObject({
+      payload: { kind: 'invalid_argument' },
+    });
+    h.query.mockResolvedValueOnce(diffAnswer);
+    await expect(h.changeSet()).resolves.not.toBeNull();
+    expect(h.query).toHaveBeenCalledTimes(2);
+    expect(h.changeSetDirect).not.toHaveBeenCalled();
+    expect(h.record.mock.calls).toEqual([['refused'], ['served']]);
+  });
+
+  it('re-estimates a confined skip in main, as in process, over the estimated files', async () => {
+    const h = harness();
+    writeFileSync(join(dir, 'n.txt'), 'a\nb\nc\n');
+    writeFileSync(join(dir, 'skipped.txt'), 'a\nb\n');
+    h.query.mockResolvedValueOnce({
+      ...diffAnswer,
+      reads: {
+        ...diffAnswer.reads,
+        untrackedEstimates: [
+          { insertions: 0, binary: false },
+          { insertions: 0, binary: false, confined: true },
+        ],
+      },
+    });
+    await expect(h.changeSet()).resolves.toMatchObject({
+      untrackedEstimates: [
+        { insertions: 3, binary: false },
+        { insertions: 2, binary: false },
+      ],
+    });
+    expect(h.record.mock.calls).toEqual([['served']]);
+  });
+
+  it('lists in process once for an object the daemon will not fetch, with no latch', async () => {
+    const h = harness();
+    h.attach(thisBuild);
+    h.query.mockRejectedValueOnce(
+      new CanopyOperationError({
+        kind: 'failed_precondition',
+        code: 'worker.git.diff.objectMissing',
+        message: 'A read needs an object this repository does not have.',
+        retry: { kind: 'never' },
+      }),
+    );
+    await expect(h.changeSet()).resolves.toBe(inProcessSample);
+    h.query.mockResolvedValueOnce(diffAnswer);
+    await expect(h.changeSet()).resolves.not.toBe(inProcessSample);
+    expect(h.query).toHaveBeenCalledTimes(2);
+    expect(h.changeSetDirect).toHaveBeenCalledTimes(1);
+    expect(h.noteFallback).not.toHaveBeenCalled();
+    expect(h.record.mock.calls).toEqual([['object_missing'], ['served']]);
+  });
+
+  // The daemon's Git host ends a request at 30 s and sends the read with no
+  // exit code; main's own read has no deadline, so it lists in process once.
+  it('lists in process once when a daemon read ended with no exit code, with no latch', async () => {
+    const h = harness();
+    h.attach(thisBuild);
+    h.query.mockResolvedValueOnce({
+      ...diffAnswer,
+      reads: {
+        ...diffAnswer.reads,
+        nameStatus: { ok: false, exitCode: null },
+        untracked: { ok: true, fields: [] },
+        untrackedEstimates: [],
+      },
+    });
+    await expect(h.changeSet()).resolves.toBe(inProcessSample);
+    h.query.mockResolvedValueOnce(diffAnswer);
+    await expect(h.changeSet()).resolves.not.toBe(inProcessSample);
+    expect(h.query).toHaveBeenCalledTimes(2);
+    expect(h.changeSetDirect).toHaveBeenCalledTimes(1);
+    expect(h.noteFallback).not.toHaveBeenCalled();
+    expect(h.record.mock.calls).toEqual([['read_timed_out'], ['served']]);
+  });
+
+  it("keeps an older build's other refusals typed", async () => {
+    const h = harness();
+    h.attach(olderBuild);
+    h.query.mockRejectedValueOnce(
+      new CanopyOperationError({
+        kind: 'failed_precondition',
+        code: 'worker.git.diff.scopeUnsupported',
+        message: 'Unsupported.',
+        retry: { kind: 'never' },
+      }),
+    );
+    await expect(h.changeSet()).rejects.toMatchObject({
+      payload: { code: 'worker.git.diff.scopeUnsupported' },
+    });
+    expect(h.changeSetDirect).not.toHaveBeenCalled();
+    expect(h.record.mock.calls).toEqual([['refused']]);
+  });
+
+  it('reads in process, with no contact, when the daemon would not resolve the worktree to this checkout', async () => {
+    const h = harness({ admitted: false });
+    await expect(h.changeSet()).resolves.toBe(inProcessSample);
+    expect(h.hostContext).not.toHaveBeenCalled();
+    expect(h.query).not.toHaveBeenCalled();
+    await settle();
+    expect(h.record).not.toHaveBeenCalled();
+  });
+
+  it('reads in process, with no contact, when main resolves the scope to another checkout', async () => {
+    const h = harness();
+    await expect(h.changeSet(diffParams, join(dir, 'other'))).resolves.toBe(
+      inProcessSample,
+    );
+    expect(h.hostContext).not.toHaveBeenCalled();
+    expect(h.query).not.toHaveBeenCalled();
+    await settle();
+    expect(h.record).not.toHaveBeenCalled();
+  });
+
+  it('falls back once when the host cannot be prepared, and reads in process while latched', async () => {
+    const h = harness();
+    h.hostContext.mockRejectedValueOnce(new Error('no data root'));
+    await expect(h.changeSet()).resolves.toBe(inProcessSample);
+    expect(h.noteFallback.mock.calls).toEqual([['host_unavailable']]);
+    const latched = harness({ latched: true });
+    await expect(latched.changeSet()).resolves.toBe(inProcessSample);
+    expect(latched.hostContext).not.toHaveBeenCalled();
+    expect(latched.record.mock.calls).toEqual([['latched']]);
+  });
+
+  it('fails every read, with no query, once the folder is being retired', async () => {
+    const h = harness();
+    const sample = await withWorkingDirectoryReadCheck(
+      () => false,
+      () => h.changeSet(),
+    );
+    const failed = sample?.nameStatus;
+    expect(failed).toMatchObject({ ok: false });
+    expect(String(failed && !failed.ok && failed.error)).toContain(
+      'is being archived or deleted',
+    );
+    expect(sample).toEqual({
+      range: { kind: 'worktree', base: 'HEAD' },
+      nameStatus: failed,
+      numstat: failed,
+      untracked: failed,
+      unmerged: failed,
+      untrackedEstimates: [],
+    });
+    expect(h.query).not.toHaveBeenCalled();
+    expect(h.changeSetDirect).not.toHaveBeenCalled();
+  });
+
+  // Admission stays pending until each case has asserted, so these prove the
+  // request settles without it rather than only that nothing is sent after.
+  const heldAdmission = (): {
+    readonly admitting: () => Promise<boolean>;
+    readonly admit: () => void;
+  } => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<boolean>((resolve) => {
+      release = (): void => resolve(true);
+    });
+    return { admitting: () => gate, admit: () => release() };
+  };
+
+  it('cancels while admission is still pending when the document navigates', async () => {
+    const held = heldAdmission();
+    const h = harness({ admitted: held.admitting });
+    const sender = new FakeSender(1);
+    const pending = h.changeSet(diffParams, dir, sender);
+    await settle();
+    sender.emit('did-navigate');
+    await expect(pending).rejects.toMatchObject({
+      payload: { kind: 'cancelled' },
+    });
+    held.admit();
+    await settle();
+    expect(h.query).not.toHaveBeenCalled();
+    expect(h.changeSetDirect).not.toHaveBeenCalled();
+  });
+
+  it('reports the deadline while admission is still pending', async () => {
+    const held = heldAdmission();
+    const h = harness({ admitted: held.admitting, queryDeadlineMs: 50 });
+    await expect(h.changeSet()).rejects.toMatchObject({
+      payload: { kind: 'deadline_exceeded' },
+    });
+    held.admit();
+    await settle();
+    expect(h.query).not.toHaveBeenCalled();
+    expect(h.changeSetDirect).not.toHaveBeenCalled();
+  });
+
+  // After a refusal the in-process read is bounded by navigation, not the
+  // deadline, as the unrouted read is.
+  it('cancels the in-process read after a refusal when the document navigates', async () => {
+    const h = harness();
+    h.attach(thisBuild);
+    h.query.mockRejectedValueOnce(
+      new CanopyOperationError({
+        kind: 'failed_precondition',
+        code: 'worker.git.diff.objectMissing',
+        message: 'A read needs an object this repository does not have.',
+        retry: { kind: 'never' },
+      }),
+    );
+    let release: () => void = () => undefined;
+    let reading: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => {
+      reading = resolve;
+    });
+    h.changeSetDirect.mockImplementationOnce(() => {
+      reading();
+      return new Promise((resolve) => {
+        release = (): void => resolve(inProcessSample);
+      });
+    });
+    const sender = new FakeSender(1);
+    const pending = h.changeSet(diffParams, dir, sender);
+    await started;
+    sender.emit('did-navigate');
+    await expect(pending).rejects.toMatchObject({
+      payload: { kind: 'cancelled' },
+    });
+    release();
+    expect(h.record.mock.calls).toEqual([['object_missing']]);
+  });
+
+  it('leaves Windows on the in-process read', async () => {
+    const h = harness({ platform: 'win32' });
+    await expect(h.changeSet()).resolves.toBe(inProcessSample);
+    expect(h.hostContext).not.toHaveBeenCalled();
     await settle();
     expect(h.record).not.toHaveBeenCalled();
   });

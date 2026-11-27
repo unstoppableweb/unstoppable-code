@@ -12,10 +12,7 @@ import {
 } from 'react';
 import { CheckIcon, CopyIcon } from '../icons/AppIcons';
 import { Button } from '../primitives/Button';
-import {
-  FloatingMenu,
-  FloatingMenuPointAnchor,
-} from '../primitives/FloatingMenu';
+import { Menu, MenuPointAnchor } from '../primitives/Menu';
 import type { PopoverAnchorRect } from '../primitives/Popover';
 import { Tooltip } from '../primitives/Tooltip';
 
@@ -222,7 +219,7 @@ export const SelectionActionPill = forwardRef<
   const { rect, ownerDocument } = placement;
   return (
     <>
-      <FloatingMenuPointAnchor
+      <MenuPointAnchor
         ref={anchorRef}
         x={rect.left}
         y={rect.top}
@@ -230,7 +227,7 @@ export const SelectionActionPill = forwardRef<
         height={rect.height}
         ownerDocument={ownerDocument}
       />
-      <FloatingMenu
+      <Menu
         open
         onOpenChange={ignoreOpenChange}
         anchorRef={anchorRef}
@@ -248,7 +245,7 @@ export const SelectionActionPill = forwardRef<
         className="w-max"
       >
         {pill}
-      </FloatingMenu>
+      </Menu>
     </>
   );
 });

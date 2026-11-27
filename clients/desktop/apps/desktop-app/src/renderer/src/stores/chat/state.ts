@@ -129,6 +129,10 @@ export interface ChatRevisionedSlice {
   ) => Promise<'installed' | 'unavailable' | 'failed'>;
   /** Manual retry for the inline refresh-error treatment. */
   retryChatStateRefresh: (projectId: string, worktreeId: string) => void;
+  recoverChatScopeAfterReconnect: (
+    projectId: string,
+    worktreeId: string,
+  ) => void;
   /** Re-read a live scope through the revision-guarded snapshot refresh. */
   refreshChatScopeRevisioned: (projectId: string, worktreeId: string) => void;
   /** Stop tracking a scope (idle unload / worktree removal). */

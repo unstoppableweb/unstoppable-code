@@ -5,9 +5,9 @@ import type {
 } from '@canopy/protocol/browser-profiles';
 import type { BrowserSessionSnapshot } from '@canopy/desktop-shared/types';
 import {
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
+  MenuDivider,
+  MenuItem,
+  MenuItemIcon,
   NestedMenuFlyout,
 } from '@canopy/ui-shared/components';
 import {
@@ -120,7 +120,7 @@ export function BrowserProfileSubmenu({
   };
 
   const row = (value: string, label: string): JSX.Element => (
-    <DropdownMenuItem
+    <MenuItem
       key={value}
       role="menuitemradio"
       aria-checked={value === current}
@@ -129,11 +129,11 @@ export function BrowserProfileSubmenu({
     >
       {/* The check leads the row, in the icon column Browser settings uses,
           so the names line up with it. */}
-      <DropdownMenuItemIcon tone="secondary">
+      <MenuItemIcon tone="secondary">
         {value === current ? <CheckIcon /> : null}
-      </DropdownMenuItemIcon>
+      </MenuItemIcon>
       <span className="min-w-0 flex-1 truncate">{label}</span>
-    </DropdownMenuItem>
+    </MenuItem>
   );
 
   return (
@@ -155,19 +155,19 @@ export function BrowserProfileSubmenu({
               : profile.displayName,
           );
         })}
-      <DropdownMenuDivider />
-      <DropdownMenuItem
+      <MenuDivider />
+      <MenuItem
         data-testid="browser-profile-settings"
         onClick={(): void => {
           onDone();
           useNavigationStore.getState().openSettings('browser');
         }}
       >
-        <DropdownMenuItemIcon>
+        <MenuItemIcon>
           <SettingsIcon />
-        </DropdownMenuItemIcon>
+        </MenuItemIcon>
         <span className="min-w-0 flex-1 truncate">Browser settings</span>
-      </DropdownMenuItem>
+      </MenuItem>
     </NestedMenuFlyout>
   );
 }

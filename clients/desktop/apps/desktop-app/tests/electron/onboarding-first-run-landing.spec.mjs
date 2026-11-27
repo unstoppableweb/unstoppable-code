@@ -21,9 +21,11 @@ import {
   seedExternalProjectImportFixture,
 } from './seeders/seedExternalProjectImportFixture.mjs';
 import {
+  clearScenario,
   DEFAULT_MOCK_BASE_URL,
   registerScenario,
 } from './seeders/registerScenario.mjs';
+import { withBundledBinaryOverridesScrubbed } from './seeders/bundledBinaryOverrides.mjs';
 import {
   OPENCODE_FIXTURE_PROJECT,
   seedOpenCodeImportFixture,
@@ -328,6 +330,81 @@ test('Home does not advertise plugin recommendations absent from the bundled cat
     ).toBeVisible();
   } finally {
     await closeCanopy(launch.electronApp, launch.userDataDir);
+  }
+});
+
+// Billing setup gate: with no way to pay for a turn (providers signed out,
+// zero AI Credits, no gateway), Home shows the billing choices in place of
+// its composer; once a source is ready the composer comes back on its own.
+test('Home shows the billing setup gate until a billing source is ready', async () => {
+  test.setTimeout(120_000);
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-billing-gate-'),
+  );
+  writeFileSync(
+    path.join(userDataDir, 'preferences.json'),
+    JSON.stringify({ version: 1, preferences: { navigationMode: 'code' } }),
+  );
+  const authKey = `billing-gate-unauthenticated-${randomUUID()}`;
+  const emptyKey = `csk_billing_gate_empty_${randomUUID()}`;
+  const fundedKey = `csk_billing_gate_funded_${randomUUID()}`;
+  await registerScenario(DEFAULT_MOCK_BASE_URL, authKey, {
+    authUsage: { scenario: 'unauthenticated' },
+  });
+  await registerScenario(DEFAULT_MOCK_BASE_URL, emptyKey, {
+    cloud: { aiCreditsBalance: { credits: 0, eligible: false } },
+  });
+  await registerScenario(DEFAULT_MOCK_BASE_URL, fundedKey, {
+    cloud: { aiCreditsBalance: { credits: 1234, eligible: true } },
+  });
+  const { electronApp } = await withBundledBinaryOverridesScrubbed(() =>
+    launchCanopy({
+      userDataDir,
+      env: {
+        CANOPY_MOCK_API_KEY: authKey,
+        CANOPY_E2E_CLOUD_BASE_URL: DEFAULT_MOCK_BASE_URL,
+      },
+    }),
+  );
+  const signIn = async (window, apiKey) => {
+    const saved = await window.evaluate(
+      async (key) => window.api.saveCanopyCloudApiKey({ apiKey: key }),
+      apiKey,
+    );
+    expect(saved.status.authenticated).toBe(true);
+    await window.evaluate(() => {
+      window.dispatchEvent(new Event('canopy:cloud-account-changed'));
+    });
+  };
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await signIn(window, emptyKey);
+    await window.getByTestId('sidebar-create-task').click();
+    await expect(window.getByTestId('page-home')).toBeVisible({
+      timeout: 15_000,
+    });
+    const gate = window
+      .getByTestId('page-home')
+      .getByTestId('billing-setup-gate-home');
+    const composer = window
+      .getByTestId('home-composer-editor')
+      .locator('visible=true');
+
+    // Nothing can pay: the billing choices replace the composer.
+    await expect(gate).toBeVisible({ timeout: 30_000 });
+    await expect(composer).toHaveCount(0);
+
+    // Spendable AI Credits are a ready source: the composer returns.
+    await signIn(window, fundedKey);
+    await expect(gate).toHaveCount(0, { timeout: 30_000 });
+    await expect(composer).toBeVisible();
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+    await clearScenario(DEFAULT_MOCK_BASE_URL, authKey);
+    await clearScenario(DEFAULT_MOCK_BASE_URL, emptyKey);
+    await clearScenario(DEFAULT_MOCK_BASE_URL, fundedKey);
   }
 });
 

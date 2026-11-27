@@ -7,12 +7,13 @@ import type * as AsyncFs from 'node:fs/promises';
 // origin's commit lands in the cache before any handler runs and before its
 // delivery is acknowledged; a refill that won the race skips its capture;
 // replay, eviction, lag, a snapshot racing the open, an invalidation and a
-// new log all refill broadly. A broad refill rebuilds the projection, so a
-// new log at an equal commit id is replaced too; fewer abandoned commits show
-// one to any capture. A19 (CAN-3798 D3) is pinned: the stale window closes on
-// delivery, with no timer, and the issuing desktop reads its own write at
-// once. The bridge's retry delay is injected far out of reach and
-// the cache's timers only fire when a case fires them, so no timer can help.
+// new log all refill broadly. Any capture shows a new log by its identity,
+// at or above the old position (CAN-7247), as fewer abandoned commits do; a
+// broad refill rebuilds the projection too. A19 (CAN-3798 D3) is pinned: the
+// stale window closes on delivery, with no timer, and the issuing desktop
+// reads its own write at once. The bridge's retry delay is injected far out
+// of reach and the cache's timers only fire when a case fires them, so no
+// timer can help.
 // Own decisions share one trailing refill, pushed back for at most 8 delays,
 // and none runs during the warm; a file over the capture limits, a log with
 // unresolved commits and an entry no capture admits stop idle retries until
@@ -159,6 +160,7 @@ import {
   writeWorkspaceConfig,
   writeWorkspaceWorktrees,
   readWorkspaceWorktreesDetailed,
+  updateWorkspaceWorktrees,
 } from '../workspace-persistence';
 import { getWorkspaceIndexRepository } from '../sidebar-items';
 import { createWorktreeWatch } from '../worktree-watch-recovery';
@@ -2233,6 +2235,51 @@ describe('the read cache over W5e (CAN-7155)', () => {
     await expectFresh();
   });
 
+  test.each(['same', 'another'] as const)(
+    'an attach on the %s connection while the stream reconciles on open',
+    async (target) => {
+      await compose();
+      const initial = await attach();
+      await foreignWrite({ alwaysShow: true });
+      await until(() => acks.length > 0);
+      await initial.close();
+      const broads = applied.filter((plan) => plan.broad).length;
+      const client = await harness.connectEvents('electron-main');
+      const opens = jest.spyOn(client, 'openStream');
+      const events = connection(client);
+      const replacement = await harness.connectEvents('electron-main');
+      const replays = jest.spyOn(replacement, 'openStream');
+      captureGate = deferred();
+      const before = captures.length;
+      const attaching = binding.attach(events);
+      let again = Promise.resolve();
+      try {
+        await until(() => captures.length > before);
+        // The resumed stream is open and its broad re-read is in flight.
+        expect(captures.at(-1)?.discoverWorkspaces).toBe(true);
+        again = binding.attach(
+          target === 'same' ? events : connection(replacement),
+        );
+        expect(opens.mock.calls[0]?.[2]?.signal?.aborted).toBe(
+          target === 'another',
+        );
+      } finally {
+        captureGate.open();
+        await attaching;
+        await again;
+        captureGate = undefined;
+      }
+      // Serving resumes only after the live stream's reconciliation applied.
+      await until(ready);
+      expect(opens).toHaveBeenCalledTimes(1);
+      expect(replays).toHaveBeenCalledTimes(target === 'same' ? 0 : 1);
+      expect(applied.filter((plan) => plan.broad)).toHaveLength(
+        broads + (target === 'same' ? 1 : 2),
+      );
+      await expectFresh();
+    },
+  );
+
   test.each(['recovery-required', 'conflict'] as const)(
     'a foreign %s decision withholds unrelated cached revisions until reconciliation',
     async (failure) => {
@@ -2809,6 +2856,43 @@ describe('the read cache over W5e (CAN-7155)', () => {
     expect(ready()).toBe(true);
     await expectFresh();
   });
+
+  // Each write toggles the manifest; an even count ends on other bytes.
+  test.each([
+    ['at', 0],
+    ['above', 2],
+  ])(
+    'a new log %s the old high-water mark shows itself to a targeted capture (CAN-7247)',
+    async (_position, extra) => {
+      await compose();
+      const old = await foreignWrite({ alwaysShow: true });
+      await readCache.apply(BROAD);
+      const first = readCache.cache.projection();
+      const stale = first.image(MANIFEST);
+      expect(ready()).toBe(true);
+      await harness.close();
+      await start({
+        dbPath: join(dir, 'w5', 'second.sqlite'),
+        epoch: 'runtime:second',
+      });
+      // No abandonment and no lower commit id: only the log identity differs.
+      let position = await foreignWrite({ alwaysShow: false });
+      for (let index = 0; index < extra; index += 1)
+        position = await foreignWrite({ alwaysShow: index % 2 === 0 });
+      expect(position).toBe(old + extra);
+      const broad = discoveries();
+      // Before any broad plan: the cache stops being ready at once.
+      await readCache.apply({ ...BROAD, broad: false, manifests: ['a'] });
+      expect(discoveries()).toBe(broad);
+      expect(readCache.cache.projection()).not.toBe(first);
+      expect(readCache.cache.projection().image(MANIFEST)).not.toEqual(stale);
+      expect(readCache.cache.warmed()).toBe(false);
+      expect(ready()).toBe(false);
+      await fire(retry);
+      expect(ready()).toBe(true);
+      await expectFresh();
+    },
+  );
 
   test('a plan skipped while the daemon cannot serve forces a broad refill', async () => {
     await compose();
@@ -4118,18 +4202,112 @@ describe('dispatcher reads served from the read cache (CAN-7155 Seam A)', () => 
         await plainRead;
         installDesktopW5FileStore(queryStore);
       }
-      // A writer-capable lock makes the cache take today's capture path.
-      // This pins fallback equality, not read-after-writer ordering: today's
-      // path captures before taking the list lock and can capture old bytes.
+      // A writer-capable lock makes the cache take today's capture path. A
+      // writer on a list no read names delays none of them (CAN-7249).
       const releaseWriter = await holdLock((work) => work());
       try {
         expect(await readServed()).toBe(6);
         expect(snapshotWorkCounters().w5).toMatchObject({
           'readView.cacheMiss.writing': 6,
         });
+        expect(snapshotWorkCounters().w5['readView.waited.writer']).toBe(
+          undefined,
+        );
       } finally {
         await releaseWriter();
       }
+      expect(await readServed()).toBe(0);
+      // CAN-7249: reads that start while a writer on a list they read has yet
+      // to commit return its rows. A scoped read waits for the writer, then
+      // captures once; discovery captures, waits, and captures once more.
+      const entered = deferred();
+      const commit = deferred();
+      const writing = updateWorkspaceWorktrees('a', async (rows) => {
+        entered.open();
+        await commit.promise;
+        return [
+          ...rows,
+          {
+            id: 'wt-2',
+            branchName: 'second',
+            createdAt: '2026-11-02T00:00:00Z',
+            includedRepoIds: ['repo-a'],
+          },
+        ];
+      });
+      await entered.promise;
+      const racingReads = (
+        runtime: DesktopCanopyDispatcher,
+      ): Promise<unknown>[] => [
+        runtime.queryWorkspaceListForLegacyIpc({}, { caller }),
+        runtime.queryWorktreeListForLegacyIpc({}, { caller }),
+        runtime.readWorktreeListForLegacy('a', { caller }),
+        runtime.queryWorkspaceGetForLegacyIpc({ workspaceId: 'a' }, { caller }),
+        runtime.queryWorktreeGetForLegacyIpc(
+          { worktreeId: 'wt-2', scope: { workspaceId: 'a' } },
+          { caller },
+        ),
+        runtime.queryWorktreeGetForLegacyIpc(
+          { worktreeId: 'wt-2' },
+          { caller },
+        ),
+      ];
+      __setDesktopW5FileStoreForTests(undefined);
+      try {
+        resetWorkCounters();
+        const before = queries.length;
+        const racing = [...racingReads(today), ...racingReads(served)].map(
+          (read) =>
+            read.then(
+              (value) => ({ value }),
+              (error: unknown) => ({ error: String(error) }),
+            ),
+        );
+        // Every read waits on the writer; if one captures instead, the
+        // assertions below fail rather than this wait hanging. A deadline,
+        // not a turn count: each discovery capture is a worker round trip.
+        const deadline = Date.now() + 30_000;
+        while (
+          (snapshotWorkCounters().w5['readView.waited.writer'] ?? 0) < 10 &&
+          queries.length - before < 12
+        ) {
+          if (Date.now() > deadline)
+            throw new Error('The reads never reached the writer');
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        commit.open();
+        await writing;
+        const results = await Promise.all(racing);
+        const counters = snapshotWorkCounters().w5;
+        const made = queries.length - before;
+        const expected = await Promise.all(
+          racingReads(today).map((read) =>
+            read.then(
+              (value) => ({ value }),
+              (error: unknown) => ({ error: String(error) }),
+            ),
+          ),
+        );
+        // The manifest read names no list, so it may read before the write.
+        const listed = (reads: unknown[]): unknown[] =>
+          reads.filter((_, index) => index % 6 !== 3);
+        expect(listed(results)).toEqual(listed([...expected, ...expected]));
+        for (const result of listed(results))
+          expect(JSON.stringify(result)).toContain('wt-2');
+        expect(counters).toMatchObject({
+          'logical.query.readView': 12,
+          'readView.cacheMiss.writing': 6,
+          'readView.waited.writer': 10,
+          'readView.recaptured.writer': 6,
+        });
+        // 3 scoped reads per runtime capture once; 3 discovery reads twice.
+        expect(made).toBe(18);
+      } finally {
+        commit.open();
+        __setDesktopW5FileStoreForTests(electron);
+      }
+      // The own write is read through captures until its refill settles it.
+      await fire(own);
       expect(await readServed()).toBe(0);
       // Another origin's commit: read once its plan applied, not captured.
       const foreignId = await foreignWrite({ alwaysShow: true });

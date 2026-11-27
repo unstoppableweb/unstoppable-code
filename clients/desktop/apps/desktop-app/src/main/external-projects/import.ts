@@ -1,6 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { access, cp, mkdir, realpath, stat } from 'node:fs/promises';
+import { access, cp, mkdir, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import {
+  createExternalChatDestination,
+  registerExternalProject,
+  reusableExternalChatDestination,
+  rollbackExternalChatDestination,
+  type ExternalProjectDestination,
+} from '@canopy/core-runtime/node/workspace/create-orchestration';
 import { readCodexRolloutSeedItems } from '@canopy/execution-engine/node/codex-runtime';
 import {
   IPC_CHANNELS,
@@ -20,22 +27,8 @@ import {
   claudeProjectDirCandidates,
   getClaudeCodeProjectsDir,
 } from '../lib/claude-project-paths';
-import {
-  createWorkEntry,
-  listWorkEntryIds,
-  removeWorkEntryRow,
-} from '../lib/cowork-work-entries';
-import { createExternalCoworkWorkspace } from '../lib/cowork-workspace-crud';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
-import { readAllSidebarItems } from '../lib/sidebar-items';
 import { sendToAllWindows } from '../lib/window-send';
-import { assertFolderIsImportable } from '../lib/workspace-service';
-import { createWorkspace } from '../lib/workspace-creation';
-import {
-  archiveSingleRepoWorktree,
-  createSingleRepoWorktree,
-} from '../lib/worktree-service';
-import { cleanupPersistedWorktreeData } from '../lib/worktree-data-cleanup';
 import { getWorktreeAttachmentsDir } from '../lib/paths';
 import {
   TranscriptTooLargeError,
@@ -46,6 +39,10 @@ import {
 } from './chat-projection';
 import { getCachedExternalProjectScan, type CachedScan } from './discovery';
 import { projectOpenCodeSession } from './opencode-projection';
+import {
+  externalProjectChatDestinationPort,
+  externalProjectRegistrationPorts,
+} from './registration-host';
 import type { StoreReadRunner } from './store-read-runner';
 import { withStoreRunner } from './store-snapshot-read';
 import { StoreTranscripts } from './store-transcripts';
@@ -119,11 +116,7 @@ type ProgressEmitter = (
   event: Omit<ExternalProjectImportProgressEvent, 'scanId'>,
 ) => void;
 
-interface DestinationWorkspace {
-  id: string;
-  type: 'single-repo' | 'multi-repo' | 'cowork';
-  item: SidebarItem;
-}
+type DestinationWorkspace = ExternalProjectDestination<SidebarItem>;
 
 function providerName(provider: ExternalProjectProvider): string {
   switch (provider) {
@@ -218,85 +211,6 @@ async function isDirectory(candidate: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function toDestination(item: SidebarItem): DestinationWorkspace {
-  return { id: item.id, type: item.type, item };
-}
-
-async function samePath(left: string, right: string): Promise<boolean> {
-  try {
-    return (await realpath(left)) === right;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * The destination a candidate already has, if any: the project the scan saw
- * it tracked by, the project an earlier run of this scan registered (the
- * ledger names it, which is what makes a same-run retry idempotent), or a
- * sidebar entry rooted at the same canonical path.
- */
-async function findRegisteredDestination(
-  candidate: ExternalProjectCandidate,
-  resolvedRootPath: string,
-): Promise<DestinationWorkspace | null> {
-  const { items } = await readAllSidebarItems();
-  const byId = (id: string | undefined): SidebarItem | undefined =>
-    id ? items.find((item) => item.id === id) : undefined;
-  const tracked = byId(candidate.trackedWorkspaceId);
-  if (tracked) return toDestination(tracked);
-  const ledger = await readExternalProjectImportLedger();
-  const recorded = byId(ledger.imports[candidate.id]?.workspaceId);
-  if (recorded) return toDestination(recorded);
-  for (const item of items) {
-    const itemPath =
-      item.type === 'single-repo'
-        ? item.repoPath
-        : item.type === 'cowork'
-          ? item.externalPath
-          : item.sourceRepoPath;
-    if (!itemPath) continue;
-    if (
-      itemPath === resolvedRootPath ||
-      (await samePath(itemPath, resolvedRootPath))
-    ) {
-      return toDestination(item);
-    }
-  }
-  return null;
-}
-
-async function registerDestination(
-  candidate: ExternalProjectCandidate,
-): Promise<DestinationWorkspace> {
-  // The scan's path was canonical when it was taken; resolve it again now so
-  // a folder swapped for a symlink since then is judged by where it points.
-  const resolvedRootPath = await realpath(candidate.rootPath);
-  const existing = await findRegisteredDestination(candidate, resolvedRootPath);
-  if (existing) return existing;
-  if (candidate.kind === 'git') {
-    const { workspace } = await createWorkspace({
-      source: 'external_projects_import',
-      variant: {
-        kind: 'repository-without-manifest',
-        repoPath: resolvedRootPath,
-        name: candidate.displayName,
-      },
-    });
-    if (workspace.type !== 'single-repo') {
-      throw new Error('Imported project was persisted with an unexpected type');
-    }
-    return { id: workspace.id, type: 'single-repo', item: workspace };
-  }
-  const { items } = await readAllSidebarItems();
-  await assertFolderIsImportable(resolvedRootPath, items);
-  const workspace = await createExternalCoworkWorkspace(
-    resolvedRootPath,
-    candidate.displayName,
-  );
-  return { id: workspace.id, type: 'cowork', item: workspace };
 }
 
 interface NativeTranscript {
@@ -509,125 +423,6 @@ export interface ChatImportOutcome {
   messages: string[];
   /** Sessions that became persisted tabs, for the ledger. */
   imported: ImportedChatRecord[];
-}
-
-async function createChatDestination(
-  workspace: DestinationWorkspace,
-): Promise<{ worktreeId: string; cwd: string }> {
-  if (workspace.type === 'cowork') {
-    // No title: the entry is named from the chats it holds, the same way
-    // every other Work Entry is, and a user rename still overrides that.
-    // The explicit id makes it a fresh entry rather than adopting an empty
-    // one the user already has open.
-    const { entry } = await createWorkEntry(workspace.id, {
-      id: randomUUID(),
-    });
-    return {
-      worktreeId: entry.id,
-      cwd: resolveWorktreeCwd(workspace.id, entry.id),
-    };
-  }
-  if (workspace.item.type !== 'single-repo') {
-    throw new Error('Chats can only be imported into Code or Cowork projects');
-  }
-  const response = await createSingleRepoWorktree({
-    workspaceId: workspace.id,
-    existingWorktreeIds: workspace.item.worktrees.map(
-      (worktree) => worktree.id,
-    ),
-  });
-  return {
-    worktreeId: response.id,
-    cwd: resolveWorktreeCwd(workspace.id, response.id),
-  };
-}
-
-/**
- * Undo an empty chat destination. Nothing user-visible references it yet
- * (tabs are written last), so a batch whose sessions all failed must not
- * leave a mystery worktree or Work Entry behind.
- */
-async function rollbackChatDestination(
-  workspace: DestinationWorkspace,
-  worktreeId: string,
-): Promise<void> {
-  try {
-    if (workspace.type === 'cowork') {
-      // Defer the browser lifecycle graph to this rollback-only path so normal
-      // external-project imports do not eagerly load the browser service stack.
-      const { withBrowserTaskOwnerRemoval } =
-        await import('../browser/browser-profile-lifecycle');
-      await withBrowserTaskOwnerRemoval(workspace.id, worktreeId, async () => {
-        try {
-          await cleanupPersistedWorktreeData(workspace.id, worktreeId);
-        } finally {
-          await removeWorkEntryRow(workspace.id, worktreeId);
-        }
-      });
-      return;
-    }
-    await archiveSingleRepoWorktree({
-      archiveTrigger: 'import',
-      workspaceId: workspace.id,
-      worktreeId,
-      // This run created the branch and nothing landed on it.
-      deleteBranch: true,
-      retainAsArchivedContainer: false,
-    });
-  } catch {
-    // Best effort: an orphaned empty destination is recoverable by hand and
-    // must not turn a reported chat failure into an import failure.
-  }
-}
-
-async function chatDestinationExists(
-  workspace: DestinationWorkspace,
-  worktreeId: string,
-): Promise<boolean> {
-  if (workspace.type === 'cowork') {
-    const entries = await listWorkEntryIds(workspace.id).catch(
-      (): string[] => [],
-    );
-    return entries.includes(worktreeId);
-  }
-  if (workspace.item.type !== 'single-repo') return false;
-  return workspace.item.worktrees.some(
-    (worktree) => worktree.id === worktreeId,
-  );
-}
-
-/**
- * The worktree or Work Entry an earlier run of this import put the project's
- * chats in, when it still exists. The entry-level record is written as soon
- * as the destination exists, so it survives a failed session write; the
- * newest session record is the fallback for ledgers written before it.
- */
-async function reusableChatDestination(
-  workspace: DestinationWorkspace,
-  recorded:
-    | {
-        chatWorktreeId?: string;
-        sessions: Record<string, { worktreeId: string; importedAt?: string }>;
-      }
-    | undefined,
-): Promise<string | null> {
-  if (!recorded) return null;
-  const candidates: string[] = [];
-  if (recorded.chatWorktreeId) candidates.push(recorded.chatWorktreeId);
-  let newest: { worktreeId: string; importedAt: string } | null = null;
-  for (const record of Object.values(recorded.sessions)) {
-    const importedAt = record.importedAt ?? '';
-    if (!newest || importedAt > newest.importedAt) {
-      newest = { worktreeId: record.worktreeId, importedAt };
-    }
-  }
-  if (newest && !candidates.includes(newest.worktreeId)) {
-    candidates.push(newest.worktreeId);
-  }
-  for (const worktreeId of candidates) {
-    if (await chatDestinationExists(workspace, worktreeId)) return worktreeId;
-  }
-  return null;
 }
 
 function sortNewestFirst(
@@ -954,6 +749,22 @@ export async function prepareChatImports(args: {
     .map(({ session, tab }) => ({ session, tab }));
 }
 
+/**
+ * Undo an empty chat destination. Nothing user-visible references it yet
+ * (tabs are written last), so a batch whose sessions all failed must not
+ * leave a mystery worktree or Work Entry behind.
+ */
+function rollbackChatDestination(
+  workspace: DestinationWorkspace,
+  worktreeId: string,
+): Promise<void> {
+  return rollbackExternalChatDestination(
+    externalProjectChatDestinationPort,
+    workspace,
+    worktreeId,
+  );
+}
+
 async function importChats(args: {
   candidate: ExternalProjectCandidate;
   workspace: DestinationWorkspace;
@@ -994,14 +805,22 @@ async function importChats(args: {
 
   // A retry lands in the destination the earlier run created rather than
   // opening a second worktree or Work Entry for the same project.
-  const priorWorktreeId = await reusableChatDestination(workspace, ledgerEntry);
+  const priorWorktreeId = await reusableExternalChatDestination(
+    externalProjectChatDestinationPort,
+    workspace,
+    ledgerEntry,
+  );
   const reused = priorWorktreeId !== null;
-  const destination = priorWorktreeId
-    ? {
-        worktreeId: priorWorktreeId,
-        cwd: resolveWorktreeCwd(workspace.id, priorWorktreeId),
-      }
-    : await createChatDestination(workspace);
+  const worktreeId =
+    priorWorktreeId ??
+    (await createExternalChatDestination(
+      externalProjectChatDestinationPort,
+      workspace,
+    ));
+  const destination = {
+    worktreeId,
+    cwd: resolveWorktreeCwd(workspace.id, worktreeId),
+  };
   if (!reused) {
     // Name the destination before any chat lands so a retry finds it even if
     // the per-session records below never get written.
@@ -1023,8 +842,7 @@ async function importChats(args: {
     onProgress: args.onProgress,
   });
   if (prepared.length === 0) {
-    if (!reused)
-      await rollbackChatDestination(workspace, destination.worktreeId);
+    if (!reused) await rollbackChatDestination(workspace, worktreeId);
     return outcome;
   }
 
@@ -1042,8 +860,7 @@ async function importChats(args: {
     outcome.chatsSkipped += prepared.length;
     outcome.retryableSkips += prepared.length;
     outcome.messages.push(`Chats could not be saved: ${errorMessage(error)}.`);
-    if (!reused)
-      await rollbackChatDestination(workspace, destination.worktreeId);
+    if (!reused) await rollbackChatDestination(workspace, worktreeId);
     return outcome;
   }
   for (const { session, tab } of prepared) {
@@ -1127,7 +944,10 @@ async function importOne(args: {
 
   let workspace: DestinationWorkspace;
   try {
-    workspace = await registerDestination(candidate);
+    workspace = await registerExternalProject(
+      externalProjectRegistrationPorts,
+      candidate,
+    );
   } catch (error) {
     return {
       ...base,

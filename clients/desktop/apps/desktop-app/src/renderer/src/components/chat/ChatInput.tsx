@@ -214,7 +214,16 @@ import {
 import { inheritedDefaultLayers } from '@/lib/chatPluginEditing';
 import { brandText, getBrandSourceRepository } from '@/lib/brand';
 import { isCoworkChatTarget } from '@/lib/cowork';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isWebCoreScope, webCoreLocalId } from '@/lib/chat-authority';
+import { loadPairedComputerModels } from '@/stores/chat/paired-computer';
+import { usePairedApprovalModeDefault } from './usePairedApprovalModeDefault';
+import {
+  pairedComputerModelLabel,
+  pairedComputerModelList,
+  pairedComputerPickerModels,
+  usePairedComputerModelCatalogStore,
+} from '@/stores/chat/paired-computer/model-catalog';
 import { CloudChatPluginsPicker } from '@/cloud-chats/CloudChatPluginsPicker';
 import { CloudTaskCreationNotice } from '@/cloud-chats/CloudTaskCreationNotice';
 import {
@@ -607,7 +616,7 @@ import {
 } from './message-history';
 import {
   ChatComposerToolbar,
-  FLOATING_PICKER_GAP,
+  PICKER_GAP,
   Notice,
   NoticeButton,
   StuckAgentNotice,
@@ -1614,8 +1623,19 @@ function ChatInputContent({
       ? approvalDefaultLookupResult?.mode
       : undefined;
 
+  const pairedApprovalDefault = usePairedApprovalModeDefault(
+    approvalModeTarget,
+    tab?.approvalMode,
+  );
+
   useEffect(() => {
-    if (!approvalModeTarget || tab?.approvalMode !== undefined) return;
+    if (
+      !approvalModeTarget ||
+      pairedApprovalDefault.isPaired ||
+      tab?.approvalMode !== undefined
+    ) {
+      return;
+    }
     const cacheKey = approvalDefaultCacheKey(
       approvalModeTarget.projectId,
       approvalModeTarget.worktreeId,
@@ -1648,6 +1668,7 @@ function ChatInputContent({
     approvalDefaultForProject,
     approvalDefaultsGeneration,
     approvalModeTarget,
+    pairedApprovalDefault.isPaired,
     tab?.approvalMode,
   ]);
   // Display-only fallback for the brief window before the tab's stamped mode
@@ -1660,11 +1681,14 @@ function ChatInputContent({
   // reality. That direction is deliberate — the send itself always goes
   // through main's fail-closed resolver, and flashing a stricter mode on every
   // normal open would be the more misleading of the two (CAN-3055).
-  const approvalMode: ApprovalMode =
-    tab?.approvalMode ??
-    approvalDefaultForProject ??
-    settledApprovalDefault ??
-    DEFAULT_APPROVAL_DEFAULTS.worktree;
+  const approvalMode: ApprovalMode = pairedApprovalDefault.isPaired
+    ? (tab?.approvalMode ??
+      pairedApprovalDefault.mode ??
+      DEFAULT_APPROVAL_DEFAULTS.worktree)
+    : (tab?.approvalMode ??
+      approvalDefaultForProject ??
+      settledApprovalDefault ??
+      DEFAULT_APPROVAL_DEFAULTS.worktree);
   const handleApprovalModeChange = useCallback(
     (mode: ApprovalMode): void => {
       void setTabApprovalMode(approvalModeTarget, mode).catch(
@@ -2582,10 +2606,16 @@ function ChatInputContent({
     composerProjectId !== undefined && isWebCoreScope(composerProjectId)
       ? composerProjectId
       : undefined;
+  const pairedComputerProjectId =
+    composerProjectId !== undefined && isPairedComputerId(composerProjectId)
+      ? composerProjectId
+      : undefined;
+  const nonLocalProject =
+    webCoreProjectId !== undefined || pairedComputerProjectId !== undefined;
   // The local chat's held agent secrets (U3): the Secrets chip and Codex's
   // Restart to apply. Cloud chats list theirs through the web core (U5).
   const localAgentSecrets = useChatAgentSecrets(
-    webCoreProjectId === undefined ? approvalModeTarget : undefined,
+    !nonLocalProject ? approvalModeTarget : undefined,
   );
   const agentSecretsAgentName =
     effectiveProviderType === 'codex'
@@ -2609,7 +2639,7 @@ function ChatInputContent({
       // secrets live in the cloud) and not App Advisor, which has no secret
       // tools.
       scope:
-        webCoreProjectId === undefined &&
+        !nonLocalProject &&
         !(composerProjectId !== undefined && isBotProjectId(composerProjectId))
           ? approvalModeTarget
           : undefined,
@@ -2619,7 +2649,7 @@ function ChatInputContent({
   // CAN-6444 — this local chat's model can't run for this account; offer the
   // user's own gateway model before send. Cloud chats bill in the web core.
   const unbillableModelCandidate = useUnbillableModelSwitch(
-    webCoreProjectId === undefined
+    !nonLocalProject
       ? (pendingModelChange?.model ?? model ?? fallbackModel)
       : undefined,
   );
@@ -2640,7 +2670,7 @@ function ChatInputContent({
   // offering the default a new chat would start on. It never moves on its
   // own, so it can't start billing a hosted model behind the user's back.
   const strandedGatewayModel = useStrandedGatewayModel(
-    webCoreProjectId === undefined ? model : undefined,
+    !nonLocalProject ? model : undefined,
   );
   const strandedSwitchModel = useChatStore((s) =>
     strandedGatewayModel
@@ -2827,8 +2857,32 @@ function ChatInputContent({
       : effectiveProviderType
         ? modelConfigForProviderSupportsFastMode(effectiveProviderType)
         : false);
-  // The Codex speed route is this computer's: a cloud chat never reads it.
-  const localSpeedControl = supportsFastMode && webCoreProjectId === undefined;
+  useEffect(() => {
+    if (pairedComputerProjectId !== undefined) {
+      void loadPairedComputerModels(pairedComputerProjectId);
+    }
+  }, [pairedComputerProjectId]);
+  const pairedComputerModels = usePairedComputerModelCatalogStore(
+    useShallow((state) =>
+      pairedComputerProjectId === undefined
+        ? undefined
+        : pairedComputerModelList(state, pairedComputerProjectId),
+    ),
+  );
+  const pairedComputerPickerRows = useMemo(
+    () =>
+      pairedComputerProjectId === undefined
+        ? undefined
+        : pairedComputerPickerModels(pairedComputerModels, model),
+    [model, pairedComputerModels, pairedComputerProjectId],
+  );
+  const pairedComputerLabel = usePairedComputerModelCatalogStore((state) =>
+    pairedComputerProjectId === undefined
+      ? undefined
+      : pairedComputerModelLabel(state, pairedComputerProjectId, model),
+  );
+  // The Codex speed route is this computer's: non-local chats never read it.
+  const localSpeedControl = supportsFastMode && !nonLocalProject;
   // A cloud model that runs fast mode without effort levels gets the
   // speed-only panel.
   const cloudSpeedOnly = supportsFastMode && webCoreProjectId !== undefined;
@@ -2922,8 +2976,14 @@ function ChatInputContent({
   }, [setSpeed, nextSpeed, targetOverride]);
   // Live session pending exit (from global store) or restored from persistence
   const pendingExit: PendingPlanExit | null = useMemo(() => {
+    if (scopeCapabilities.chatWorkflows?.planReview !== true) return null;
     return resolveComposerPendingPlanExit(tab, composerScope, pendingPlanExits);
-  }, [pendingPlanExits, composerScope, tab]);
+  }, [
+    pendingPlanExits,
+    composerScope,
+    scopeCapabilities.chatWorkflows?.planReview,
+    tab,
+  ]);
 
   // The waiting plan whose unsent comments the prompt warns about. The exit
   // must be in this composer's own scope; identifiers from another scope
@@ -3042,6 +3102,7 @@ function ChatInputContent({
     onDeliveryChange,
     activeQuestionDelivery,
     liveQuestionIds,
+    composerProjectId,
   );
   const questionPromptClosed = useQuestionPromptClosed(
     activeQuestion?.requestId,
@@ -3115,12 +3176,14 @@ function ChatInputContent({
     thinkingLevel,
     supportedThinkingLevels,
   });
+  const chatSendDisabled = scopeCapabilities.chatSend === false;
   const handleCancelRunningChat = useCallback((): void => {
+    if (chatSendDisabled) return;
     void cancelSession(targetOverride);
-  }, [cancelSession, targetOverride]);
+  }, [cancelSession, chatSendDisabled, targetOverride]);
   useCancelRunningChatShortcut({
     // A cloud Stop already sent waits for its turn to end.
-    enabled: isStreaming && cloudStop !== 'stopping',
+    enabled: isStreaming && !chatSendDisabled && cloudStop !== 'stopping',
     // Only the active panel owns document-level composer shortcuts. Keeping
     // this separate from `enabled` prevents panel-focus handoffs from
     // disarming a still-running chat's confirmation.
@@ -3154,7 +3217,7 @@ function ChatInputContent({
     setStopFailedDismissed(false);
   }, [cloudStop]);
 
-  const resourceGuardBlock = useResourceMonitorStore(
+  const localResourceGuardBlock = useResourceMonitorStore(
     useShallow((s) => {
       const snapshot = s.snapshot;
       if (!snapshot || snapshot.guards.chatTurns.blocked !== true) {
@@ -3168,6 +3231,10 @@ function ChatInputContent({
       };
     }),
   );
+  // Local memory and concurrency pressure apply to turns running on this
+  // computer, not turns dispatched to a paired computer.
+  const resourceGuardBlock =
+    pairedComputerProjectId !== undefined ? null : localResourceGuardBlock;
   const isResourceGuardBlocked = resourceGuardBlock !== null;
   // Follows the "Sending paused" title on the same line: the cause, then
   // what lifts it.
@@ -3467,6 +3534,7 @@ function ChatInputContent({
   // itself is wired below, once the terminal target is known.
   const terminalModeEnabled =
     !disableTerminalMode &&
+    scopeCapabilities.terminalPty === true &&
     selectedWorktree !== null &&
     selectedWorktree !== undefined &&
     !isCoworkChatTarget(selectedWorktree.projectId) &&
@@ -3716,7 +3784,9 @@ function ChatInputContent({
   // A cloud chat runs in the web core, which draws no Mod surface: it never
   // asks this computer's main process about one.
   const modSurfaceChat =
-    sessionChatTarget !== null && !isWebCoreScope(sessionChatTarget.projectId)
+    sessionChatTarget !== null &&
+    !isWebCoreScope(sessionChatTarget.projectId) &&
+    !isPairedComputerId(sessionChatTarget.projectId)
       ? sessionChatTarget
       : null;
   // A Claude Mod's toasts show as the app's own, under the Mod's name, in
@@ -4018,12 +4088,39 @@ function ChatInputContent({
       aiCreditsRoutingMode,
     ],
   );
+  // One owner for the credit notice slot: a held message, then the No
+  // billing source notice, then the "Using AI Credits" card.
   const creditNotice = creditNoticeVisibility({
     creditHeld:
       tab?.queuedCreditHeld === true ||
       tab?.aiCreditsNoBillingSource !== undefined,
+    noBillingSource: billingResolution.lockKind === 'no-billing-source',
     aiCreditsBannerVisible: billingResolution.aiCreditsBannerVisible,
   });
+  // Nothing can pay for the next turn (billing setup gate, 2026-11-25): the
+  // billing resolver's No billing source lock, or a confirmed lane dead end.
+  // Only Claude and Codex models are judged, and only where the No billing
+  // source notice renders, so a blocked send always has a notice to point at.
+  // The send control stays enabled: Send and Enter reach `handleSend`, which
+  // keeps the draft and asks the notice for its provider list (a policy dead
+  // end only focuses the notice, which already says to contact an admin).
+  // Entries that bypass this composer (Remote Control, automations, the
+  // queue) rely on main's typed refusal.
+  //
+  // The CAN-7062 lock shares `lockKind: 'no-billing-source'` but is a consent
+  // state, not a dead end: credits CAN pay, nobody chose them. That send keeps
+  // reaching main, whose typed refusal ("You're signed out of …") returns the
+  // prompt to the composer; only spendable-credits-free locks block here.
+  const billingModelProvider = getProviderForModel(modelForBilling);
+  const billingSendBlocked =
+    webCoreProjectId === undefined &&
+    (billingModelProvider === 'claude' || billingModelProvider === 'codex') &&
+    !isOrgGatewayRoute(modelForBilling) &&
+    !unbillableModelSwitch &&
+    ((billingResolution.lockKind === 'no-billing-source' &&
+      providerAvailability[billingProvider].creditsEligible !== true) ||
+      noDispatchableModel !== null);
+  const [billingRecoveryRequest, setBillingRecoveryRequest] = useState(0);
   // Whether the "Using AI Credits" card will show once this chat can spend
   // credits. Credits bought from the No billing source banner are confirmed
   // in that card, and the CTA learns of a purchase before this composer's
@@ -4189,7 +4286,7 @@ function ChatInputContent({
     availabilityNoticeProvider: subscriptionAvailabilityNoticeProvider,
     dismissAvailabilityNotice: dismissSubscriptionAvailabilityNotice,
   } = useSubscriptionSwitch({
-    target: bannerTarget,
+    target: pairedComputerProjectId !== undefined ? null : bannerTarget,
     provider:
       billingProvider === 'claude' || billingProvider === 'codex'
         ? billingProvider
@@ -4208,8 +4305,18 @@ function ChatInputContent({
       ? switchToSubscription
       : undefined;
 
+  // A 429 from the user's own AI gateway is the gateway's rate limit or
+  // balance, not a Claude or Codex usage limit, and AI Credits are no remedy:
+  // the turn's own error carries the gateway's message instead.
+  const onOrgGatewayRoute = isOrgGatewayRoute(model ?? fallbackModel);
   useEffect(() => {
-    if (!bannerTarget) return;
+    if (
+      !bannerTarget ||
+      onOrgGatewayRoute ||
+      pairedComputerProjectId !== undefined
+    ) {
+      return;
+    }
     const persistedBanner = tab?.llmProviderUsageLimitBanner;
     if (!persistedBanner) return;
     if (
@@ -4226,6 +4333,8 @@ function ChatInputContent({
     });
   }, [
     bannerTarget,
+    onOrgGatewayRoute,
+    pairedComputerProjectId,
     setUsageLimitBanner,
     tab?.llmProviderUsageLimitBanner,
     tab?.dismissedLlmProviderUsageLimitBannerKey,
@@ -4245,17 +4354,23 @@ function ChatInputContent({
   // when the plan resets (CAN-7484). It runs only while a subscription could
   // pay; a locked toggle (e.g. a confirmed sign-out) leaves no switch back.
   const { rememberLimitProvider } = useSessionCreditsRoutingResetLookup({
-    routing: tab?.aiCreditsRouting,
-    inEffect: aiCreditsRoutingInEffect,
-    subscriptionUsable: handleSwitchToSubscription !== undefined,
-    bannerProvider: tab?.llmProviderUsageLimitBanner?.provider,
+    routing:
+      pairedComputerProjectId !== undefined ? undefined : tab?.aiCreditsRouting,
+    inEffect: pairedComputerProjectId === undefined && aiCreditsRoutingInEffect,
+    subscriptionUsable:
+      pairedComputerProjectId === undefined &&
+      handleSwitchToSubscription !== undefined,
+    bannerProvider:
+      pairedComputerProjectId !== undefined
+        ? undefined
+        : tab?.llmProviderUsageLimitBanner?.provider,
     billedProvider:
       billingProvider === 'claude' || billingProvider === 'codex'
         ? billingProvider
         : undefined,
     model: modelForBilling,
-    target: bannerTarget,
-    live: usesCommittedChatState,
+    target: pairedComputerProjectId !== undefined ? null : bannerTarget,
+    live: pairedComputerProjectId === undefined && usesCommittedChatState,
   });
   // The routing card states when "just this chat" routing ends (CAN-7484).
   // Memoized on the reset time so the card does not re-render with ChatInput.
@@ -4269,8 +4384,10 @@ function ChatInputContent({
       : {};
   }, [sessionRoutingActive, sessionRoutingResetsAt]);
   const creditRefusal =
-    tab?.aiCreditsNoBillingSource ??
-    (usesCommittedChatState ? null : undefined);
+    pairedComputerProjectId !== undefined
+      ? null
+      : (tab?.aiCreditsNoBillingSource ??
+        (usesCommittedChatState ? null : undefined));
 
   // Scheduled send + resume run through the Canopy composer: available for
   // native chats and `auto` terminal chats (the scheduled prompt is routed
@@ -5024,7 +5141,7 @@ function ChatInputContent({
     EmptyCompletionRecoveryView | undefined
   >(
     () =>
-      emptyCompletionTurnId
+      pairedComputerProjectId === undefined && emptyCompletionTurnId
         ? {
             turnUserMessageId: emptyCompletionTurnId,
             repeatsToolActivity: emptyCompletionRepeatsToolActivity,
@@ -5035,6 +5152,7 @@ function ChatInputContent({
       emptyCompletionCanRetryPrompt,
       emptyCompletionRepeatsToolActivity,
       emptyCompletionTurnId,
+      pairedComputerProjectId,
     ],
   );
   const [emptyCompletionBusy, setEmptyCompletionBusy] = useState(false);
@@ -6005,24 +6123,24 @@ function ChatInputContent({
         )
       : mergedFileReferences;
     const trimmed = text.trim();
-    if (
-      questionPromptOpen &&
-      !editingState &&
-      questionPrompt.prompt.sendAnswers(text)
-    ) {
-      if (
-        !questionPrompt.prompt.canSend(text) ||
-        questionPrompt.busy !== null ||
-        questionPrompt.disconnected
-      )
+    if (chatSendDisabled && !editingState) return;
+    if (questionPromptOpen && !editingState) {
+      if (scopeCapabilities.chatApprovalRespond === false) return;
+      if (questionPrompt.prompt.sendAnswers(text)) {
+        if (
+          !questionPrompt.prompt.canSend(text) ||
+          questionPrompt.busy !== null ||
+          questionPrompt.disconnected
+        )
+          return;
+        questionPrompt.prompt.send(text);
+        resetEditor(editor);
+        setValue(createEmptyValue());
+        if (tabId) {
+          useChatStore.getState().clearTabDraft(tabId);
+        }
         return;
-      questionPrompt.prompt.send(text);
-      resetEditor(editor);
-      setValue(createEmptyValue());
-      if (tabId) {
-        useChatStore.getState().clearTabDraft(tabId);
       }
-      return;
     }
     const attachmentTarget =
       targetOverride ??
@@ -6061,6 +6179,12 @@ function ChatInputContent({
     if (isResourceGuardBlocked && !editingState && !isTerminalMode) {
       // Banner above the composer explains why; bail silently so we never
       // surface the raw ResourceGuardError IPC text in the transcript.
+      return;
+    }
+    if (billingSendBlocked && !editingState && !isTerminalMode) {
+      // Keep the draft and open the No billing source notice's provider list
+      // instead of sending a turn main would refuse.
+      setBillingRecoveryRequest((request) => request + 1);
       return;
     }
     const submittedPlanMode = isGenuinePlanModeUse({
@@ -6501,8 +6625,11 @@ function ChatInputContent({
       () => submittingDraftRevisionsRef.current.delete(submittedDraftRevision),
     );
   }, [
+    billingSendBlocked,
     cloudUploading,
     cloudChatDeleted,
+    chatSendDisabled,
+    scopeCapabilities.chatApprovalRespond,
     questionPromptOpen,
     questionPrompt.busy,
     questionPrompt.disconnected,
@@ -8027,7 +8154,11 @@ function ChatInputContent({
   /* eslint-enable shadcn/require-static-classes */
 
   const resumeFailedMessage = useChatStore((state) => {
-    if (!sessionChatTarget || effectiveProviderType !== 'antigravity')
+    if (
+      !sessionChatTarget ||
+      isPairedComputerId(sessionChatTarget.projectId) ||
+      effectiveProviderType !== 'antigravity'
+    )
       return undefined;
     const messages = state.worktreeChats[
       `${sessionChatTarget.projectId}/${sessionChatTarget.worktreeId}`
@@ -8159,7 +8290,16 @@ function ChatInputContent({
       >
         {/* The banners above the composer, in place of the box. */}
         <NoticeShapeProvider shape="composer">
-          {staleSessionDetected ? (
+          {pairedComputerProjectId !== undefined ? (
+            <Notice
+              intent="neutral"
+              role="none"
+              title="This session is read-only"
+              data-testid="paired-read-only-notice"
+            >
+              Messages are read-only on the paired computer.
+            </Notice>
+          ) : staleSessionDetected ? (
             <Notice
               intent="attention"
               title="This session can no longer be resumed"
@@ -8284,7 +8424,7 @@ function ChatInputContent({
             composerMenu.open ? 'true' : undefined
           }
         >
-          {/* Non-interactive anchor for composer submenus. `FloatingMenu` attaches an
+          {/* Non-interactive anchor for composer submenus. `Menu` attaches an
                   ArrowDown/ArrowUp open listener to its anchor, so anchoring the
                   popup on the wrapper that CONTAINS the `+` button gave ArrowDown a
                   second meaning: the button's keydown bubbled to the wrapper and
@@ -8309,7 +8449,7 @@ function ChatInputContent({
             dataTestIdPrefix="chat-input"
             // The pickers' spacing: clear of the composer, like the
             // model and approval menus.
-            gap={FLOATING_PICKER_GAP}
+            gap={PICKER_GAP}
             triggerRef={plusTriggerRef}
             capsuleTrigger
             // A chat scope that serves no attachments, plugins, files or
@@ -8446,6 +8586,8 @@ function ChatInputContent({
             failed={terminalModeError !== null}
           />
         ) : questionPromptOpen &&
+          scopeCapabilities.chatApprovalRespond ===
+            false ? null : questionPromptOpen &&
           (questionPrompt.prompt.skips(serializedDraft.text) ||
             questionPrompt.prompt.sendAnswers(serializedDraft.text)) ? (
           // An open question owns the trailing action, even mid-turn: stop
@@ -8473,12 +8615,20 @@ function ChatInputContent({
               />
             )}
           </>
+        ) : isStreaming && chatSendDisabled ? (
+          <ComposerSendButton
+            kind="send"
+            onSend={handleSend}
+            disabled
+            pending={false}
+            blockedReason="Sending is not enabled on this paired computer"
+          />
         ) : isStreaming ? (
           <>
             {renderVoiceButton(false)}
             <ComposerSendButton
               kind="stop"
-              onStop={(): void => void cancelSession(targetOverride)}
+              onStop={handleCancelRunningChat}
               pending={pendingModelChange !== undefined}
               stopping={cloudStop === 'stopping' || cloudStop === 'retryable'}
               stopRetryable={cloudStop === 'retryable'}
@@ -8501,6 +8651,7 @@ function ChatInputContent({
               kind="send"
               onSend={handleSend}
               disabled={
+                chatSendDisabled ||
                 !draftHasSendableContent ||
                 isResourceGuardBlocked ||
                 tab?.firstSendPreparing === true ||
@@ -8508,15 +8659,20 @@ function ChatInputContent({
                 cloudChatDeleted
               }
               pending={pendingModelChange !== undefined}
-              {...(isResourceGuardBlocked
+              {...(chatSendDisabled
                 ? {
-                    blockedReason: resourceGuardMessage ?? 'Send message',
+                    blockedReason:
+                      'Sending is not enabled on this paired computer',
                   }
-                : cloudUploading
-                  ? { blockedReason: 'Attachments are uploading' }
-                  : cloudChatDeleted
-                    ? { blockedReason: 'This chat was deleted' }
-                    : {})}
+                : isResourceGuardBlocked
+                  ? {
+                      blockedReason: resourceGuardMessage ?? 'Send message',
+                    }
+                  : cloudUploading
+                    ? { blockedReason: 'Attachments are uploading' }
+                    : cloudChatDeleted
+                      ? { blockedReason: 'This chat was deleted' }
+                      : {})}
             />
           </>
         )
@@ -8907,7 +9063,7 @@ function ChatInputContent({
             The usage-limit notice yields to the routing-status card whenever
             that card shows, so the two never offer and confirm credits at
             once (CAN-4757). */}
-        {!isEditingQueued && (
+        {!isEditingQueued && pairedComputerProjectId === undefined && (
           <>
             <AiCreditsUsageLimitBanner
               target={bannerTarget}
@@ -9037,9 +9193,11 @@ function ChatInputContent({
             {/* An org gateway the member has no working key for. Reads its own
                 state rather than the target-keyed store: nothing has failed at
                 runtime yet — the point is to catch it BEFORE the first turn. */}
-            <ModelGatewayKeyBanner
-              selectedGatewayOrganizationId={selectedGatewayOrganizationId}
-            />
+            {pairedComputerProjectId === undefined ? (
+              <ModelGatewayKeyBanner
+                selectedGatewayOrganizationId={selectedGatewayOrganizationId}
+              />
+            ) : null}
             <AgentSecretsComposerRestartNotice
               secrets={agentSecrets}
               agentName={agentSecretsAgentName}
@@ -9062,7 +9220,8 @@ function ChatInputContent({
                 model-unavailable notice above offers the user's own gateway
                 model, it is the one notice for this dead end; the locked rows'
                 recovery still offers sign-in and credits (CAN-6444). */}
-            {isOrgGatewayRoute(modelForBilling) ||
+            {pairedComputerProjectId !== undefined ||
+            isOrgGatewayRoute(modelForBilling) ||
             unbillableModelSwitch ? null : (
               <NoBillingSourceBanner
                 provider={billingProvider}
@@ -9085,6 +9244,7 @@ function ChatInputContent({
                 {...(signedOutNoSourceWhenFunded
                   ? { onCreditsArrived: handleSignedOutCreditsArrived }
                   : {})}
+                recoveryRequest={billingRecoveryRequest}
               />
             )}
           </>
@@ -9378,6 +9538,9 @@ function ChatInputContent({
             projectId={composerQuestions[0]?.projectId ?? ''}
             onDeliveryChange={onDeliveryChange}
             onClose={closeQuestionPrompt}
+            {...(scopeCapabilities.chatApprovalRespond === false
+              ? { readOnlyHint: 'Answer on the paired computer.' }
+              : {})}
           />
         ) : questionPromptOpen ? (
           <QuestionPrompt
@@ -9388,6 +9551,10 @@ function ChatInputContent({
             onRetry={questionPrompt.retry}
             onClose={closeQuestionPrompt}
             takeText={takeQuestionText}
+            plainTextQuestion={questionPrompt.plainTextQuestion}
+            {...(scopeCapabilities.chatApprovalRespond === false
+              ? { readOnlyHint: 'Answer on the paired computer.' }
+              : {})}
           >
             {promptTextRow}
           </QuestionPrompt>
@@ -9433,7 +9600,33 @@ function ChatInputContent({
                 className="flex min-w-0 items-center"
                 aria-busy={pendingModelChange !== undefined}
               >
-                {webCorePickerRows !== undefined ? (
+                {pairedComputerPickerRows !== undefined ? (
+                  <RemoteControlModelPicker
+                    statusRow
+                    brandDisplayName={brandText.appName}
+                    catalog={pairedComputerPickerRows}
+                    {...(model === undefined ? {} : { currentModel: model })}
+                    {...(pairedComputerLabel === undefined
+                      ? {}
+                      : { currentModelLabel: pairedComputerLabel })}
+                    menuAlignRef={dropContainerRef}
+                    triggerTooltip={null}
+                    disabled={
+                      isTerminalMode || tab?.firstSendPreparing === true
+                    }
+                    {...(scopeCapabilities.chatModelChange === false
+                      ? {
+                          readOnlyReason:
+                            'Change model on the paired computer.',
+                        }
+                      : {})}
+                    openSignal={modelPickerOpenSignal}
+                    onSelect={(modelId): void => {
+                      if (scopeCapabilities.chatModelChange === false) return;
+                      void setModelAndWait(modelId, targetOverride);
+                    }}
+                  />
+                ) : webCorePickerRows !== undefined ? (
                   // A cloud chat lists its web core catalog in the shared
                   // picker the web's cloud chats use (CAN-6175 R5), with the
                   // brand name the web passes for rows no vendor claims
@@ -9605,16 +9798,29 @@ function ChatInputContent({
               />
               <ComposerAccessUsage
                 access={
-                  scopeCapabilities.chatApprovalMode === true ? (
-                    <ApprovalModePicker
-                      mode={approvalMode}
-                      onChange={handleApprovalModeChange}
-                      disabled={isTerminalMode}
-                      hideTriggerIcon
-                      hideTriggerChevron
-                      menuAlignRef={dropContainerRef}
-                      menuAlignEdge="right"
-                    />
+                  scopeCapabilities.chatApprovalMode === true ||
+                  scopeCapabilities.chatApprovalModeReadOnly === true ? (
+                    pairedApprovalDefault.isUnresolved ? (
+                      <span
+                        data-testid="paired-approval-mode-unresolved"
+                        className="px-1.5 text-s fg-secondary"
+                      >
+                        Approval mode unavailable
+                      </span>
+                    ) : (
+                      <ApprovalModePicker
+                        mode={approvalMode}
+                        onChange={handleApprovalModeChange}
+                        disabled={
+                          isTerminalMode ||
+                          scopeCapabilities.chatApprovalMode !== true
+                        }
+                        hideTriggerIcon
+                        hideTriggerChevron
+                        menuAlignRef={dropContainerRef}
+                        menuAlignEdge="right"
+                      />
+                    )
                   ) : null
                 }
                 usage={

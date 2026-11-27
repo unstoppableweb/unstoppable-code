@@ -19,12 +19,12 @@ import {
   DelayedLoadingPlaceholder,
   EmptyStateRow,
   ErrorBanner,
-  FloatingPickerMenu,
+  Picker,
   Notice,
-  PickList,
-  PickerMenuOptionContent,
-  PickerMenuOptionDescription,
-  PickerMenuOptionLabel,
+  PickerSearchList,
+  PickerOptionContent,
+  PickerOptionDescription,
+  PickerOptionLabel,
   Skeleton,
 } from '@canopy/ui-shared/components';
 import {
@@ -592,7 +592,7 @@ function AddItemRow({
       >
         {copy.add}
       </Button>
-      <FloatingPickerMenu
+      <Picker
         open={open}
         onOpenChange={setOpen}
         anchorRef={anchorRef}
@@ -600,7 +600,7 @@ function AddItemRow({
         role="dialog"
         aria-label={copy.add}
       >
-        <PickList
+        <PickerSearchList
           items={offered}
           getKey={(item) => capabilitySetupItemKey(item.ref)}
           getLabel={(item) => item.name}
@@ -616,17 +616,17 @@ function AddItemRow({
             onAdd(item);
           }}
           renderItem={(item) => (
-            <PickerMenuOptionContent>
-              <PickerMenuOptionLabel>{item.name}</PickerMenuOptionLabel>
+            <PickerOptionContent>
+              <PickerOptionLabel>{item.name}</PickerOptionLabel>
               {item.description !== null ? (
-                <PickerMenuOptionDescription>
+                <PickerOptionDescription>
                   {item.description}
-                </PickerMenuOptionDescription>
+                </PickerOptionDescription>
               ) : null}
-            </PickerMenuOptionContent>
+            </PickerOptionContent>
           )}
         />
-      </FloatingPickerMenu>
+      </Picker>
     </div>
   );
 }

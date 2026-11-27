@@ -2,20 +2,20 @@
 
 import type { JSX } from 'react';
 import {
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-  PickerMenuOptionLeading,
-  type PickerMenuOptionProps,
-} from '../primitives/PickerMenu';
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
+  PickerOptionLeading,
+  type PickerOptionProps,
+} from '../primitives/PickerParts';
 import { ProjectAvatarBadge } from './ProjectAvatarBadge';
 
 /** Reserved independently of real workspace ids on every picker host. */
 export const PROJECTLESS_CHAT_OPTION_KEY = 'workspace-dropdown:no-project';
 
 export interface ProjectlessChatOptionProps extends Omit<
-  PickerMenuOptionProps,
+  PickerOptionProps,
   'children'
 > {
   readonly label?: string;
@@ -31,7 +31,7 @@ export function ProjectlessChatOption({
   ...props
 }: ProjectlessChatOptionProps): JSX.Element {
   return (
-    <PickerMenuOption
+    <PickerOption
       {...props}
       role="option"
       selected={selected}
@@ -40,15 +40,15 @@ export function ProjectlessChatOption({
       aria-busy={availability === 'pending'}
       onClick={availability === 'available' ? onClick : undefined}
     >
-      <PickerMenuOptionLeading tone="primary">
+      <PickerOptionLeading tone="primary">
         <ProjectAvatarBadge kind="cowork" />
-      </PickerMenuOptionLeading>
-      <PickerMenuOptionContent>
-        <PickerMenuOptionLabel>
+      </PickerOptionLeading>
+      <PickerOptionContent>
+        <PickerOptionLabel>
           <span className="truncate">{label}</span>
-        </PickerMenuOptionLabel>
-      </PickerMenuOptionContent>
-      <PickerMenuOptionCheck selected={selected} />
-    </PickerMenuOption>
+        </PickerOptionLabel>
+      </PickerOptionContent>
+      <PickerOptionCheck selected={selected} />
+    </PickerOption>
   );
 }

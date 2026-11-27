@@ -12,6 +12,7 @@ import type {
 import type { TrackedPlanImplementationInput } from '@canopy/protocol/remote-control/shell';
 import { extractCandidatePaths } from '@canopy/desktop-shared/plan-detection-paths';
 import { isPlanProposal } from '@canopy/desktop-shared/plan-review';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { useActivityStore } from '../activityStore';
 import { useGitHubStore } from '../githubStore';
 import { reconcileTrackedPlans } from '@/lib/plans/reconcile-tracked-plans';
@@ -294,6 +295,7 @@ export function triggerPlanDetectionScan(
   projectId: string,
   worktreeId: string,
 ): void {
+  if (isPairedComputerId(projectId)) return;
   const blocks = collectLastTurnBlocks(tab.messages);
   const candidatePaths = extractCandidatePaths(blocks);
   if (candidatePaths.length === 0) {

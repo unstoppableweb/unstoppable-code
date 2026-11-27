@@ -232,6 +232,14 @@ export interface NoBillingSourceBannerProps {
    * leaves the record unreported, so a later callback retries it.
    */
   onCreditsArrived?: () => boolean;
+  /**
+   * Bumped by the composer each time a send is blocked because nothing can
+   * pay (billing setup gate, 2026-11-25). Each new value opens this notice's
+   * provider list; a policy dead end (no provider gets past it) or a notice
+   * without provider choice only brings the notice into view and focuses it.
+   * `0` (the default) requests nothing.
+   */
+  recoveryRequest?: number;
 }
 
 /**
@@ -275,6 +283,7 @@ export function NoBillingSourceBanner({
   aiCreditsCardExpected = false,
   signedOutNoSource = false,
   onCreditsArrived,
+  recoveryRequest = 0,
   providerChoice: providerChoiceContext,
 }: NoBillingSourceBannerProps): JSX.Element | null {
   const [nativeAvailability, setNativeAvailability] =
@@ -796,6 +805,21 @@ export function NoBillingSourceBanner({
       pendingFeedback: visibleHandoff?.feedback ?? null,
     },
   });
+  // A blocked send asks for the provider list. Handled once per request
+  // value, so a re-render never reopens a list the user closed.
+  const handledRecoveryRequestRef = useRef(recoveryRequest);
+  useEffect(() => {
+    if (recoveryRequest === handledRecoveryRequestRef.current) return;
+    handledRecoveryRequestRef.current = recoveryRequest;
+    if (providerChoice !== null && !policyOnlyDeadEnd) {
+      providerChoice.openDialog();
+      return;
+    }
+    const notice = noticeRef.current;
+    if (notice === null) return;
+    notice.scrollIntoView({ block: 'nearest' });
+    notice.focus({ preventScroll: true });
+  }, [recoveryRequest, providerChoice, policyOnlyDeadEnd]);
   // The credits row's purchase: this banner's own tracked hand-off, so
   // once it starts the dialog closes and the notice's Check again (the
   // `completion` slot) takes over.

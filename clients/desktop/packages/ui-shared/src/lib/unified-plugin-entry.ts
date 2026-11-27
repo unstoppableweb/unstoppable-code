@@ -607,6 +607,13 @@ export interface UnifiedPluginEntry {
   mcpTargetCount?: number;
   /** A curated MCP server with a connection supported by the account proxy. */
   accountProxyMcp?: true;
+  /** Curated connection managed by the app rather than only a provider account. Display only. */
+  curatedManagedConnection?: true;
+  /**
+   * The curated catalog's editorial pick for this integration. Display only:
+   * search ranking reads `recommended`, never this flag.
+   */
+  curatedRecommended?: true;
   recommended: boolean;
   /** Stable catalog order used only as a browse-ranking fallback. */
   catalogSortOrder?: number;

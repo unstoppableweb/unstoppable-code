@@ -246,6 +246,7 @@ function upgrade(db: DatabaseSync, run: () => void): void {
 export function openOperationLedgerDatabase(
   databasePath: string,
   openBusyTimeoutMs = 2_000,
+  options: { readonly keepSchema?: boolean } = {},
 ): DatabaseSync {
   let db: DatabaseSync;
   try {
@@ -281,7 +282,8 @@ export function openOperationLedgerDatabase(
     db.exec('BEGIN IMMEDIATE');
     db.exec('COMMIT');
     db.exec('PRAGMA busy_timeout = 0');
-    migrate(db);
+    if (options.keepSchema !== true || readMeta(db, 'schema_version') === null)
+      migrate(db);
     return db;
   } catch (error) {
     closeQuietly(db);
@@ -293,6 +295,33 @@ export function openOperationLedgerDatabase(
         error,
       );
     }
+    throw new OperationLedgerError(
+      'STORAGE_UNAVAILABLE',
+      'Could not open the operation ledger.',
+      error,
+    );
+  }
+}
+
+export function migrateOperationLedgerDatabase(db: DatabaseSync): void {
+  try {
+    migrate(db);
+  } catch (error) {
+    if (error instanceof OperationLedgerError) throw error;
+    throw new OperationLedgerError(
+      'STORAGE_UNAVAILABLE',
+      'Could not upgrade the operation ledger.',
+      error,
+    );
+  }
+}
+
+export function openOperationLedgerDatabaseReadOnly(
+  databasePath: string,
+): DatabaseSync {
+  try {
+    return new DatabaseSync(databasePath, { readOnly: true });
+  } catch (error) {
     throw new OperationLedgerError(
       'STORAGE_UNAVAILABLE',
       'Could not open the operation ledger.',

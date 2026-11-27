@@ -114,8 +114,8 @@ import { isBotProjectId } from '@canopy/protocol/chat-targets';
 import {
   ActionMenuRowStyle,
   DelayedLoadingPlaceholder,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
+  MenuItem,
+  MenuItemIcon,
   Notice,
   NoticeButton,
   type WorktreeMenuItem,
@@ -331,6 +331,38 @@ function DesktopArchivedNavLink({
  * new `[]`, forever, until React throws "Maximum update depth exceeded".
  */
 const EMPTY_PIPELINE_POPOVER_ENTRIES: WorktreePipelineEntry[] = [];
+
+export function readDesktopPipelinePopoverEntries(
+  worktreeId: string,
+  workspaceId: string,
+): WorktreePipelineEntry[] {
+  return (
+    usePipelineRunsStore.getState().pipelineSummariesByWorktree[
+      createDiffStatsKey(workspaceId, worktreeId)
+    ] ?? EMPTY_PIPELINE_POPOVER_ENTRIES
+  );
+}
+
+export function subscribeDesktopPipelinePopoverEntries(
+  worktreeId: string,
+  workspaceId: string,
+  onChange: () => void,
+): () => void {
+  if (!isPairedComputerId(worktreeId)) {
+    const store = usePipelineRunsStore.getState();
+    const entries =
+      store.pipelineSummariesByWorktree[
+        createDiffStatsKey(workspaceId, worktreeId)
+      ];
+    if (
+      (!entries || entries.length === 0) &&
+      !store.isHydratingGlobalPipelineStatuses
+    ) {
+      void store.loadGlobalPipelineStatuses();
+    }
+  }
+  return usePipelineRunsStore.subscribe(onChange);
+}
 
 export const DESKTOP_SHARED_SIDEBAR_TEST_IDS: SidebarSurfaceTestIds = {
   root: 'sidebar-shared-rail',
@@ -2307,20 +2339,11 @@ export function DesktopSharedSidebarHost({
         // store (the same list the legacy row's popover showed). Falls back
         // to a stable shared empty array, not a fresh `[]` literal — see
         // `EMPTY_PIPELINE_POPOVER_ENTRIES`.
-        getPipelinePopoverEntries={(worktreeId, workspaceId) =>
-          usePipelineRunsStore.getState().pipelineSummariesByWorktree[
-            createDiffStatsKey(workspaceId, worktreeId)
-          ] ?? EMPTY_PIPELINE_POPOVER_ENTRIES
-        }
-        // Keeps an open popover live: a run's job list or status can change
-        // (or a new run start) while the row's own aggregate pipelineStatus
-        // badge does not, so a `getState()`-only read would leave the open
-        // popover showing a stale list until it is closed and reopened.
-        subscribePipelinePopoverEntries={(
-          _worktreeId,
-          _workspaceId,
-          onChange,
-        ) => usePipelineRunsStore.subscribe(onChange)}
+        getPipelinePopoverEntries={readDesktopPipelinePopoverEntries}
+        // Keeps an open popover live and hydrates global workflow summaries on
+        // demand when a snapshot-backed badge opens before the renderer index
+        // has loaded that worktree's runs (for example after archive restore).
+        subscribePipelinePopoverEntries={subscribeDesktopPipelinePopoverEntries}
         onSelect={handleSelect}
         onWorktreeIntent={(projectId, worktreeId, phase, source): void => {
           // A paired computer's task reads nothing here (CAN-7766).
@@ -2948,7 +2971,7 @@ export function DesktopSharedSidebarHost({
                       .setWorkspacePinned(project.id, pinned);
                   }}
                 />
-                <DropdownMenuItem
+                <MenuItem
                   data-testid="workspace-new-task-menu-item"
                   disabled={createWorktreeDisabled}
                   title={createWorktreeDisabled ? 'Add repos first' : undefined}
@@ -2958,24 +2981,24 @@ export function DesktopSharedSidebarHost({
                     void model.onCreateWorktree(project.id);
                   }}
                 >
-                  <DropdownMenuItemIcon>
+                  <MenuItemIcon>
                     <AssignmentAddIcon />
-                  </DropdownMenuItemIcon>
+                  </MenuItemIcon>
                   <span className="truncate">New task</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem
+                </MenuItem>
+                <MenuItem
                   data-testid="workspace-settings-menu-item"
                   onClick={(): void => {
                     close();
                     model.onOpenSettings(project.id);
                   }}
                 >
-                  <DropdownMenuItemIcon>
+                  <MenuItemIcon>
                     <SettingsIcon />
-                  </DropdownMenuItemIcon>
+                  </MenuItemIcon>
                   <span className="truncate">Project settings</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem
+                </MenuItem>
+                <MenuItem
                   data-testid="workspace-import-session-menu-item"
                   onClick={(): void => {
                     close();
@@ -2986,40 +3009,40 @@ export function DesktopSharedSidebarHost({
                       });
                   }}
                 >
-                  <DropdownMenuItemIcon>
+                  <MenuItemIcon>
                     <DownloadIcon />
-                  </DropdownMenuItemIcon>
+                  </MenuItemIcon>
                   <span className="truncate">Import session…</span>
-                </DropdownMenuItem>
+                </MenuItem>
                 {workspaceMoveToOrganization &&
                 canMoveToOrganization(project.id) ? (
-                  <DropdownMenuItem
+                  <MenuItem
                     data-testid="workspace-move-to-organization-menu-item"
                     onClick={(): void => {
                       close();
                       openMoveToOrganizationModal(project.id);
                     }}
                   >
-                    <DropdownMenuItemIcon>
+                    <MenuItemIcon>
                       <BuildingIcon size="xl" />
-                    </DropdownMenuItemIcon>
+                    </MenuItemIcon>
                     <span className="truncate">Move to org…</span>
-                  </DropdownMenuItem>
+                  </MenuItem>
                 ) : null}
                 {projectIdentityAvailable === true &&
                 canLinkCloudProject(project.id) ? (
-                  <DropdownMenuItem
+                  <MenuItem
                     data-testid="workspace-link-cloud-project-menu-item"
                     onClick={(): void => {
                       close();
                       void openLinkCloudProjectModal(project.id);
                     }}
                   >
-                    <DropdownMenuItemIcon>
+                    <MenuItemIcon>
                       <LinkIcon size="xl" />
-                    </DropdownMenuItemIcon>
+                    </MenuItemIcon>
                     <span className="truncate">Link to cloud…</span>
-                  </DropdownMenuItem>
+                  </MenuItem>
                 ) : null}
               </ActionMenuRowStyle>
               <SidebarSortMenuItems
@@ -3085,7 +3108,7 @@ export function DesktopSharedSidebarHost({
             />
             {soleVisibleProject && (
               <ActionMenuRowStyle>
-                <DropdownMenuItem
+                <MenuItem
                   data-testid="workspace-import-session-menu-item"
                   onClick={(): void => {
                     closeMenu();
@@ -3096,11 +3119,11 @@ export function DesktopSharedSidebarHost({
                       );
                   }}
                 >
-                  <DropdownMenuItemIcon>
+                  <MenuItemIcon>
                     <DownloadIcon />
-                  </DropdownMenuItemIcon>
+                  </MenuItemIcon>
                   <span className="truncate">Import session…</span>
-                </DropdownMenuItem>
+                </MenuItem>
               </ActionMenuRowStyle>
             )}
             <SidebarProjectVisibilityMenuItems

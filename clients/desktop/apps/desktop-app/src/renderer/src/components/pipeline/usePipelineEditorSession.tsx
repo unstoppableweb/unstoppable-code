@@ -154,6 +154,7 @@ export interface PipelineEditorSession {
   /** Switches Flow, List and Raw; leaving Raw applies valid text first. */
   setMainView: (view: MainView) => void;
   isRawMode: boolean;
+  isRawYamlDirty: boolean;
   rawYamlText: string;
   setRawYamlText: (text: string) => void;
   rawYamlError: string | null;
@@ -934,6 +935,7 @@ export function usePipelineEditorSession(
     mainView: editor.mainView,
     setMainView: handleMainViewChange,
     isRawMode,
+    isRawYamlDirty,
     rawYamlText,
     setRawYamlText,
     rawYamlError,

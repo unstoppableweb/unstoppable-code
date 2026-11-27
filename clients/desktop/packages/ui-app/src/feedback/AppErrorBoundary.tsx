@@ -35,6 +35,7 @@ export interface AppErrorBoundaryHost {
   present(
     appError: AppError,
   ): Pick<AppErrorPresentation, 'referenceId' | 'rawDetail'>;
+  /** The fallback's `Report this`: `ReportThisAction variant="secondary"`. */
   renderReportAction(
     appError: AppError,
     telemetry: FeedbackReportTelemetry | null,
@@ -45,7 +46,12 @@ export interface AppErrorBoundaryHost {
 
 export interface AppErrorBoundaryProps extends Pick<
   ErrorFallbackProps,
-  'layout' | 'message' | 'recoveryLabel' | 'minHeight' | 'testId'
+  | 'layout'
+  | 'message'
+  | 'recoveryLabel'
+  | 'recoveringLabel'
+  | 'minHeight'
+  | 'testId'
 > {
   readonly children: ReactNode;
   /** Without one, the fallback keeps its copy and recovery, and nothing else. */
@@ -236,12 +242,20 @@ export class AppErrorBoundary extends Component<
     // throwing from this render means nothing commits, so nothing is captured.
     host?.rethrow?.(failure);
 
-    const { layout, message, recoveryLabel, minHeight, testId } = this.props;
+    const {
+      layout,
+      message,
+      recoveryLabel,
+      recoveringLabel,
+      minHeight,
+      testId,
+    } = this.props;
     const appError = captured?.appError ?? null;
     const display: ErrorFallbackProps = {
       layout,
       message,
       recoveryLabel,
+      recoveringLabel,
       minHeight,
       testId,
       onRecover: this.handleRecover,

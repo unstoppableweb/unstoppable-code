@@ -12,7 +12,7 @@ import {
   BUBBLE_SURFACE_CLASS,
   CHAT_COMPOSER_SHELL_CLASS,
   ChatComposerToolbar,
-  FLOATING_PICKER_GAP,
+  PICKER_GAP,
   ThinkingLevelControl,
   ThinkingLevelPanelPicker,
   UsageIndicator,
@@ -869,7 +869,7 @@ export function ComposerStatusLabPage(): JSX.Element {
                           >
                             <ComposerPlusMenu
                               dataTestIdPrefix="chat-input"
-                              gap={FLOATING_PICKER_GAP}
+                              gap={PICKER_GAP}
                               capsuleTrigger
                               controller={composerMenu}
                               searchFiles={(query) =>

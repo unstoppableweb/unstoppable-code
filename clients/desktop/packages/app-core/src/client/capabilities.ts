@@ -229,6 +229,39 @@ export interface CanopyCapabilities {
    */
   readonly chatApprovalMode?: boolean;
   /**
+   * The chat's approval mode is displayed read-only in the composer when
+   * `chatApprovalMode` is false (for example, paired-computer chats before
+   * CAN-7868 adds remote settings edits). Optional and default-deny.
+   */
+  readonly chatApprovalModeReadOnly?: boolean;
+  /**
+   * The user can answer tool approvals, secret approvals, and ask-user prompts
+   * in this scope. Optional; paired-computer scopes report `false` until
+   * CAN-7865 wires remote answers.
+   */
+  readonly chatApprovalRespond?: boolean;
+  /**
+   * The user can change the chat's model in the composer. Optional;
+   * paired-computer scopes report `false` until CAN-7868 wires remote settings.
+   */
+  readonly chatModelChange?: boolean;
+  /**
+   * The user can send messages and stop running turns in this scope. Optional;
+   * defaults to true when omitted, and paired-computer scopes report false
+   * when the host has not announced the `send` capability.
+   */
+  readonly chatSend?: boolean;
+  /**
+   * The user can create, rename, or close chat tabs in this scope. Optional;
+   * paired-computer scopes report `false` until CAN-7907 adds remote tab creation.
+   */
+  readonly chatTabCreation?: boolean;
+  /**
+   * The user can cancel/remove queued messages in this scope. Optional;
+   * paired-computer scopes report `false` until CAN-7877 wires remote queue writes.
+   */
+  readonly chatQueueCancel?: boolean;
+  /**
    * The chat's thinking level (effort) can be changed from the composer.
    * Optional and default-deny; desktop reports `true` for local chats. A
    * cloud chat scope reports it once its backend sends the level
@@ -929,6 +962,16 @@ export interface CanopyCapabilities {
    * through {@link allowsTelemetrySharing}.
    */
   readonly telemetrySharing?: boolean;
+  /**
+   * Shared artifacts (CAN-8015). `create`: the host can publish an artifact
+   * and manage republish grants. `view`: the host can list and open them.
+   * A host that sets `create` also sets `view`. Absent means neither; no
+   * host sets it until CAN-8016 to CAN-8018.
+   */
+  readonly sharedArtifacts?: {
+    readonly create: boolean;
+    readonly view: boolean;
+  };
 }
 
 /** Whether a host may load remote images. Absent means allowed. */

@@ -17,6 +17,7 @@ import {
 } from '../lib/chat-delta-journal/format';
 import type { ChatStorageV2 } from '../lib/chat-storage-v2';
 import { ChatTranscriptIntegrityError } from '../lib/chat-transcript-log';
+import { unrecoverableLegacyScope } from '../lib/legacy-chat-quarantine';
 import type { ChatScopeKey } from './chat-state-contracts';
 import type { ChatStateV2Repository } from './chat-state-v2-repository';
 import {
@@ -171,7 +172,11 @@ function unreadableManifest(error: unknown): EnsureFormat4Result {
 function failedAttempt(
   cause: unknown,
   before: ChatFormat4SweepFormat,
+  unrecoverable: string | undefined,
 ): EnsureFormat4Result {
+  // Legacy snapshots no reader can recover won't read on a retry either.
+  if (unrecoverable !== undefined)
+    return { kind: 'failed', reason: 'unreadable', retryable: false };
   const chain = causes(cause);
   if (chain.some((error) => error instanceof ChatStorageNewerFormatError))
     return { kind: 'failed', reason: 'newer_format', retryable: false };
@@ -224,6 +229,8 @@ export async function ensureFormat4(
   const attempt = await options.repository.sweepFormat4(scope, {
     admit: () =>
       !pastDeadline(bound) && chatFormat4ScopeAdmitted(scope, admission),
+    afterFailedLegacyLoad: async (paths): Promise<string | undefined> =>
+      (await unrecoverableLegacyScope(paths))?.kind,
   });
   switch (attempt.outcome) {
     case 'promoted':
@@ -241,7 +248,7 @@ export async function ensureFormat4(
       // A promotion the backend undid leaves the scope at format 3.
       return attempt.cause === undefined
         ? { kind: 'still_format3', reason: 'promotion_fault' }
-        : failedAttempt(attempt.cause, before);
+        : failedAttempt(attempt.cause, before, attempt.unrecoverable);
   }
 }
 

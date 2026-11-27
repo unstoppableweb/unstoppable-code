@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { accessSync, constants, statSync } from 'node:fs';
 import { mkdir, open, readdir, rename, rm } from 'node:fs/promises';
+import { userInfo } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { withW5ProcessFileLocks } from '@canopy/core-platform/w5-process-file-lock';
 import {
@@ -99,6 +100,16 @@ function stringEntries(
   for (const [key, value] of Object.entries(environment))
     if (typeof value === 'string') entries[key] = value;
   return entries;
+}
+
+/** The account's login shell from the user database, when it has one. */
+function accountShell(): string | undefined {
+  try {
+    return userInfo().shell ?? undefined;
+  } catch {
+    // No user database entry, as in some containers.
+    return undefined;
+  }
 }
 
 function isExecutableFile(path: string): boolean {
@@ -294,7 +305,8 @@ export function createDaemonScriptHost(
     cmdCommandLine: (scriptPath) => buildCmdCommandLine(scriptPath),
     loginShell: () => {
       if (options.os === 'win32') return undefined;
-      const shell = options.environment.SHELL;
+      // launchd starts the daemon without SHELL; the account still names one.
+      const shell = options.environment.SHELL ?? accountShell();
       return shell !== undefined && isAbsolute(shell) ? shell : undefined;
     },
     findExecutable: (name) => {

@@ -2,20 +2,33 @@ import {
   CanopyClientError,
   type CanopyClientQueryOptions,
 } from '@canopy/core-client';
+import { randomUUID } from 'node:crypto';
 import {
   CanopyOperationError,
+  type CanopyHandlerContext,
   type CanopyQueryOptions,
 } from '@canopy/core-runtime';
+import type { CanopyRuntimeIdentity } from '@canopy/core-client';
+import type {
+  GitChangeSetSample,
+  GitReadOutcome,
+} from '@canopy/core-runtime/node/git';
 import {
   WORKER_GIT_BRANCH_LIST_ERROR_CODES,
+  WORKER_GIT_DIFF_ERROR_CODES,
+  WORKER_GIT_DIFF_READS_REVISION,
   WORKER_GIT_WORKTREE_HEALTH_ERROR_CODES,
   WorkerGitBranchListResultSchema,
+  WorkerGitDiffGetResultSchema,
   WorkerGitWorktreeHealthGetResultSchema,
   type CanopyCallerDescriptor,
   type CanopyErrorKind,
   type CanopyHostExecution,
   type WorkerGitBranchListParams,
   type WorkerGitBranchListResult,
+  type WorkerGitDiffGetParams,
+  type WorkerGitDiffRead,
+  type WorkerGitDiffReads,
   type WorkerGitWorktreeHealthGetParams,
   type WorkerGitWorktreeHealthGetResult,
 } from '@canopy/protocol/canopy-core';
@@ -25,12 +38,14 @@ import {
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
   type WorkspaceType,
 } from '@canopy/desktop-shared/types';
+import { assertWorkingDirectoryAvailable } from '@canopy/desktop-shared/node/lib/working-directory';
+import { estimateUntrackedChanges } from '../lib/untracked-line-estimate';
 import {
   applyDefaultBranchEffects,
   readDefaultBranchHint,
   type DefaultBranchObservation,
 } from '../lib/git-default-branch';
-import { resolveRepository } from './worker-git-adapter';
+import { resolveDiffRepository, resolveRepository } from './worker-git-adapter';
 import { daemonGitRequestExecution } from './daemon-git-environment';
 import {
   evaluateReadRoute,
@@ -45,10 +60,21 @@ import type {
 
 export interface DaemonGitQueryClient {
   readonly signal: AbortSignal;
+  /** The attached daemon's handshake; absent on a test double. */
+  readonly identity?: Pick<
+    CanopyRuntimeIdentity,
+    'runtimeId' | 'daemonEpoch' | 'buildVersion'
+  >;
   /** Each route validates the answer against its operation's result schema. */
   query(
-    name: 'worker.git.branch.list' | 'worker.git.worktree.health.get',
-    params: WorkerGitBranchListParams | WorkerGitWorktreeHealthGetParams,
+    name:
+      | 'worker.git.branch.list'
+      | 'worker.git.worktree.health.get'
+      | 'worker.git.diff.get',
+    params:
+      | WorkerGitBranchListParams
+      | WorkerGitWorktreeHealthGetParams
+      | WorkerGitDiffGetParams,
     options?: CanopyClientQueryOptions,
   ): Promise<unknown>;
 }
@@ -56,10 +82,22 @@ export interface DaemonGitQueryClient {
 /** The reads this route may send to the daemon. */
 export type DaemonGitRouteOperation =
   | 'git.branch.list'
-  | 'git.worktree.health.get';
+  | 'git.worktree.health.get'
+  | 'git.diff.get';
+
+/** One comparison of `activity:changed-files`, with its base resolved. */
+export type DaemonChangeSetParams = Omit<
+  WorkerGitDiffGetParams,
+  'revision' | 'paths' | 'contextLines'
+> & { readonly base: string };
 
 export interface DaemonGitRouteRequest {
   readonly sender: CallerLifetimeSender & { readonly id: number };
+  /**
+   * The sender's document owner when the request arrived (`ownerFor`), so
+   * work the handler does first cannot pass to a replacement document.
+   */
+  readonly owner?: AbortSignal;
 }
 
 export interface DaemonGitRouteOptions {
@@ -90,6 +128,19 @@ export interface DaemonGitRouteOptions {
   readonly workspaceManifestReadable?: (
     workspaceId: string,
   ) => Promise<boolean>;
+  /** The checkout a diff scope names in main; defaults to the in-process host's. */
+  readonly diffRepositoryPath?: (
+    params: DaemonChangeSetParams,
+  ) => Promise<string | null>;
+  /**
+   * Whether the daemon's recorded resolver names `repoPath` for this
+   * comparison; without this input changed files are never routed.
+   */
+  readonly diffScopeAdmitted?: (
+    params: DaemonChangeSetParams,
+    repoPath: string,
+    context: CanopyHandlerContext,
+  ) => Promise<boolean>;
 }
 
 export interface DaemonGitRoute {
@@ -112,6 +163,20 @@ export interface DaemonGitRoute {
     direct: () => Promise<WorkerGitWorktreeHealthGetResult>,
     settle?: (result: WorkerGitWorktreeHealthGetResult) => Promise<void>,
   ): Promise<WorkerGitWorktreeHealthGetResult>;
+  /**
+   * A comparison's reads for the legacy changed-files lists (CAN-4729):
+   * revision 3's answer as the sample the in-process call captures. A scope
+   * main resolves to a checkout other than `repoPath` reads in process.
+   */
+  changeSet(
+    params: DaemonChangeSetParams,
+    repoPath: string,
+    options: CanopyQueryOptions,
+    request: DaemonGitRouteRequest,
+    direct: () => Promise<GitChangeSetSample | null>,
+  ): Promise<GitChangeSetSample | null>;
+  /** The sender's current document owner, for `DaemonGitRouteRequest.owner`. */
+  ownerFor(sender: DaemonGitRouteRequest['sender']): AbortSignal;
   dispose(): void;
 }
 
@@ -137,13 +202,22 @@ const ROUTED_WORKSPACE_TYPES: ReadonlySet<WorkspaceType> = new Set([
 export const DAEMON_GIT_PRODUCTION_SELECTION: Readonly<
   Record<ReadRoutePlatform, ReadonlySet<DaemonGitRouteOperation>>
 > = {
-  darwin: new Set(['git.branch.list', 'git.worktree.health.get']),
+  darwin: new Set([
+    'git.branch.list',
+    'git.worktree.health.get',
+    'git.diff.get',
+  ]),
   win32: new Set(),
-  linux: new Set(['git.branch.list', 'git.worktree.health.get']),
+  linux: new Set([
+    'git.branch.list',
+    'git.worktree.health.get',
+    'git.diff.get',
+  ]),
 };
 const NO_SELECTION: ReadonlySet<DaemonGitRouteOperation> = new Set();
 const BRANCH_LIST = "Couldn't list branches.";
 const WORKTREE_HEALTH = "Couldn't check the worktree.";
+export const CHANGED_FILES = "Couldn't list changed files.";
 
 function failure(kind: CanopyErrorKind, message: string): CanopyOperationError {
   return new CanopyOperationError({ kind, message, retry: { kind: 'never' } });
@@ -173,7 +247,7 @@ function typedFailure(
   });
 }
 
-function untilAborted<T>(
+export function untilAborted<T>(
   read: Promise<T>,
   signal: AbortSignal,
   action: string,
@@ -194,6 +268,64 @@ function untilAborted<T>(
       .then(resolve, reject)
       .finally(() => signal.removeEventListener('abort', abort));
   });
+}
+
+/** A revision-3 read as the in-process outcome: over its bound, legacy blanks it. */
+function readOutcome(read: WorkerGitDiffRead): GitReadOutcome {
+  return read.ok && read.overCap !== true
+    ? { ok: true, stdout: read.fields.map((field) => `${field}\0`).join('') }
+    : { ok: false, error: read };
+}
+
+function rangeOf({
+  base,
+  head,
+}: DaemonChangeSetParams): GitChangeSetSample['range'] {
+  return head === 'WORKTREE'
+    ? { kind: 'worktree', base }
+    : { kind: 'objects', base, head };
+}
+
+/** Every read failed with `error`, as the in-process call captures it. */
+function failedSample(
+  params: DaemonChangeSetParams,
+  error: unknown,
+): GitChangeSetSample {
+  const failed: GitReadOutcome = { ok: false, error };
+  const worktree = params.head === 'WORKTREE';
+  return {
+    range: rangeOf(params),
+    nameStatus: failed,
+    numstat: failed,
+    untracked: worktree ? failed : null,
+    unmerged: worktree ? failed : null,
+    untrackedEstimates: [],
+  };
+}
+
+async function changeSetSample(
+  params: DaemonChangeSetParams,
+  repoPath: string,
+  reads: WorkerGitDiffReads,
+): Promise<GitChangeSetSample> {
+  const estimated = reads.untrackedEstimates;
+  const listed =
+    reads.untracked?.ok === true && reads.untracked.overCap !== true
+      ? reads.untracked.fields.slice(0, estimated.length)
+      : null;
+  return {
+    range: rangeOf(params),
+    nameStatus: readOutcome(reads.nameStatus),
+    numstat: readOutcome(reads.numstat),
+    untracked: reads.untracked && readOutcome(reads.untracked),
+    unmerged: reads.unmerged && readOutcome(reads.unmerged),
+    // A confined skip is re-estimated as in process, over the whole prefix:
+    // the 100,000-line running ceiling is the estimator's own, not per file.
+    untrackedEstimates:
+      listed !== null && estimated.some(({ confined }) => confined === true)
+        ? await estimateUntrackedChanges(repoPath, listed)
+        : estimated.map(({ insertions, binary }) => ({ insertions, binary })),
+  };
 }
 
 /** Decide once before contact. Selected reads never fall back, even on disconnect. */
@@ -250,7 +382,7 @@ export function createDaemonGitRoute(
           : {}),
       };
       const now = Date.now();
-      const owner = options.lifetime.ownerFor(request.sender);
+      const owner = request.owner ?? options.lifetime.ownerFor(request.sender);
       const deadline = AbortSignal.timeout(options.queryDeadlineMs ?? 60_000);
       const signal = AbortSignal.any([
         owner,
@@ -409,7 +541,7 @@ export function createDaemonGitRoute(
       const deadlineMs = options.queryDeadlineMs ?? 60_000;
       const deadlineAt = new Date(Date.now() + deadlineMs).toISOString();
       // Held before the manifest read, so a document retired during it cancels the check.
-      const owner = options.lifetime.ownerFor(request.sender);
+      const owner = request.owner ?? options.lifetime.ownerFor(request.sender);
       const deadline = AbortSignal.timeout(deadlineMs);
       const signal = AbortSignal.any([
         owner,
@@ -506,6 +638,160 @@ export function createDaemonGitRoute(
         );
       }
     },
+    async changeSet(
+      params,
+      repoPath,
+      context,
+      request,
+      direct,
+    ): Promise<GitChangeSetSample | null> {
+      const target =
+        !lifetime.signal.aborted && selectable.has('git.diff.get')
+          ? evaluateReadRoute({
+              operation: 'git.diff.get',
+              platform,
+              caller: context.caller,
+              senderId: request.sender.id,
+              scope: params.scope,
+              lookups: {
+                workspaceType: options.workspaceType,
+                resolveWorktreeTargetIds: options.resolveWorktreeTargetIds,
+                excludedWorkspaceIds: EXCLUDED_WORKSPACES,
+                routedWorkspaceTypes: ROUTED_WORKSPACE_TYPES,
+              },
+            })
+          : null;
+      const { diffScopeAdmitted } = options;
+      if (
+        target?.shape !== 'repository' ||
+        target.worktreeId === undefined ||
+        diffScopeAdmitted === undefined
+      )
+        return direct();
+      const scope = {
+        workspaceId: target.workspaceId,
+        worktreeId: target.worktreeId,
+      };
+      const deadlineMs = options.queryDeadlineMs ?? 60_000;
+      const deadlineAt = new Date(Date.now() + deadlineMs).toISOString();
+      // Held before resolution and admission, so a document retired during
+      // them cancels the read.
+      const owner = request.owner ?? options.lifetime.ownerFor(request.sender);
+      const deadline = AbortSignal.timeout(deadlineMs);
+      const signal = AbortSignal.any([
+        owner,
+        lifetime.signal,
+        deadline,
+        ...(context.signal ? [context.signal] : []),
+      ]);
+      // A scope main cannot resolve or admit gets the in-process call's own answer.
+      const admission = (async (): Promise<boolean> => {
+        const resolved = await (
+          options.diffRepositoryPath ?? resolveDiffRepository
+        )(params).catch(() => null);
+        return (
+          resolved === repoPath &&
+          (await diffScopeAdmitted({ ...params, scope }, repoPath, {
+            requestId: randomUUID(),
+            caller: context.caller,
+            metadata: {},
+            signal,
+          }).catch(() => false))
+        );
+      })();
+      // Both stages read the filesystem; a retired document or the deadline
+      // settles the request without waiting for them.
+      const admitted = await untilAborted(
+        admission,
+        signal,
+        CHANGED_FILES,
+      ).catch((error: unknown): never => {
+        throw deadline.aborted
+          ? failure(
+              'deadline_exceeded',
+              `${CHANGED_FILES} The background service took too long to respond.`,
+            )
+          : error;
+      });
+      if (!admitted) return direct();
+      const disconnected = (): CanopyOperationError =>
+        failure(
+          'unavailable',
+          `${CHANGED_FILES} The background service disconnected.`,
+        );
+      const read = async (): Promise<GitChangeSetSample> => {
+        signal.throwIfAborted();
+        const host = await options.hostContext();
+        signal.throwIfAborted();
+        // shortcut: the first read after launch sets up the daemon connection (~1.1 s vs ~0.37 s in process), warm the daemon connection at launch once routed reads are the default
+        const { client } = await options
+          .connections()
+          .get({ ...context.caller, authorityId: host.authorityId }, owner);
+        signal.throwIfAborted();
+        if (client.signal.aborted) throw disconnected();
+        // A folder being retired fails its reads, as Git in process would.
+        try {
+          await assertWorkingDirectoryAvailable(repoPath);
+        } catch (error) {
+          return failedSample(params, error);
+        }
+        const querySignal = AbortSignal.any([signal, client.signal]);
+        let result: unknown;
+        try {
+          result = await untilAborted(
+            client.query(
+              'worker.git.diff.get',
+              {
+                scope: { ...scope, authorityId: host.authorityId },
+                repoId: params.repoId,
+                base: params.base,
+                head: params.head,
+                revision: WORKER_GIT_DIFF_READS_REVISION,
+              },
+              {
+                signal: querySignal,
+                metadata: { deadlineAt },
+                execution:
+                  options.execution?.() ??
+                  daemonGitRequestExecution('repository-read'),
+              },
+            ),
+            querySignal,
+            CHANGED_FILES,
+          );
+        } catch (error) {
+          if (client.signal.aborted && !signal.aborted) throw disconnected();
+          throw error;
+        }
+        signal.throwIfAborted();
+        if (client.signal.aborted) throw disconnected();
+        const parsed = WorkerGitDiffGetResultSchema.safeParse(result);
+        if (!parsed.success || parsed.data.reads === undefined)
+          throw failure(
+            'internal',
+            `${CHANGED_FILES} The background service returned an unreadable response.`,
+          );
+        return changeSetSample(params, repoPath, parsed.data.reads);
+      };
+      try {
+        const sample = await untilAborted(read(), signal, CHANGED_FILES);
+        signal.throwIfAborted();
+        return sample;
+      } catch (error) {
+        if (deadline.aborted)
+          throw failure(
+            'deadline_exceeded',
+            `${CHANGED_FILES} The background service took too long to respond.`,
+          );
+        if (signal.aborted)
+          throw failure(
+            'cancelled',
+            `${CHANGED_FILES} The request was cancelled.`,
+          );
+        throw typedFailure(error, WORKER_GIT_DIFF_ERROR_CODES, CHANGED_FILES);
+      }
+    },
+    ownerFor: (sender) => options.lifetime.ownerFor(sender),
     dispose: (): void => lifetime.abort(),
   };
 }

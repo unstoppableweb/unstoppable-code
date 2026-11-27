@@ -4,6 +4,7 @@
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import { registerActivityPanelHandlers } from '../../ipc/activity-panel';
 import { createDesktopRuntime } from '../../canopy-runtime/desktop-runtime';
+import type { DaemonGitRoute } from '../../canopy-runtime/daemon-git-route';
 
 // The grants every desktop IPC caller carries (desktop-ipc-caller.ts); a
 // bridge sender resolves to its remote device with the same grants.
@@ -25,7 +26,9 @@ const remoteCaller: CanopyCallerDescriptor = {
   principalId: 'remote-device:device-01',
 };
 
-export function registerActivityGoldenHandlers(): {
+export function registerActivityGoldenHandlers(
+  daemonGitRoute?: DaemonGitRoute,
+): {
   shutdown(this: void): Promise<void>;
 } {
   const runtime = createDesktopRuntime();
@@ -35,6 +38,9 @@ export function registerActivityGoldenHandlers(): {
       Reflect.get(event, 'remoteDeviceId') === undefined
         ? desktopCaller
         : remoteCaller,
+    ...(daemonGitRoute && {
+      daemonGitRoute: (): DaemonGitRoute => daemonGitRoute,
+    }),
   });
   return { shutdown: () => runtime.shutdown() };
 }

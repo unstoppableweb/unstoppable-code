@@ -9,13 +9,13 @@ import {
 } from '@canopy/ui-shared/components';
 import { useId, useRef, type JSX, type ReactNode } from 'react';
 import {
-  FloatingPickerMenu,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionDescription,
-  PickerMenuOptionLabel,
-  PickerMenuOptionLeading,
+  Picker,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionDescription,
+  PickerOptionLabel,
+  PickerOptionLeading,
   PickerTrigger,
   PickerTriggerChevron,
 } from '@canopy/ui-shared';
@@ -284,7 +284,7 @@ export function SourceWorktreePicker({
           </span>
           <PickerTriggerChevron open={open} />
         </PickerTrigger>
-        <FloatingPickerMenu
+        <Picker
           id={menuId}
           open={open}
           onOpenChange={setOpen}
@@ -296,7 +296,7 @@ export function SourceWorktreePicker({
           aria-label="Source worktree options"
           data-testid="source-worktree-picker-menu"
         >
-          <PickerMenuOption
+          <PickerOption
             role="option"
             aria-selected={!selectedWorktreeId}
             data-testid="source-worktree-picker-default-option"
@@ -306,16 +306,16 @@ export function SourceWorktreePicker({
             }}
             selected={!selectedWorktreeId}
           >
-            <PickerMenuOptionLeading>
+            <PickerOptionLeading>
               <BranchIcon size="md" />
-            </PickerMenuOptionLeading>
-            <PickerMenuOptionContent>
-              <PickerMenuOptionLabel>Default branch</PickerMenuOptionLabel>
-            </PickerMenuOptionContent>
-            <PickerMenuOptionCheck selected={!selectedWorktreeId} />
-          </PickerMenuOption>
+            </PickerOptionLeading>
+            <PickerOptionContent>
+              <PickerOptionLabel>Default branch</PickerOptionLabel>
+            </PickerOptionContent>
+            <PickerOptionCheck selected={!selectedWorktreeId} />
+          </PickerOption>
           {worktrees.map((worktree) => (
-            <PickerMenuOption
+            <PickerOption
               key={worktree.id}
               role="option"
               aria-selected={selectedWorktreeId === worktree.id}
@@ -326,23 +326,19 @@ export function SourceWorktreePicker({
               }}
               selected={selectedWorktreeId === worktree.id}
             >
-              <PickerMenuOptionLeading>
+              <PickerOptionLeading>
                 <BranchIcon size="md" />
-              </PickerMenuOptionLeading>
-              <PickerMenuOptionContent>
-                <PickerMenuOptionLabel>
-                  {worktree.branchName}
-                </PickerMenuOptionLabel>
-                <PickerMenuOptionDescription>
-                  {worktree.id}
-                </PickerMenuOptionDescription>
-              </PickerMenuOptionContent>
-              <PickerMenuOptionCheck
+              </PickerOptionLeading>
+              <PickerOptionContent>
+                <PickerOptionLabel>{worktree.branchName}</PickerOptionLabel>
+                <PickerOptionDescription>{worktree.id}</PickerOptionDescription>
+              </PickerOptionContent>
+              <PickerOptionCheck
                 selected={selectedWorktreeId === worktree.id}
               />
-            </PickerMenuOption>
+            </PickerOption>
           ))}
-        </FloatingPickerMenu>
+        </Picker>
       </div>
       <HoverCard
         id={helpTooltipId}
@@ -433,7 +429,7 @@ export function AddToWorktreeActionControls({
         )}
       </WorktreeApplyControlSurface>
       {canChooseExisting && (
-        <FloatingPickerMenu
+        <Picker
           open={existingDropdownOpen}
           onOpenChange={onExistingDropdownOpenChange}
           anchorRef={existingTriggerRef}
@@ -445,7 +441,7 @@ export function AddToWorktreeActionControls({
           data-testid="add-to-existing-worktree-menu"
         >
           {worktrees.map((wt) => (
-            <PickerMenuOption
+            <PickerOption
               key={wt.id}
               role="option"
               aria-selected={false}
@@ -458,19 +454,17 @@ export function AddToWorktreeActionControls({
                 });
               }}
             >
-              <PickerMenuOptionLeading>
+              <PickerOptionLeading>
                 <BranchIcon size="md" />
-              </PickerMenuOptionLeading>
-              <PickerMenuOptionContent>
-                <PickerMenuOptionLabel>{wt.branchName}</PickerMenuOptionLabel>
-                <PickerMenuOptionDescription>
-                  {wt.id}
-                </PickerMenuOptionDescription>
-              </PickerMenuOptionContent>
-              <PickerMenuOptionCheck selected={false} />
-            </PickerMenuOption>
+              </PickerOptionLeading>
+              <PickerOptionContent>
+                <PickerOptionLabel>{wt.branchName}</PickerOptionLabel>
+                <PickerOptionDescription>{wt.id}</PickerOptionDescription>
+              </PickerOptionContent>
+              <PickerOptionCheck selected={false} />
+            </PickerOption>
           ))}
-        </FloatingPickerMenu>
+        </Picker>
       )}
     </div>
   );

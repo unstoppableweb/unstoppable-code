@@ -1,7 +1,7 @@
 import { useRef, useState, type JSX } from 'react';
-import { DropdownMenuItem } from '../primitives/DropdownMenu';
-import { FloatingMenu } from '../primitives/FloatingMenu';
-import { PickerTrigger, PickerTriggerChevron } from '../primitives/PickerMenu';
+import { MenuItem } from '../primitives/MenuItem';
+import { Menu } from '../primitives/Menu';
+import { PickerTrigger, PickerTriggerChevron } from '../primitives/PickerParts';
 import { CheckIcon } from '../icons/AppIcons';
 import {
   PIPELINE_EXECUTION_SCOPE_LABELS,
@@ -180,7 +180,7 @@ function PipelineFilterPicker({
         </span>
         <PickerTriggerChevron open={open} />
       </PickerTrigger>
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={setOpen}
         anchorRef={triggerRef}
@@ -192,7 +192,7 @@ function PipelineFilterPicker({
         {options.map((option) => {
           const checked = option.value === value;
           return (
-            <DropdownMenuItem
+            <MenuItem
               key={option.value}
               role="menuitemradio"
               aria-checked={checked}
@@ -212,10 +212,10 @@ function PipelineFilterPicker({
                   <CheckIcon size="sm" />
                 </span>
               )}
-            </DropdownMenuItem>
+            </MenuItem>
           );
         })}
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

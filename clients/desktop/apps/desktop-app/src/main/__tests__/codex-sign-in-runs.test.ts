@@ -170,8 +170,9 @@ afterEach(async () => {
 });
 
 async function until(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 200 && !predicate(); attempt += 1)
-    await new Promise<void>((resolve) => setImmediate(resolve));
+  const deadline = Date.now() + 3000;
+  while (!predicate() && Date.now() < deadline)
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
   if (!predicate()) throw new Error('Condition not reached');
 }
 

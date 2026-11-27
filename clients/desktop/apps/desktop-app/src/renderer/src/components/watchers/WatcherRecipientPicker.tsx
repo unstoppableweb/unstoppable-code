@@ -7,7 +7,7 @@
 // is prefixed with its group icon — the App Advisor glyph for App Advisor chats
 // and a chat bubble for the current worktree's chats.
 //
-// The open menu is the shared `FloatingPickerMenu`, which portals itself, so
+// The open menu is the shared `Picker`, which portals itself, so
 // an ancestor's `overflow-hidden` (e.g. the pipeline-run dialog modal) never
 // clips it.
 
@@ -16,13 +16,13 @@ import type { JSX } from 'react';
 import type { AppAdvisorWatcherDestination } from '@canopy/desktop-shared/types';
 import {
   Button,
-  FloatingPickerMenu,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-  PickerMenuSection,
-  PickerMenuSectionLabel,
+  Picker,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
+  PickerSection,
+  PickerSectionLabel,
 } from '@canopy/ui-shared';
 import { AppAdvisorIcon, ChatIcon } from '@canopy/ui-shared/icons';
 import {
@@ -172,7 +172,7 @@ export function WatcherRecipientPicker({
         />
       </Button>
 
-      <FloatingPickerMenu
+      <Picker
         open={open}
         onOpenChange={setOpen}
         anchorRef={triggerRef}
@@ -193,7 +193,7 @@ export function WatcherRecipientPicker({
               const GroupIcon = RECIPIENT_GROUP_ICONS[group.key];
               const rows = (
                 <>
-                  <PickerMenuSectionLabel>
+                  <PickerSectionLabel>
                     <span className="flex items-center gap-1.5">
                       <GroupIcon
                         size="sm"
@@ -202,14 +202,14 @@ export function WatcherRecipientPicker({
                       />
                       <span>{group.label}</span>
                     </span>
-                  </PickerMenuSectionLabel>
+                  </PickerSectionLabel>
                   {group.options.map((option) => {
                     const isSelected = destinationsEqual(
                       value,
                       option.destination,
                     );
                     return (
-                      <PickerMenuOption
+                      <PickerOption
                         key={option.destination.chatId}
                         role="option"
                         aria-selected={isSelected}
@@ -217,13 +217,11 @@ export function WatcherRecipientPicker({
                         onClick={(): void => handleSelect(option.destination)}
                         data-testid={`${dataTestId}-option-${option.destination.chatId}`}
                       >
-                        <PickerMenuOptionContent>
-                          <PickerMenuOptionLabel>
-                            {option.label}
-                          </PickerMenuOptionLabel>
-                        </PickerMenuOptionContent>
-                        <PickerMenuOptionCheck selected={isSelected} />
-                      </PickerMenuOption>
+                        <PickerOptionContent>
+                          <PickerOptionLabel>{option.label}</PickerOptionLabel>
+                        </PickerOptionContent>
+                        <PickerOptionCheck selected={isSelected} />
+                      </PickerOption>
                     );
                   })}
                 </>
@@ -232,11 +230,11 @@ export function WatcherRecipientPicker({
               return groupIndex === 0 ? (
                 <div key={group.key}>{rows}</div>
               ) : (
-                <PickerMenuSection key={group.key}>{rows}</PickerMenuSection>
+                <PickerSection key={group.key}>{rows}</PickerSection>
               );
             })}
         </div>
-      </FloatingPickerMenu>
+      </Picker>
     </div>
   );
 }

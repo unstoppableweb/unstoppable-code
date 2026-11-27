@@ -19,16 +19,16 @@ import {
   ActionMenuItems,
   ActionMenuRowStyle,
   Button,
-  FloatingMenu,
-  FloatingPickerMenu,
+  Menu,
+  Picker,
   PageDropdownTrigger,
   PageSearchField,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-  PickerMenuSection,
-  PickerMenuSectionLabel,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
+  PickerSection,
+  PickerSectionLabel,
   type ActionMenuItem,
 } from '@canopy/ui-shared/components';
 import {
@@ -154,7 +154,7 @@ export function MemoryFilterMenu({
     label: MEMORY_KIND_LABELS[kind],
   }));
   return (
-    <FloatingPickerMenu
+    <Picker
       open={open}
       onOpenChange={onOpenChange}
       anchorRef={anchorRef}
@@ -165,11 +165,11 @@ export function MemoryFilterMenu({
       initialFocusRef={firstOptionRef}
       data-testid="memory-filter-menu"
     >
-      <PickerMenuSectionLabel>Kind</PickerMenuSectionLabel>
+      <PickerSectionLabel>Kind</PickerSectionLabel>
       {kinds.map(({ kind, label }, index) => {
         const checked = filters.kinds.has(kind);
         return (
-          <PickerMenuOption
+          <PickerOption
             key={kind}
             ref={index === 0 ? firstOptionRef : undefined}
             role="menuitemcheckbox"
@@ -180,20 +180,20 @@ export function MemoryFilterMenu({
               onChange({ ...filters, kinds: toggled(filters.kinds, kind) })
             }
           >
-            <PickerMenuOptionCheck selected={checked} reserveSpace />
-            <PickerMenuOptionContent>
-              <PickerMenuOptionLabel>{label}</PickerMenuOptionLabel>
-            </PickerMenuOptionContent>
-          </PickerMenuOption>
+            <PickerOptionCheck selected={checked} reserveSpace />
+            <PickerOptionContent>
+              <PickerOptionLabel>{label}</PickerOptionLabel>
+            </PickerOptionContent>
+          </PickerOption>
         );
       })}
       {scopeLabels.length > 1 && (
-        <PickerMenuSection>
-          <PickerMenuSectionLabel>Saved for</PickerMenuSectionLabel>
+        <PickerSection>
+          <PickerSectionLabel>Saved for</PickerSectionLabel>
           {scopeLabels.map((label, index) => {
             const checked = filters.scopes.has(index);
             return (
-              <PickerMenuOption
+              <PickerOption
                 key={label}
                 role="menuitemcheckbox"
                 aria-checked={checked}
@@ -206,18 +206,18 @@ export function MemoryFilterMenu({
                   })
                 }
               >
-                <PickerMenuOptionCheck selected={checked} reserveSpace />
-                <PickerMenuOptionContent>
-                  <PickerMenuOptionLabel>
+                <PickerOptionCheck selected={checked} reserveSpace />
+                <PickerOptionContent>
+                  <PickerOptionLabel>
                     <span className={REPLAY_MASK_CLASS}>{label}</span>
-                  </PickerMenuOptionLabel>
-                </PickerMenuOptionContent>
-              </PickerMenuOption>
+                  </PickerOptionLabel>
+                </PickerOptionContent>
+              </PickerOption>
             );
           })}
-        </PickerMenuSection>
+        </PickerSection>
       )}
-    </FloatingPickerMenu>
+    </Picker>
   );
 }
 
@@ -271,7 +271,7 @@ export function MemoryMoreMenu({
           <MoreHorizontalIcon size="sm" aria-hidden="true" />
         </Button>
       )}
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={setOpen}
         anchorRef={anchorRef}
@@ -289,7 +289,7 @@ export function MemoryMoreMenu({
             }}
           />
         </ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
     </>
   );
 }

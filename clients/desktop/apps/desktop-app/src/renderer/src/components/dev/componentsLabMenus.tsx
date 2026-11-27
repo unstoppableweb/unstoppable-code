@@ -3,10 +3,10 @@ import {
   ActionMenuItems,
   ActionMenuRowStyle,
   Button,
-  DropdownMenuItemIcon,
-  DropdownMenuLinkItem,
-  DropdownMenuSurface,
-  FloatingMenu,
+  MenuItemIcon,
+  MenuLinkItem,
+  MenuSurface,
+  Menu,
   SPACE_NOTIFICATION_MENU_COPY,
   SPACE_NOTIFICATION_MENU_HEADING,
   SpaceNotificationMenuRowIcon,
@@ -49,16 +49,16 @@ const noop = (): void => undefined;
 /**
  * A menu drawn open in the page, in the action menus' row style. It is a
  * picture of a menu, not one: nothing opens or dismisses it, so it is a
- * labelled group rather than a `menu` (a real menu is a `FloatingMenu`, as
+ * labelled group rather than a `menu` (a real menu is a `Menu`, as
  * in the last panel).
  */
 function OpenMenu({ children }: { readonly children: ReactNode }): JSX.Element {
   return (
     <ActionMenuRowStyle>
       <div className="w-max max-w-80 min-w-40">
-        <DropdownMenuSurface role="group" aria-label="Menu preview">
+        <MenuSurface role="group" aria-label="Menu preview">
           {children}
-        </DropdownMenuSurface>
+        </MenuSurface>
       </div>
     </ActionMenuRowStyle>
   );
@@ -230,7 +230,7 @@ function ButtonMenu(): JSX.Element {
         >
           Chat actions
         </Button>
-        <FloatingMenu open={open} onOpenChange={setOpen} anchorRef={anchorRef}>
+        <Menu open={open} onOpenChange={setOpen} anchorRef={anchorRef}>
           <ActionMenuItems
             items={CHAT_ROW_ITEMS}
             onSelect={(item): void => {
@@ -238,7 +238,7 @@ function ButtonMenu(): JSX.Element {
               setOpen(false);
             }}
           />
-        </FloatingMenu>
+        </Menu>
       </ActionMenuRowStyle>
     </SpecimenCell>
   );
@@ -266,12 +266,12 @@ export function MenusSheet(): JSX.Element {
           </SpecimenCell>
           <SpecimenCell label="A row that navigates is a link">
             <OpenMenu>
-              <DropdownMenuLinkItem href="#components-lab">
-                <DropdownMenuItemIcon>
+              <MenuLinkItem href="#components-lab">
+                <MenuItemIcon>
                   <LoginIcon />
-                </DropdownMenuItemIcon>
+                </MenuItemIcon>
                 Sign in
-              </DropdownMenuLinkItem>
+              </MenuLinkItem>
             </OpenMenu>
           </SpecimenCell>
         </SpecimenGrid>

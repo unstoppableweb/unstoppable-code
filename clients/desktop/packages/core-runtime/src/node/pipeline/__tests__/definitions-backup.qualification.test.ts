@@ -20,7 +20,19 @@ import {
   validateNamespaceBackupRecord,
   type NamespaceBackupRecord,
 } from '../../../storage/backup-record';
+import {
+  backupRecordReference,
+  decideRowWrite,
+} from '../../../storage/owner-records';
+import type { StorageTransitionOwner } from '../../../storage/writer-authority';
 import { fileSetDigest, fileSetManifest } from '../../file-set-backup';
+import {
+  assertRowWritable,
+  ownerFlipRecordFile,
+  persistNamespaceBackupRecord,
+  readOwnerFlipRecord,
+  writeOwnerFlipRecord,
+} from '../../storage-records';
 import {
   createPipelineDefinitionReplayStore,
   pipelineDefinitionReplaysPath,
@@ -98,6 +110,8 @@ const open = jest.mocked(fsp.open);
 const outside = (): boolean => true;
 /** Every crash point of one scenario, with headroom over a measured run. */
 const CRASH_POINTS_TIMEOUT_MS = 82_000;
+/** The owner scenarios add three record writes for each moved row. */
+const OWNER_CRASH_POINTS_TIMEOUT_MS = 240_000;
 let root: string;
 let quiesced: number;
 let now: number;
@@ -1371,6 +1385,79 @@ describe('pipeline definitions backup and restore (CAN-5340)', () => {
     acceptNewerLoss: { confirmedBy: 'person', log: (): void => undefined },
   } as const;
   const BETA = 'name: Beta\non: dispatch\njobs: {}\n';
+  const LEGACY = { owner: 'legacy' } as const;
+  const RECORD_WRITES = {
+    syncDirectory: strictFlush,
+    isOutsideCheckouts: outside,
+    ownership: FLIP_READY,
+  };
+  const recordOf = (
+    records: readonly NamespaceBackupRecord[],
+    namespaceId: string,
+  ): NamespaceBackupRecord => {
+    const record = records.find((each) => each.namespaceId === namespaceId);
+    if (record === undefined) throw new Error(`No record for ${namespaceId}`);
+    return record;
+  };
+  /** Moves a row as an activation does: its backup record, then the flip. */
+  const flipRow = async (
+    record: NamespaceBackupRecord,
+    fromOwner: StorageTransitionOwner,
+    toOwner: StorageTransitionOwner,
+  ): Promise<void> => {
+    await persistNamespaceBackupRecord(root, record, RECORD_WRITES);
+    await writeOwnerFlipRecord(
+      root,
+      {
+        namespaceId: record.namespaceId,
+        fromOwner,
+        toOwner,
+        workPackage: 'W6',
+        backupDigest: record.verifiedBy.digest,
+        flippedAt: '2026-11-24T10:00:00.000Z',
+      },
+      RECORD_WRITES,
+    );
+  };
+  /** The owner each family row's record names, or the record's kind. */
+  const owners = async (at = root): Promise<Record<string, string>> => {
+    const named: [string, string][] = [];
+    for (const namespaceId of FAMILY) {
+      const read = await readOwnerFlipRecord(at, namespaceId);
+      named.push([
+        namespaceId,
+        read.kind === 'record' ? read.record.toOwner : read.kind,
+      ]);
+    }
+    return Object.fromEntries(named);
+  };
+  /** A file's inode and modification time: unchanged unless it is rewritten. */
+  const stamp = (path: string): string => {
+    const stat = statSync(path);
+    return `${String(stat.ino)}:${String(stat.mtimeMs)}`;
+  };
+  /** The digest of the backup record persisted for a row in `at`. */
+  const persistedDigest = (at: string, namespaceId: string): string => {
+    const result = validateNamespaceBackupRecord(
+      JSON.parse(
+        readFileSync(
+          join(at, 'storage-records', namespaceId, 'namespace-backup.json'),
+          'utf8',
+        ),
+      ),
+      { rows: FLIP_READY, isOutsideCheckouts: outside },
+    );
+    return result.ok ? result.record.verifiedBy.digest : 'invalid';
+  };
+  /** A second backup whose definitions row differs from the first's. */
+  const laterBackup = async (): Promise<readonly NamespaceBackupRecord[]> => {
+    write('pipelines/beta.yaml', BETA);
+    const records = await backupPipelineDefinitions(
+      options({ backupPath: 'backups/pipeline-definitions-2' }),
+    );
+    rmSync(join(root, 'pipelines/beta.yaml'));
+    return records;
+  };
 
   it('restores a folder row that was absent at backup over one that now holds entries, setting them aside and leaving the row absent', async () => {
     seed();
@@ -1878,6 +1965,585 @@ describe('pipeline definitions backup and restore (CAN-5340)', () => {
     });
   });
 
+  describe('owner records (CAN-7842)', () => {
+    const DEFINITIONS = 'pipeline_definitions';
+    const JOURNAL_PATH = 'backups/pipeline-definitions-1/restore-journal.json';
+    const flipText = (namespaceId: string): string | undefined => {
+      const path = ownerFlipRecordFile(root, namespaceId);
+      return existsSync(path) ? readFileSync(path, 'utf8') : undefined;
+    };
+    /** The host's flush, stopped with `killed` at the first path `when` matches. */
+    const killAt =
+      (when: (path: string) => boolean) =>
+      async (path: string): Promise<'flushed'> => {
+        if (when(realpathSync(path))) throw new Error('killed');
+        return strictFlush(path);
+      };
+
+    it('returns rows the daemon took since the backup to the app: the app writes them again and the daemon is refused', async () => {
+      seed();
+      const before = await contents();
+      const records = await backupPipelineDefinitions(options());
+      for (const record of records) await flipRow(record, 'legacy', 'daemon');
+      write('pipelines/beta.yaml', BETA);
+      await restorePipelineDefinitionsBackup(
+        records,
+        options({ ...CONFIRMED, ...LEGACY }),
+      );
+      expect(await contents()).toEqual(before);
+      expect(Object.values(await owners())).toEqual([
+        'legacy',
+        'legacy',
+        'legacy',
+      ]);
+      for (const namespaceId of FAMILY) {
+        await expect(
+          assertRowWritable(root, namespaceId, 'electron_main'),
+        ).resolves.toBeUndefined();
+        await expect(
+          assertRowWritable(root, namespaceId, 'daemon'),
+        ).rejects.toMatchObject({ reason: 'owned_elsewhere', owner: 'legacy' });
+      }
+    });
+
+    it('keeps every writer out of a moved row while it is restored, with an offline record citing this backup', async () => {
+      seed();
+      const records = await backupPipelineDefinitions(options());
+      const definitions = recordOf(records, DEFINITIONS);
+      await flipRow(definitions, 'legacy', 'daemon');
+      write('pipelines/beta.yaml', BETA);
+      const journalFolder = realpathSync(
+        join(root, 'backups/pipeline-definitions-1'),
+      );
+      await expect(
+        restorePipelineDefinitionsBackup(
+          records,
+          options({
+            ...CONFIRMED,
+            ...LEGACY,
+            syncDirectory: killAt((path) => path === journalFolder),
+          }),
+        ),
+      ).rejects.toThrow('killed');
+      expect(await readOwnerFlipRecord(root, DEFINITIONS)).toMatchObject({
+        kind: 'record',
+        record: {
+          fromOwner: 'daemon',
+          toOwner: 'offline',
+          backupRecord: backupRecordReference(
+            DEFINITIONS,
+            definitions.verifiedBy.digest,
+          ),
+        },
+      });
+      for (const writer of ['electron_main', 'daemon'] as const)
+        await expect(
+          assertRowWritable(root, DEFINITIONS, writer),
+        ).rejects.toMatchObject({
+          reason: 'owned_elsewhere',
+          owner: 'offline',
+          message: 'This data is being restored, so nothing was saved.',
+        });
+      await restorePipelineDefinitionsBackup(
+        records,
+        options({ ...CONFIRMED, ...LEGACY }),
+      );
+      expect((await owners())[DEFINITIONS]).toBe('legacy');
+    });
+
+    it('returns the owner of moved rows that already hold the backup', async () => {
+      seed();
+      const records = await backupPipelineDefinitions(options());
+      for (const record of records) await flipRow(record, 'legacy', 'daemon');
+      expect(
+        await restorePipelineDefinitionsBackup(records, options(LEGACY)),
+      ).toEqual({ restored: [], unchanged: FAMILY, setAside: [] });
+      expect(Object.values(await owners())).toEqual([
+        'legacy',
+        'legacy',
+        'legacy',
+      ]);
+    });
+
+    it('refuses an owner record it cannot read, moving nothing and writing no journal', async () => {
+      seed();
+      const records = await backupPipelineDefinitions(options());
+      write('storage-records/pipeline_data/owner-flip.json', 'not json');
+      write('pipelines/beta.yaml', BETA);
+      const newer = await contents();
+      expect(
+        await thrown(() =>
+          restorePipelineDefinitionsBackup(
+            records,
+            options({ ...CONFIRMED, ...LEGACY }),
+          ),
+        ),
+      ).toMatchObject({ code: 'OWNER_RECORD' });
+      expect(await contents()).toEqual(newer);
+      expect(existsSync(join(root, JOURNAL_PATH))).toBe(false);
+      expect(stray(root)).toEqual([]);
+    });
+
+    it("refuses another backup's offline record, moving nothing", async () => {
+      seed();
+      const records = await backupPipelineDefinitions(options());
+      const later = await laterBackup();
+      await flipRow(recordOf(later, DEFINITIONS), 'daemon', 'offline');
+      const fence = flipText(DEFINITIONS);
+      write('pipelines/beta.yaml', BETA);
+      const newer = await contents();
+      expect(
+        await thrown(() =>
+          restorePipelineDefinitionsBackup(
+            records,
+            options({ ...CONFIRMED, ...LEGACY }),
+          ),
+        ),
+      ).toMatchObject({ code: 'OWNER_RECORD' });
+      expect(await contents()).toEqual(newer);
+      expect(flipText(DEFINITIONS)).toBe(fence);
+      expect(existsSync(join(root, JOURNAL_PATH))).toBe(false);
+    });
+
+    it('completes a restore its own offline record fenced', async () => {
+      seed();
+      const before = await contents();
+      const records = await backupPipelineDefinitions(options());
+      await flipRow(recordOf(records, DEFINITIONS), 'daemon', 'offline');
+      write('pipelines/beta.yaml', BETA);
+      await restorePipelineDefinitionsBackup(
+        records,
+        options({ ...CONFIRMED, ...LEGACY }),
+      );
+      expect(await contents()).toEqual(before);
+      expect((await owners())[DEFINITIONS]).toBe('legacy');
+    });
+
+    it('refuses to restore a moved row when no owner is named, moving nothing', async () => {
+      seed();
+      const records = await backupPipelineDefinitions(options());
+      await flipRow(recordOf(records, DEFINITIONS), 'legacy', 'daemon');
+      write('pipelines/beta.yaml', BETA);
+      const newer = await contents();
+      expect(
+        await thrown(() =>
+          restorePipelineDefinitionsBackup(records, options(CONFIRMED)),
+        ),
+      ).toMatchObject({ code: 'OWNER_RECORD' });
+      expect(await contents()).toEqual(newer);
+      expect((await owners())[DEFINITIONS]).toBe('daemon');
+    });
+
+    it('writes nothing to a record that already names the owner, whichever backup it cites', async () => {
+      seed();
+      const records = await backupPipelineDefinitions(options());
+      const later = await laterBackup();
+      await flipRow(recordOf(later, DEFINITIONS), 'daemon', 'legacy');
+      await flipRow(recordOf(records, 'pipeline_data'), 'daemon', 'legacy');
+      const stamps = [DEFINITIONS, 'pipeline_data'].map((namespaceId) =>
+        stamp(ownerFlipRecordFile(root, namespaceId)),
+      );
+      await restorePipelineDefinitionsBackup(records, options(LEGACY));
+      expect(
+        [DEFINITIONS, 'pipeline_data'].map((namespaceId) =>
+          stamp(ownerFlipRecordFile(root, namespaceId)),
+        ),
+      ).toEqual(stamps);
+    });
+
+    it('creates no owner records for rows that have none', async () => {
+      seed();
+      const records = await backupPipelineDefinitions(options());
+      write('pipelines/beta.yaml', BETA);
+      await restorePipelineDefinitionsBackup(
+        records,
+        options({ ...CONFIRMED, ...LEGACY }),
+      );
+      await restorePipelineDefinitionsBackup(records, options(CONFIRMED));
+      expect(existsSync(join(root, 'storage-records'))).toBe(false);
+    });
+
+    it("persists the backup it restores from as the row's last verified backup, and cites it", async () => {
+      seed();
+      const records = await backupPipelineDefinitions(options());
+      const later = await laterBackup();
+      const definitions = recordOf(records, DEFINITIONS);
+      await flipRow(recordOf(later, DEFINITIONS), 'legacy', 'daemon');
+      expect(persistedDigest(root, DEFINITIONS)).not.toBe(
+        definitions.verifiedBy.digest,
+      );
+      write('pipelines/beta.yaml', BETA);
+      await restorePipelineDefinitionsBackup(
+        records,
+        options({ ...CONFIRMED, ...LEGACY }),
+      );
+      expect(persistedDigest(root, DEFINITIONS)).toBe(
+        definitions.verifiedBy.digest,
+      );
+      expect(await readOwnerFlipRecord(root, DEFINITIONS)).toMatchObject({
+        kind: 'record',
+        record: {
+          fromOwner: 'offline',
+          toOwner: 'legacy',
+          backupRecord: backupRecordReference(
+            DEFINITIONS,
+            definitions.verifiedBy.digest,
+          ),
+        },
+      });
+    });
+
+    it('refuses, moving nothing, when the host cannot confirm an owner record was flushed', async () => {
+      seed();
+      const records = await backupPipelineDefinitions(options());
+      await flipRow(recordOf(records, 'pipeline_data'), 'legacy', 'daemon');
+      write('pipelines/beta.yaml', BETA);
+      const newer = await contents();
+      const ownerRecords = join(root, 'storage-records');
+      expect(
+        await thrown(() =>
+          restorePipelineDefinitionsBackup(
+            records,
+            options({
+              ...CONFIRMED,
+              ...LEGACY,
+              syncDirectory: async (
+                path: string,
+              ): Promise<'flushed' | 'unsupported'> =>
+                path.startsWith(ownerRecords)
+                  ? 'unsupported'
+                  : strictFlush(path),
+            }),
+          ),
+        ),
+      ).toMatchObject({ code: 'FLUSH_UNCONFIRMED' });
+      expect(await contents()).toEqual(newer);
+      expect(existsSync(join(root, JOURNAL_PATH))).toBe(false);
+    });
+
+    it('writes nothing on a retry after the owners were returned and before the journal went', async () => {
+      seed();
+      const records = await backupPipelineDefinitions(options());
+      await flipRow(recordOf(records, DEFINITIONS), 'legacy', 'daemon');
+      write('pipelines/beta.yaml', BETA);
+      const dataRoot = realpathSync(root);
+      await expect(
+        restorePipelineDefinitionsBackup(
+          records,
+          options({
+            ...CONFIRMED,
+            ...LEGACY,
+            syncDirectory: killAt(
+              (path) =>
+                path === dataRoot &&
+                flipText(DEFINITIONS)?.includes('"toOwner": "legacy"') === true,
+            ),
+          }),
+        ),
+      ).rejects.toThrow('killed');
+      expect(existsSync(join(root, JOURNAL_PATH))).toBe(true);
+      const returned = stamp(ownerFlipRecordFile(root, DEFINITIONS));
+      now += 1000;
+      await restorePipelineDefinitionsBackup(records, options(LEGACY));
+      expect(stamp(ownerFlipRecordFile(root, DEFINITIONS))).toBe(returned);
+      expect(existsSync(join(root, JOURNAL_PATH))).toBe(false);
+    });
+
+    it('refuses a retry that names no owner, leaving the journal as it was, and completes once one is named', async () => {
+      seed();
+      const before = await contents();
+      const records = await backupPipelineDefinitions(options());
+      await flipRow(recordOf(records, DEFINITIONS), 'legacy', 'daemon');
+      write('pipelines/beta.yaml', BETA);
+      const index = join(root, 'pipelines', 'index.json');
+      rename.mockImplementation(async (source, target) => {
+        if (target === index) throw new Error('killed');
+        await actual.rename(source, target);
+      });
+      await expect(
+        restorePipelineDefinitionsBackup(
+          records,
+          options({ ...CONFIRMED, ...LEGACY }),
+        ),
+      ).rejects.toThrow('killed');
+      rename.mockImplementation(actual.rename);
+      const journal = readFileSync(join(root, JOURNAL_PATH), 'utf8');
+      const interrupted = await contents();
+      expect(
+        await thrown(() =>
+          restorePipelineDefinitionsBackup(records, options(CONFIRMED)),
+        ),
+      ).toMatchObject({ code: 'OWNER_RECORD' });
+      expect(readFileSync(join(root, JOURNAL_PATH), 'utf8')).toBe(journal);
+      expect(await contents()).toEqual(interrupted);
+      await restorePipelineDefinitionsBackup(
+        records,
+        options({ ...CONFIRMED, ...LEGACY }),
+      );
+      expect(await contents()).toEqual(before);
+      expect((await owners())[DEFINITIONS]).toBe('legacy');
+    });
+
+    it('refuses newer state before it writes any owner record', async () => {
+      seed();
+      const records = await backupPipelineDefinitions(options());
+      const later = await laterBackup();
+      await flipRow(recordOf(later, DEFINITIONS), 'legacy', 'daemon');
+      const flip = flipText(DEFINITIONS);
+      const persisted = persistedDigest(root, DEFINITIONS);
+      write('pipelines/beta.yaml', BETA);
+      expect(
+        await thrown(() =>
+          restorePipelineDefinitionsBackup(records, options(LEGACY)),
+        ),
+      ).toMatchObject({ code: 'NEWER_STATE' });
+      expect(flipText(DEFINITIONS)).toBe(flip);
+      expect(persistedDigest(root, DEFINITIONS)).toBe(persisted);
+    });
+
+    it('flushes an offline record an earlier attempt left before anything moves, so a crash in the retry keeps the fence', async () => {
+      seed();
+      const records = await backupPipelineDefinitions(options());
+      const definitions = recordOf(records, DEFINITIONS);
+      await flipRow(definitions, 'legacy', 'daemon');
+      write('pipelines/beta.yaml', BETA);
+      const fs = crashFs(root, strictFlush);
+      const folder = realpathSync(join(root, 'storage-records', DEFINITIONS));
+      const journalFolder = realpathSync(
+        join(root, 'backups/pipeline-definitions-1'),
+      );
+      // The fence is written, but its folder is never flushed.
+      await expect(
+        restorePipelineDefinitionsBackup(
+          records,
+          options({
+            ...CONFIRMED,
+            ...LEGACY,
+            syncDirectory: async (
+              path: string,
+            ): Promise<'flushed' | 'unsupported'> => {
+              if (
+                realpathSync(path) === folder &&
+                flipText(DEFINITIONS)?.includes('"toOwner": "offline"') === true
+              )
+                throw new Error('killed');
+              return fs.syncDirectory(path);
+            },
+          }),
+        ),
+      ).rejects.toThrow('killed');
+      fs.crashOnce((path) => realpathSync(path) === journalFolder);
+      await expect(
+        restorePipelineDefinitionsBackup(
+          records,
+          options({
+            ...CONFIRMED,
+            ...LEGACY,
+            syncDirectory: fs.syncDirectory,
+          }),
+        ),
+      ).rejects.toBeInstanceOf(Crash);
+      const image = fs.durableImage();
+      try {
+        expect(await readOwnerFlipRecord(image, DEFINITIONS)).toMatchObject({
+          kind: 'record',
+          record: {
+            toOwner: 'offline',
+            backupRecord: backupRecordReference(
+              DEFINITIONS,
+              definitions.verifiedBy.digest,
+            ),
+          },
+        });
+        expect(persistedDigest(image, DEFINITIONS)).toBe(
+          definitions.verifiedBy.digest,
+        );
+      } finally {
+        rmSync(image, { recursive: true, force: true });
+      }
+    });
+
+    it('flushes its own return again on a retry before the journal goes, without rewriting it', async () => {
+      seed();
+      const records = await backupPipelineDefinitions(options());
+      await flipRow(recordOf(records, DEFINITIONS), 'legacy', 'daemon');
+      write('pipelines/beta.yaml', BETA);
+      const fs = crashFs(root, strictFlush);
+      const folder = realpathSync(join(root, 'storage-records', DEFINITIONS));
+      const journalFolder = realpathSync(
+        join(root, 'backups/pipeline-definitions-1'),
+      );
+      // The return is written, but its folder is never flushed.
+      await expect(
+        restorePipelineDefinitionsBackup(
+          records,
+          options({
+            ...CONFIRMED,
+            ...LEGACY,
+            syncDirectory: async (
+              path: string,
+            ): Promise<'flushed' | 'unsupported'> => {
+              if (
+                realpathSync(path) === folder &&
+                flipText(DEFINITIONS)?.includes('"toOwner": "legacy"') === true
+              )
+                throw new Error('killed');
+              return fs.syncDirectory(path);
+            },
+          }),
+        ),
+      ).rejects.toThrow('killed');
+      expect(existsSync(join(root, JOURNAL_PATH))).toBe(true);
+      const returned = stamp(ownerFlipRecordFile(root, DEFINITIONS));
+      fs.crashBefore();
+      await restorePipelineDefinitionsBackup(
+        records,
+        options({ ...LEGACY, syncDirectory: fs.syncDirectory }),
+      );
+      const flushed = fs.flushed.map((path) =>
+        existsSync(path) ? realpathSync(path) : path,
+      );
+      expect(flushed.indexOf(folder)).toBeGreaterThan(-1);
+      expect(flushed.indexOf(folder)).toBeLessThan(
+        flushed.lastIndexOf(journalFolder),
+      );
+      expect(stamp(ownerFlipRecordFile(root, DEFINITIONS))).toBe(returned);
+      expect(existsSync(join(root, JOURNAL_PATH))).toBe(false);
+    });
+
+    it('returns a row an earlier restore gave to the daemon to the app', async () => {
+      seed();
+      const records = await backupPipelineDefinitions(options());
+      const later = await laterBackup();
+      await flipRow(recordOf(later, DEFINITIONS), 'offline', 'daemon');
+      await restorePipelineDefinitionsBackup(records, options(LEGACY));
+      expect((await owners())[DEFINITIONS]).toBe('legacy');
+      await expect(
+        assertRowWritable(root, DEFINITIONS, 'daemon'),
+      ).rejects.toMatchObject({ reason: 'owned_elsewhere', owner: 'legacy' });
+    });
+
+    it('returns a row an earlier restore gave to the app to the daemon', async () => {
+      seed();
+      const records = await backupPipelineDefinitions(options());
+      const later = await laterBackup();
+      await flipRow(recordOf(later, DEFINITIONS), 'offline', 'legacy');
+      await restorePipelineDefinitionsBackup(
+        records,
+        options({ owner: 'daemon' }),
+      );
+      expect((await owners())[DEFINITIONS]).toBe('daemon');
+      await expect(
+        assertRowWritable(root, DEFINITIONS, 'electron_main'),
+      ).rejects.toMatchObject({ reason: 'owned_elsewhere', owner: 'daemon' });
+    });
+
+    type Outcome = 'restores' | 'refuses';
+    const classes: readonly {
+      readonly name: string;
+      readonly make: (
+        first: readonly NamespaceBackupRecord[],
+        later: readonly NamespaceBackupRecord[],
+      ) => Promise<void>;
+      readonly given: Outcome;
+      readonly omitted: Outcome;
+      /** What the row's record names after a restore that names `legacy`. */
+      readonly returned?: string;
+    }[] = [
+      {
+        name: 'absent',
+        make: () => Promise.resolve(),
+        given: 'restores',
+        omitted: 'restores',
+        returned: 'absent',
+      },
+      {
+        name: 'unreadable',
+        make: () => {
+          write('storage-records/pipeline_definitions/owner-flip.json', '{}');
+          return Promise.resolve();
+        },
+        given: 'refuses',
+        omitted: 'refuses',
+      },
+      {
+        name: "done (already the app's)",
+        make: (_, later) =>
+          flipRow(recordOf(later, DEFINITIONS), 'daemon', 'legacy'),
+        given: 'restores',
+        omitted: 'refuses',
+        returned: 'legacy',
+      },
+      {
+        name: "own fence (this backup's offline)",
+        make: (first) =>
+          flipRow(recordOf(first, DEFINITIONS), 'daemon', 'offline'),
+        given: 'restores',
+        omitted: 'refuses',
+        returned: 'legacy',
+      },
+      {
+        name: 'returned (to the daemon by an earlier restore)',
+        make: (_, later) =>
+          flipRow(recordOf(later, DEFINITIONS), 'offline', 'daemon'),
+        given: 'restores',
+        omitted: 'refuses',
+        returned: 'legacy',
+      },
+      {
+        name: 'forward (moved to the daemon)',
+        make: (first) =>
+          flipRow(recordOf(first, DEFINITIONS), 'legacy', 'daemon'),
+        given: 'restores',
+        omitted: 'refuses',
+        returned: 'legacy',
+      },
+      {
+        name: "foreign (another backup's offline)",
+        make: (_, later) =>
+          flipRow(recordOf(later, DEFINITIONS), 'daemon', 'offline'),
+        given: 'refuses',
+        omitted: 'refuses',
+      },
+      {
+        name: 'foreign (interface-local)',
+        make: (first) =>
+          flipRow(recordOf(first, DEFINITIONS), 'legacy', 'interface-local'),
+        given: 'refuses',
+        omitted: 'refuses',
+      },
+    ];
+
+    it.each(
+      classes.flatMap((row) => [
+        { ...row, owner: 'given', expected: row.given },
+        { ...row, owner: 'omitted', expected: row.omitted },
+      ]),
+    )(
+      '$name record, owner $owner: $expected',
+      async ({ make, owner, expected, returned }) => {
+        seed();
+        const first = await backupPipelineDefinitions(options());
+        await make(first, await laterBackup());
+        const record = flipText(DEFINITIONS);
+        const restore = (): ReturnType<
+          typeof restorePipelineDefinitionsBackup
+        > =>
+          restorePipelineDefinitionsBackup(
+            first,
+            options(owner === 'given' ? LEGACY : {}),
+          );
+        if (expected === 'refuses') {
+          expect(await thrown(restore)).toMatchObject({ code: 'OWNER_RECORD' });
+          expect(flipText(DEFINITIONS)).toBe(record);
+        } else {
+          await restore();
+          expect((await owners())[DEFINITIONS]).toBe(returned);
+        }
+      },
+    );
+  });
+
   describe('a crash before any flush of a restore attempt', () => {
     const JOURNAL = 'backups/pipeline-definitions-1/restore-journal.json';
     /** A file's bytes, or a folder's names and contents. */
@@ -1978,6 +2644,8 @@ describe('pipeline definitions backup and restore (CAN-5340)', () => {
       /** A row whose journaled set-aside paths must survive and be reported. */
       readonly reported?: string;
       /** A row whose further set-aside copies may hold only duplicates. */
+      /** Rows moved to the daemon since the backup, returned to the app. */
+      readonly flipped?: readonly string[];
       readonly duplicates?: {
         readonly path: string;
         readonly namespaceId: string;
@@ -2177,6 +2845,101 @@ describe('pipeline definitions backup and restore (CAN-5340)', () => {
       },
     ];
 
+    /** Rows moved to the daemon since the backup, returned to the app (CAN-7842). */
+    const ownerScenarios: readonly Scenario[] = [
+      {
+        name: 'X1: a confirmed restore over newer rows, two of them moved to the daemon',
+        after: () => {
+          pipelinesNewer();
+          write('pipeline-data/beta/notes.json', '{"notes":1}');
+        },
+        flipped: ['pipeline_definitions', 'pipeline_data'],
+        confirmed: true,
+        newer: 'uncovered',
+      },
+      {
+        name: 'X2: rows that already hold the backup, every one moved to the daemon',
+        flipped: FAMILY,
+        confirmed: false,
+        newer: 'never',
+      },
+      {
+        name: 'X3: a retry after a crash between the offline records and the first journal write',
+        after: pipelinesNewer,
+        flipped: ['pipeline_definitions'],
+        first: {
+          confirmed: true,
+          crash: (at) => (path) =>
+            same(path, at, 'backups/pipeline-definitions-1'),
+        },
+        confirmed: true,
+        newer: 'uncovered',
+      },
+    ];
+
+    /**
+     * What a crash left of the owner records: a moved row's record names the
+     * daemon, the restore's offline fence or the app, a fence admits no
+     * writer, and a row that had no record gains none.
+     */
+    const fenceProblems = async (
+      at: string,
+      flipped: readonly string[] = [],
+    ): Promise<string[]> => {
+      const problems: string[] = [];
+      for (const namespaceId of FAMILY) {
+        if (!flipped.includes(namespaceId)) {
+          if (existsSync(join(at, 'storage-records', namespaceId)))
+            problems.push(`${namespaceId} gained owner records`);
+          continue;
+        }
+        const read = await readOwnerFlipRecord(at, namespaceId);
+        if (
+          read.kind !== 'record' ||
+          !['daemon', 'offline', 'legacy'].includes(read.record.toOwner)
+        )
+          problems.push(
+            `${namespaceId} has no forward, fence or returned record`,
+          );
+        else if (
+          read.record.toOwner === 'offline' &&
+          (['daemon', 'electron_main'] as const).some(
+            (writer) => decideRowWrite(read, writer).allowed,
+          )
+        )
+          problems.push(`${namespaceId}'s fence admits a writer`);
+      }
+      return problems;
+    };
+
+    /**
+     * After a finished retry: every moved row is the app's again, only the
+     * app writes it, and its last verified backup is the one restored.
+     */
+    const returnProblems = async (
+      at: string,
+      flipped: readonly string[],
+      records: readonly NamespaceBackupRecord[],
+    ): Promise<string[]> => {
+      const problems = await fenceProblems(at, flipped);
+      for (const namespaceId of flipped) {
+        const read = await readOwnerFlipRecord(at, namespaceId);
+        if (read.kind !== 'record' || read.record.toOwner !== 'legacy')
+          problems.push(`${namespaceId} was not returned to the app`);
+        if (
+          !decideRowWrite(read, 'electron_main').allowed ||
+          decideRowWrite(read, 'daemon').allowed
+        )
+          problems.push(`${namespaceId} admits the wrong writer`);
+        if (
+          persistedDigest(at, namespaceId) !==
+          recordOf(records, namespaceId).verifiedBy.digest
+        )
+          problems.push(`${namespaceId}'s last verified backup is another one`);
+      }
+      return problems;
+    };
+
     /**
      * Copies the root, runs the scenario's attempts on the copy, crashing the
      * last before flush `crash`, then retries on what the crash left and
@@ -2209,6 +2972,7 @@ describe('pipeline definitions backup and restore (CAN-5340)', () => {
               dataRoot,
               syncDirectory,
               ...(confirmed ? CONFIRMED : {}),
+              ...(scenario.flipped === undefined ? {} : LEGACY),
             }),
           );
         const { first } = scenario;
@@ -2246,6 +3010,12 @@ describe('pipeline definitions backup and restore (CAN-5340)', () => {
         if (!crashed) return { flushed };
         const durable = fs.durableImage();
         scratch.push(durable);
+        const fenced = await fenceProblems(durable, scenario.flipped);
+        if (fenced.length > 0)
+          return {
+            flushed,
+            failure: `crash before flush ${String(crash)}: ${fenced.join('; ')}`,
+          };
         const named = (
           scenario.reported === undefined
             ? []
@@ -2346,7 +3116,26 @@ describe('pipeline definitions backup and restore (CAN-5340)', () => {
           if (wrong.length > 0)
             return { flushed, failure: `${point}: ${wrong.join('; ')}` };
         }
+        const flipped = scenario.flipped ?? [];
+        const stamps = flipped.map((namespaceId) =>
+          stamp(ownerFlipRecordFile(durable, namespaceId)),
+        );
         const again = await attempt(durable, false, strictFlush);
+        const owned = [
+          ...(await returnProblems(durable, flipped, records)),
+          ...flipped
+            .filter(
+              (namespaceId, index) =>
+                stamp(ownerFlipRecordFile(durable, namespaceId)) !==
+                stamps[index],
+            )
+            .map(
+              (namespaceId) =>
+                `${namespaceId} was rewritten after it was returned`,
+            ),
+        ];
+        if (owned.length > 0)
+          return { flushed, failure: `${point}: ${owned.join('; ')}` };
         const lost = people
           .filter((entry) => !kept(durable, entry))
           .map(([path]) => path);
@@ -2362,26 +3151,36 @@ describe('pipeline definitions backup and restore (CAN-5340)', () => {
       }
     }
 
+    async function everyCrashPoint(scenario: Scenario): Promise<void> {
+      seed();
+      scenario.before?.();
+      const records = await backupPipelineDefinitions(options());
+      scenario.after?.();
+      for (const namespaceId of scenario.flipped ?? [])
+        await flipRow(recordOf(records, namespaceId), 'legacy', 'daemon');
+      const { flushed } = await crashAt(scenario, records);
+      const points = flushed
+        .map((_, index) => index)
+        .filter((index) => scenario.points?.(flushed, index) ?? true);
+      expect(points.length).toBeGreaterThan(0);
+      const failures: string[] = [];
+      for (const point of points) {
+        const { failure } = await crashAt(scenario, records, point);
+        if (failure !== undefined) failures.push(failure);
+      }
+      expect(failures).toEqual([]);
+    }
+
     it.each(scenarios)(
       '$name: the retry restores every row and keeps every entry',
-      async (scenario) => {
-        seed();
-        scenario.before?.();
-        const records = await backupPipelineDefinitions(options());
-        scenario.after?.();
-        const { flushed } = await crashAt(scenario, records);
-        const points = flushed
-          .map((_, index) => index)
-          .filter((index) => scenario.points?.(flushed, index) ?? true);
-        expect(points.length).toBeGreaterThan(0);
-        const failures: string[] = [];
-        for (const point of points) {
-          const { failure } = await crashAt(scenario, records, point);
-          if (failure !== undefined) failures.push(failure);
-        }
-        expect(failures).toEqual([]);
-      },
+      everyCrashPoint,
       CRASH_POINTS_TIMEOUT_MS,
+    );
+
+    it.each(ownerScenarios)(
+      '$name: the retry restores every row, keeps every entry and returns every owner',
+      everyCrashPoint,
+      OWNER_CRASH_POINTS_TIMEOUT_MS,
     );
   });
 });

@@ -1,5 +1,5 @@
 import { lstat, readFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { isRecord } from '@canopy/execution-engine/node/lib/type-guards';
 import { validateId } from '@canopy/execution-engine/node/lib/validation';
@@ -95,6 +95,42 @@ export async function readHeadlessPreferences(): Promise<
   return preferences;
 }
 
+/** The data-root trees Canopy hands agents as working folders. */
+function managedWorkingFolders(root: string): string[] {
+  return [
+    join(root, 'workspaces', '*', 'worktrees', '*'),
+    join(root, 'workspaces', '*', 'home'),
+    join(root, 'app-workspaces', '*', 'home'),
+    join(root, 'repos', '*'),
+  ];
+}
+
+function isAtOrBelow(path: string, folder: string): boolean {
+  const rest = relative(folder, path);
+  return (
+    rest === '' ||
+    (rest !== '..' && !rest.startsWith(`..${sep}`) && !isAbsolute(rest))
+  );
+}
+
+/**
+ * Within the data root, only a folder 3+ levels down may exempt itself: any
+ * shallower one can hold policy (a store, a workspace's `approvals.json`, the
+ * Antigravity gate config). `*` is refused because the engine reads it as a
+ * wildcard.
+ */
+function mayExemptSessionFolder(folder: string, root: string): boolean {
+  if (folder.includes('*') || isAtOrBelow(root, folder)) return false;
+  return (
+    !isAtOrBelow(folder, root) || relative(root, folder).split(sep).length >= 3
+  );
+}
+
+export interface HeadlessApprovalSession extends NativeToolApprovalPort {
+  /** Exempts a folder the host stages for the agent, such as its skills. */
+  exemptWorkingFolder(path: string): void;
+}
+
 /** No prompt transport: every decision requiring a person is denied. */
 export function createHeadlessApprovalSession(options: {
   cwd: string;
@@ -102,20 +138,52 @@ export function createHeadlessApprovalSession(options: {
   mode: ApprovalMode;
   sessionRules: ApprovalRule[];
   signal: AbortSignal;
-}): NativeToolApprovalPort {
+}): HeadlessApprovalSession {
   const dataRoot = getCanopyDataDir();
   if (options.projectId) validateId(options.projectId, 'projectId');
   const projectPath = options.projectId
     ? join(dataRoot, 'workspaces', options.projectId, 'approvals.json')
     : undefined;
+  const stagedFolders: string[] = [];
+  let canonicalDataRoot: Promise<string> | undefined;
+  function canonicalRoot(): Promise<string> {
+    canonicalDataRoot ??= resolveExistingAncestorPath(
+      dataRoot,
+      options.cwd,
+    ).then((root) => {
+      if (!root) throw new Error('Approval policy paths are unreadable.');
+      return root;
+    });
+    return canonicalDataRoot;
+  }
   const { canonicalizeCheck, canonicalProtectedFileWritePaths } =
     createApprovalCanonicalizer(options.cwd, async () => {
-      // Protect all app policy and recovery files, including other workspaces.
-      const root = await resolveExistingAncestorPath(dataRoot, options.cwd);
-      if (!root) throw new Error('Approval policy paths are unreadable.');
+      // Protect all app policy and recovery files at any depth, including
+      // other workspaces'; `protectedFileExemptPaths` carves out working trees.
+      const root = await canonicalRoot();
       return [root, join(root, '**')];
     });
-  async function projectRules(): Promise<ApprovalRule[]> {
+  async function exemptFolders(
+    repoPath: string | undefined,
+  ): Promise<string[]> {
+    const root = await canonicalRoot();
+    const sessionFolders = await Promise.all(
+      [options.cwd, repoPath, ...stagedFolders]
+        .filter((path): path is string => path !== undefined)
+        .map((path) => resolveExistingAncestorPath(path, options.cwd)),
+    );
+    return [
+      ...managedWorkingFolders(root),
+      ...sessionFolders.filter(
+        (folder): folder is string =>
+          folder !== undefined && mayExemptSessionFolder(folder, root),
+      ),
+    ];
+  }
+  async function projectPolicy(): Promise<{
+    rules: ApprovalRule[];
+    repoPath: string | undefined;
+  }> {
     let persisted: ApprovalRule[] = [];
     let repoRoot: string | undefined = options.cwd;
     if (options.projectId && projectPath) {
@@ -145,28 +213,35 @@ export function createHeadlessApprovalSession(options: {
     const manifest = referenceRoot
       ? await readPolicyManifest(referenceRoot)
       : null;
-    return [
-      ...persisted,
-      ...(manifest?.approvals?.rules ?? []).filter(
-        (rule) => rule.behavior === 'deny',
-      ),
-    ];
+    return {
+      rules: [
+        ...persisted,
+        ...(manifest?.approvals?.rules ?? []).filter(
+          (rule) => rule.behavior === 'deny',
+        ),
+      ],
+      repoPath: repoRoot,
+    };
   }
   return {
+    exemptWorkingFolder(path) {
+      stagedFolders.push(path);
+    },
     async check(check) {
       try {
         options.signal.throwIfAborted();
         const [preferences, project, canonical, protectedFileWritePaths] =
           await Promise.all([
             readHeadlessPreferences(),
-            projectRules(),
+            projectPolicy(),
             canonicalizeCheck(check),
             canonicalProtectedFileWritePaths(),
           ]);
+        const protectedFileExemptPaths = await exemptFolders(project.repoPath);
         options.signal.throwIfAborted();
         const rules = {
           session: options.sessionRules,
-          project,
+          project: project.rules,
           global: strictRules(preferences.globalApprovalRules),
         };
         const failed =
@@ -188,6 +263,7 @@ export function createHeadlessApprovalSession(options: {
           workspaceRoot: canonical.workspaceRoot,
           pathCaseInsensitive: canonical.pathCaseInsensitive,
           protectedFileWritePaths,
+          protectedFileExemptPaths,
         });
         return evaluation.outcome === 'allow'
           ? { decision: 'allow' }

@@ -1,6 +1,8 @@
 import { ControlButton } from '@canopy/ui-shared/components';
 import { DeferredToolOutput } from '@canopy/ui-app';
-import { useState, type JSX } from 'react';
+import { useContext, useState, type JSX } from 'react';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
+import { ChatMarkdownFileTargetContext } from './chat-markdown-file-target';
 import { useWorkflowRun } from '@/hooks/useWorkflowRun';
 import { WorkflowRunView } from '../activity/WorkflowRunView';
 import { WorkflowIcon } from '../activity/WorkflowIcon';
@@ -37,9 +39,17 @@ export function WorkflowBlock({
   // The chat card has no Canopy process-status signal, so derive terminality
   // from the run-state itself (passed false here; the hook still stops when the
   // run JSON reports a terminal status).
-  const { run, loading } = useWorkflowRun(transcriptDir, runId, false);
+  const target = useContext(ChatMarkdownFileTargetContext);
+  const isPairedScope = target !== null && isPairedComputerId(target.projectId);
+  const effectiveTranscriptDir = isPairedScope ? undefined : transcriptDir;
+  const effectiveRunId = isPairedScope ? undefined : runId;
+  const { run, loading } = useWorkflowRun(
+    effectiveTranscriptDir,
+    effectiveRunId,
+    false,
+  );
 
-  const launched = Boolean(runId);
+  const launched = Boolean(effectiveRunId);
   const status = run?.status;
   const isRunning =
     launched && (!status || !TERMINAL_STATUSES.has(status.toLowerCase()));
@@ -92,14 +102,18 @@ export function WorkflowBlock({
         </ControlButton>
         {expanded && (
           <Surface variant="section" boundary="top" padding="section-compact">
-            {!launched ? (
+            {isPairedScope ? (
+              <div className="py-2 text-xs fg-secondary">
+                Workflow details are on the other computer.
+              </div>
+            ) : !launched ? (
               <div className="py-2 text-xs fg-secondary">
                 Launching workflow…
               </div>
             ) : (
               <WorkflowRunView
                 run={run}
-                transcriptDir={transcriptDir}
+                transcriptDir={effectiveTranscriptDir}
                 loading={loading}
               />
             )}

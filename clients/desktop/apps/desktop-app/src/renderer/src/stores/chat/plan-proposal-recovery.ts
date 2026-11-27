@@ -2,6 +2,7 @@
 // linked yet: a plan save that failed, or a proposal event that arrived before
 // its tab was installed.
 import { isPlanProposal } from '@canopy/desktop-shared/plan-review';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { chatStoreApi } from './store-ref';
 import { chatScopeKey } from './revisioned-sync';
 
@@ -9,6 +10,7 @@ export function recoverUntrackedPlanProposals(
   projectId: string,
   worktreeId: string,
 ): void {
+  if (isPairedComputerId(projectId)) return;
   const state = chatStoreApi().getState();
   for (const tab of state.worktreeChats[chatScopeKey(projectId, worktreeId)]
     ?.tabs ?? []) {

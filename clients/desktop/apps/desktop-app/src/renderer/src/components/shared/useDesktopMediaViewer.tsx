@@ -6,6 +6,7 @@ import {
   useState,
   type JSX,
 } from 'react';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { documentPreviewMaxBytes } from '@canopy/protocol/document-preview';
 import {
   MediaViewer,
@@ -153,18 +154,25 @@ export function useDesktopMediaViewer(
       // Read once, here: a hook in every message that subscribed to the
       // store would wake on each change to it while its viewer is closed.
       const selected = useChatStore.getState().selectedWorktree;
+      const effectiveTarget =
+        target ??
+        (selected
+          ? {
+              projectId: selected.projectId,
+              worktreeId: selected.worktreeId,
+            }
+          : undefined);
+      if (
+        effectiveTarget !== undefined &&
+        isPairedComputerId(effectiveTarget.projectId)
+      ) {
+        return;
+      }
       const hostDocument = anchorRef.current?.ownerDocument;
       setSet({
         sources,
         index: Math.min(Math.max(index, 0), sources.length - 1),
-        target:
-          target ??
-          (selected
-            ? {
-                projectId: selected.projectId,
-                worktreeId: selected.worktreeId,
-              }
-            : undefined),
+        target: effectiveTarget,
         ownerDocument:
           hostDocument !== undefined && hostDocument !== document
             ? hostDocument

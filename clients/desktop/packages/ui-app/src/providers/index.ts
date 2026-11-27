@@ -13,3 +13,4 @@ export * from './ProviderChooser';
 export * from './ProviderChoiceContinueMenu';
 export * from './provider-choice-primary';
 export * from './ProviderKeyRow';
+export * from './BillingSetupPanel';

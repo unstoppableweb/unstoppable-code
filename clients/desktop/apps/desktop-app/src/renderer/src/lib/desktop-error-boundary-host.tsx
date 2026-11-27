@@ -81,6 +81,7 @@ function createDesktopErrorBoundaryHost(
         error={appError}
         appName={brandText.appName}
         {...(telemetry ? { telemetry } : {})}
+        variant="secondary"
       />
     ),
   };

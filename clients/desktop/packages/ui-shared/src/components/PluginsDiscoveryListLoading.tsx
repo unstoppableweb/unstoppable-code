@@ -1,6 +1,7 @@
 import { Stack } from '../primitives/Stack';
 import type { JSX } from 'react';
 import { CUSTOMIZE_LABEL } from '@canopy/protocol/ui-labels';
+import { CUSTOMIZE_ROW_GRID_CLASS } from '../lib/customize-grid';
 
 const SECTIONS = ['first', 'second'] as const;
 const ROWS = ['one', 'two', 'three', 'four'] as const;
@@ -26,19 +27,21 @@ export function PluginsDiscoveryListLoading(): JSX.Element {
           <div className="box-content flex h-7 items-center border-b pb-2">
             <span className="h-4 w-32 rounded bg-fg-primary/[0.06]" />
           </div>
-          <div className="grid grid-cols-1 gap-x-8 gap-y-2 md:grid-cols-2">
-            {ROWS.map((row) => (
-              <div
-                key={row}
-                className="flex items-center gap-4 rounded-xl px-4 py-3.5"
-              >
-                <span className="h-9 w-9 shrink-0 rounded-full bg-fg-primary/[0.06]" />
-                <span className="flex min-w-0 flex-1 flex-col gap-2">
-                  <span className="h-3.5 w-1/3 rounded bg-fg-primary/[0.06]" />
-                  <span className="h-3 w-2/3 rounded bg-fg-primary/[0.06]" />
-                </span>
-              </div>
-            ))}
+          <div className="@container">
+            <div className={CUSTOMIZE_ROW_GRID_CLASS}>
+              {ROWS.map((row) => (
+                <div
+                  key={row}
+                  className="flex items-center gap-4 rounded-xl px-4 py-3.5"
+                >
+                  <span className="h-9 w-9 shrink-0 rounded-full bg-fg-primary/[0.06]" />
+                  <span className="flex min-w-0 flex-1 flex-col gap-2">
+                    <span className="h-3.5 w-1/3 rounded bg-fg-primary/[0.06]" />
+                    <span className="h-3 w-2/3 rounded bg-fg-primary/[0.06]" />
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
         </Stack>
       ))}

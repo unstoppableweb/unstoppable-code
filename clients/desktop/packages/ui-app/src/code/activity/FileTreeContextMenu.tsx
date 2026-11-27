@@ -4,10 +4,10 @@ import { useRef, type JSX, type MouseEvent, type ReactNode } from 'react';
 import {
   ActionMenuItems,
   ActionMenuRowStyle,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  FloatingMenu,
-  FloatingMenuPointAnchor,
+  MenuItem,
+  MenuItemIcon,
+  Menu,
+  MenuPointAnchor,
   Tooltip,
   actionMenuRowIcon,
   type ActionMenuItem,
@@ -399,13 +399,8 @@ export function FileTreeContextMenu({
 
   return (
     <>
-      <FloatingMenuPointAnchor
-        ref={anchorRef}
-        x={x}
-        y={y}
-        ownerDocument={document}
-      />
-      <FloatingMenu
+      <MenuPointAnchor ref={anchorRef} x={x} y={y} ownerDocument={document} />
+      <Menu
         open
         onOpenChange={(open): void => {
           if (!open) onClose();
@@ -428,7 +423,7 @@ export function FileTreeContextMenu({
                   onSelect={select}
                 />
                 <Tooltip label={appItem.label} className="w-full">
-                  <DropdownMenuItem
+                  <MenuItem
                     data-testid={appItem.testId}
                     aria-label={appItem.label}
                     onClick={(event): void => {
@@ -436,9 +431,9 @@ export function FileTreeContextMenu({
                       select(appItem);
                     }}
                   >
-                    <DropdownMenuItemIcon>
+                    <MenuItemIcon>
                       {actionMenuRowIcon(items, appIndex)}
-                    </DropdownMenuItemIcon>
+                    </MenuItemIcon>
                     <span>{openInLabel}</span>
                     <img
                       src={openInApp.iconSrc}
@@ -446,7 +441,7 @@ export function FileTreeContextMenu({
                       className="h-4 w-4"
                       draggable={false}
                     />
-                  </DropdownMenuItem>
+                  </MenuItem>
                 </Tooltip>
                 <ActionMenuItems
                   items={items.slice(appIndex + 1)}
@@ -458,7 +453,7 @@ export function FileTreeContextMenu({
             )}
           </div>
         </ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
     </>
   );
 }

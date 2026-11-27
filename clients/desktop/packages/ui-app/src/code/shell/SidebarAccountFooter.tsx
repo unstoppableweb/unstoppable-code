@@ -6,7 +6,7 @@ import { Dot, type DotTone } from '@canopy/ui-shared/primitives/Badge';
 import { useId, useRef, useState, type JSX, type ReactNode } from 'react';
 import {
   DisplayAvatar,
-  FloatingMenu,
+  Menu,
   RailIconButton,
   Surface,
 } from '@canopy/ui-shared/components';
@@ -66,7 +66,7 @@ export interface SidebarAccountFooterProps {
   /** Compact icon actions rendered to the right of the row (desktop: Feedback, Settings). */
   readonly railActions?: ReactNode;
   /**
-   * The menu's rows, rendered by the host with the DropdownMenu primitives.
+   * The menu's rows, rendered by the host with the menu primitives.
    * Receives `close` so navigation rows can dismiss the menu; the theme
    * switch and similar in-place controls simply don't call it.
    */
@@ -179,7 +179,7 @@ export function SidebarAccountRow({
     : '';
   // Hosts decide per row whether a selection closes the menu (close-on-select
   // is off), so the closer they get must also hand keyboard focus back to the
-  // trigger — FloatingMenu only does that on Escape and on its own
+  // trigger — Menu only does that on Escape and on its own
   // close-on-select path.
   const closeMenu = (): void => {
     setOpen(false);
@@ -279,7 +279,7 @@ export function SidebarAccountRow({
           </span>
         )}
       </div>
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={open}
         onOpenChange={setOpen}
@@ -296,7 +296,7 @@ export function SidebarAccountRow({
         closeOnSelect={false}
       >
         {menu(closeMenu)}
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

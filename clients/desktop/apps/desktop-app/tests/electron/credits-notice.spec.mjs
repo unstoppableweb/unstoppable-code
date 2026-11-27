@@ -40,6 +40,10 @@ import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 //      the signed-out No billing source notice and no "Using AI Credits"
 //      card, a send is refused before any provider or gateway request, and
 //      Continue with credits shows the card and the next turn bills credits.
+//   7. A signed-out chat on a remembered AI Credits choice whose balance is
+//      settled at zero (billing setup gate): no "Using AI Credits" card, the
+//      No billing source notice, and a send that keeps the draft, opens the
+//      provider list and reaches no provider or gateway.
 //
 // Deviation from the plan: it named the mock `usage-limit-reached` scenario
 // and `seedUsageLimitedChats.mjs`, but those model a Claude/Codex provider
@@ -122,6 +126,7 @@ async function openChat({
   flags,
   prepare,
   blocks,
+  tab,
 }) {
   const userDataDir = mkdtempSync(path.join(os.tmpdir(), `canopy-${prefix}-`));
   seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
@@ -136,6 +141,7 @@ async function openChat({
         title: 'Credits notice',
         model,
         ...(blocks ? { blocks } : {}),
+        ...tab,
       },
     ],
   });
@@ -718,6 +724,67 @@ test.describe('Credits notice', () => {
       await clearScenario(DEFAULT_MOCK_BASE_URL, cloudKey);
       await clearScenario(DEFAULT_MOCK_BASE_URL, refusedMarker);
       await clearScenario(DEFAULT_MOCK_BASE_URL, creditsMarker);
+    }
+  });
+
+  test('a signed-out chat at zero credits shows no credits card and keeps the draft on send', async () => {
+    test.setTimeout(180_000);
+    const cloudKey = `csk_credits_notice_zero_${randomUUID()}`;
+    await registerScenario(DEFAULT_MOCK_BASE_URL, cloudKey, {
+      cloud: { aiCreditsBalance: { credits: 0, eligible: false } },
+    });
+    const fixture = await openChat({
+      prefix: 'credits-notice-zero',
+      providerType: 'claude',
+      model: 'opus[1m]',
+      // A used chat, so it keeps its composer, on a routed credits choice.
+      blocks: [{ type: 'text', text: 'Earlier reply on AI Credits.' }],
+      tab: { aiCreditsRouting: { active: true, scope: 'persistent' } },
+      // The remembered choice a credits pick writes.
+      prepare: (userDataDir) =>
+        writeFileSync(
+          path.join(userDataDir, 'preferences.json'),
+          JSON.stringify({
+            version: 1,
+            preferences: {
+              lastChatBillingFramework: 'ai-credits',
+              aiCreditsRoutingMode: 'off',
+            },
+          }),
+        ),
+    });
+    const blockedMarker = `Canopy-Ccredits-zero-${randomUUID()}`;
+    try {
+      const { window, app } = fixture;
+      await signIn(window, cloudKey);
+      const panel = await showWorktree(window, app);
+      const notice = panel.getByTestId('chat-input-no-billing-source-banner');
+      const card = panel.getByTestId('chat-input-ai-credits-active');
+
+      // A settled zero balance can't pay: the notice, never the card.
+      await expect(notice).toBeVisible({ timeout: 30_000 });
+      await expect(card).toHaveCount(0);
+
+      // Send keeps the draft and opens the provider list; nothing reaches a
+      // provider or the gateway.
+      await registerScenario(DEFAULT_MOCK_BASE_URL, blockedMarker, {
+        llm: { steps: [{ text: 'Should never run.', stopReason: 'end_turn' }] },
+      });
+      const composer = panel.getByRole('textbox').first();
+      await composer.click();
+      await composer.fill(`[${blockedMarker}] Keep going.`);
+      await window.getByRole('button', { name: 'Send message' }).click();
+      await expect(window.getByRole('dialog')).toBeVisible({
+        timeout: 15_000,
+      });
+      await expect(composer).toContainText(blockedMarker);
+      expect(await llmActivity(blockedMarker, 'llmModel:')).toBe(0);
+      expect(await llmActivity(blockedMarker, 'llmProxy:')).toBe(0);
+      await expect(card).toHaveCount(0);
+    } finally {
+      await fixture.close();
+      await clearScenario(DEFAULT_MOCK_BASE_URL, cloudKey);
+      await clearScenario(DEFAULT_MOCK_BASE_URL, blockedMarker);
     }
   });
 });

@@ -48,8 +48,8 @@ import {
   ChatPreviewPopover,
   ActionMenuItems,
   ActionMenuRowStyle,
-  FloatingMenu,
-  FloatingMenuPointAnchor,
+  Menu,
+  MenuPointAnchor,
   RailIconButton,
   SidebarFadePresence,
   SidebarPinnedBadge,
@@ -118,7 +118,7 @@ import { withSelectionGroupItems } from '@canopy/ui-app';
 import {
   ArchivedContainersNavLink,
   DEFAULT_MENU_ROW_STYLE,
-  DropdownMenuRowStyleProvider,
+  MenuRowStyleProvider,
   QUIET_MENU_ROW_STYLE,
   useContextMenuPlacement,
 } from '@canopy/ui-shared';
@@ -393,7 +393,7 @@ function SidebarWorkEntryUnreadPreview({
 }
 
 /**
- * A Work Entry's menu surface: the shared `FloatingMenu` under the ••• button
+ * A Work Entry's menu surface: the shared `Menu` under the ••• button
  * or, for a right-click, at the pointer. A pointer open leaves focus on the
  * trigger, as every desktop row menu does; a keyboard open (Context Menu or
  * Shift+F10) focuses the first item so the arrow keys and Enter operate it.
@@ -412,14 +412,14 @@ function SidebarWorkEntryMenuSurface({
   return (
     <>
       {menu.open && point !== null ? (
-        <FloatingMenuPointAnchor
+        <MenuPointAnchor
           ref={pointAnchorRef}
           x={point.x}
           y={point.y}
           ownerDocument={menu.anchorRef.current?.ownerDocument ?? document}
         />
       ) : null}
-      <FloatingMenu
+      <Menu
         open={menu.open}
         onOpenChange={(open): void => {
           if (!open) menu.close();
@@ -441,7 +441,7 @@ function SidebarWorkEntryMenuSurface({
         className="sidebar-instant-interactions w-45"
         data-testid={menu.popoverTestId}
       >
-        <DropdownMenuRowStyleProvider
+        <MenuRowStyleProvider
           value={
             contextMenuPlacement === 'cursor'
               ? QUIET_MENU_ROW_STYLE
@@ -449,8 +449,8 @@ function SidebarWorkEntryMenuSurface({
           }
         >
           {children}
-        </DropdownMenuRowStyleProvider>
-      </FloatingMenu>
+        </MenuRowStyleProvider>
+      </Menu>
     </>
   );
 }
@@ -2220,14 +2220,14 @@ function SidebarCoworkWorkspaceRowImpl({
 
       {contextMenu && workspaceRootRef.current?.ownerDocument.body && (
         <>
-          <FloatingMenuPointAnchor
+          <MenuPointAnchor
             ref={contextMenuAnchorRef}
             x={contextMenu.x}
             y={contextMenu.y}
             ownerDocument={workspaceRootRef.current.ownerDocument}
             data-testid="workspace-session-context-menu-anchor"
           />
-          <FloatingMenu
+          <Menu
             open
             onOpenChange={(open): void => {
               if (!open) setContextMenu(null);
@@ -2270,7 +2270,7 @@ function SidebarCoworkWorkspaceRowImpl({
                 onSelect={(action): void => {
                   if (action.disabled || !action.onSelect) return;
                   setContextMenu(null);
-                  // Hand focus back to the row, as a FloatingMenu pick does.
+                  // Hand focus back to the row, as a Menu pick does.
                   contextMenuReturnFocusRef.current?.focus({
                     preventScroll: true,
                   });
@@ -2289,7 +2289,7 @@ function SidebarCoworkWorkspaceRowImpl({
                 }}
               />
             </ActionMenuRowStyle>
-          </FloatingMenu>
+          </Menu>
         </>
       )}
       {!hideWorkspaceHeader &&

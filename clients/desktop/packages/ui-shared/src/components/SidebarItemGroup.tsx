@@ -39,12 +39,8 @@ import {
 } from '../primitives/ActionMenuItems';
 import { ColorSwatchPicker, type ColorSwatchOption } from './ColorSwatchPicker';
 import { DisclosureChevron, DisclosureToggle } from '../primitives/Disclosure';
-import {
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-} from '../primitives/DropdownMenu';
-import { FloatingMenu } from '../primitives/FloatingMenu';
+import { MenuDivider, MenuItem, MenuLabel } from '../primitives/MenuItem';
+import { Menu } from '../primitives/Menu';
 import { TextInput } from '../primitives/Field';
 import { RailIconButton } from './RailIconButton';
 import {
@@ -386,7 +382,7 @@ export function SidebarItemGroupMenu({
   canCreate?: boolean;
 }): JSX.Element {
   return (
-    <FloatingMenu
+    <Menu
       open={open}
       onOpenChange={(next): void => {
         if (!next) onClose();
@@ -398,9 +394,9 @@ export function SidebarItemGroupMenu({
       data-testid="sidebar-item-group-menu"
     >
       {fromRail && group.labelHidden && (
-        <DropdownMenuLabel>
+        <MenuLabel>
           {group.name} · {sidebarItemGroupCountLabel(count, unitLabel)}
-        </DropdownMenuLabel>
+        </MenuLabel>
       )}
       <ActionMenuRowStyle>
         <ActionMenuItems
@@ -411,7 +407,7 @@ export function SidebarItemGroupMenu({
             canCreate,
             onEdit: (): void => {
               onEdit();
-              // Hand focus back to the header, as a FloatingMenu pick does.
+              // Hand focus back to the header, as a Menu pick does.
               returnFocusRef.current?.focus({ preventScroll: true });
             },
             onToggle: (): void => {
@@ -433,7 +429,7 @@ export function SidebarItemGroupMenu({
           }}
         />
       </ActionMenuRowStyle>
-    </FloatingMenu>
+    </Menu>
   );
 }
 
@@ -614,7 +610,7 @@ export function SidebarItemGroupEditor({
     returnFocusRef.current?.focus();
   };
   return (
-    <FloatingMenu
+    <Menu
       open
       interaction="manual"
       trapFocus
@@ -750,10 +746,10 @@ export function SidebarItemGroupEditor({
           />
         </div>
       </div>
-      <DropdownMenuDivider />
+      <MenuDivider />
       {canCreate && (
         <>
-          <DropdownMenuItem
+          <MenuItem
             asButton
             data-group-editor-action=""
             onClick={(): void => {
@@ -763,12 +759,12 @@ export function SidebarItemGroupEditor({
             }}
           >
             New {unitLabel.singular} in group
-          </DropdownMenuItem>
-          <DropdownMenuDivider />
+          </MenuItem>
+          <MenuDivider />
         </>
       )}
       {/* Buttons, not menu items: the editor is a dialog, not a menu. */}
-      <DropdownMenuItem
+      <MenuItem
         asButton
         data-group-editor-action=""
         onClick={(): void => {
@@ -778,8 +774,8 @@ export function SidebarItemGroupEditor({
         }}
       >
         Ungroup
-      </DropdownMenuItem>
-    </FloatingMenu>
+      </MenuItem>
+    </Menu>
   );
 }
 

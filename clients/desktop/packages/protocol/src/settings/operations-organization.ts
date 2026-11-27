@@ -154,6 +154,8 @@ import {
 import {
   SharedConnectionDisconnectResultSchema,
   SharedConnectionListResultSchema,
+  SharedConnectionProjectsUpdateParamsSchema,
+  SharedConnectionProjectsUpdateResultSchema,
   SharedConnectionRemoveResultSchema,
   SharedConnectionStartResultSchema,
   SharedConnectionToolsResultSchema,
@@ -1786,6 +1788,33 @@ export const ORGANIZATION_SETTINGS_OPERATIONS = {
       path: organizationConnectionsPath(
         organizationId,
         `/${settingsPathSegment(connectionId)}/disconnect`,
+      ),
+      body,
+    }),
+  }),
+  /**
+   * Sets where an organization connection is used: every project or the
+   * chosen ones, with the caller's per-project changes, in one transaction
+   * (`core.integration.sharedConnection.projects.update`).
+   */
+  'organization.settings.connections.projects': defineSettingsWrite({
+    transport: 'backend',
+    // 2048 changes of about 80 bytes each, as the web route accepts.
+    maxInputBytes: 256 * 1024,
+    input: z.strictObject({
+      ...organizationIdField,
+      ...connectionIdField,
+      everyProject: z.boolean(),
+      expectedEveryProject: z.boolean(),
+      changes: SharedConnectionProjectsUpdateParamsSchema.shape.changes,
+      ...idempotencyKeyField,
+    }),
+    result: SharedConnectionProjectsUpdateResultSchema,
+    request: ({ organizationId, connectionId, ...body }) => ({
+      method: 'POST',
+      path: organizationConnectionsPath(
+        organizationId,
+        `/${settingsPathSegment(connectionId)}/projects`,
       ),
       body,
     }),

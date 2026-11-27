@@ -1,8 +1,14 @@
+import path from 'node:path';
 import type {
   ChatTabsFile,
   RemoteControlTarget,
   WorktreeData,
 } from '@canopy/desktop-shared/types';
+import { listExecutionSummariesForArchival } from '@canopy/execution-engine/node/pipelines/executor/execution-state';
+import type {
+  ExecutionState,
+  ExecutionSummary,
+} from '@canopy/execution-engine/types/pipeline';
 import {
   listBackgroundWorkTargets,
   subscribeBackgroundWork,
@@ -16,11 +22,19 @@ import {
   listActiveHookRunTargets,
   subscribeActiveHookRunsChanged,
 } from '../lib/hook-runner';
+import { getDataDir } from '../lib/paths';
 import {
   listTrackedShellScripts,
   subscribeTrackedScriptsChanged,
 } from '../lib/script-runner';
 import { deriveWorktreeChatBadgesSummary } from '../lib/chat-badge-sync';
+import { subscribeDurablePausedPipelinesChanged } from '../pipelines/paused-pipeline-cache-signal';
+import {
+  clearBroadcastPipelineExecutionTracking,
+  listBroadcastPausedPipelineTargets,
+  subscribePipelineLifecycleTransitions,
+  type PipelineExecutionTarget,
+} from '../pipelines/pipeline-execution-event-broadcaster';
 import {
   getActivePipelineExecutionHandles,
   subscribeToActiveCountChange,
@@ -44,6 +58,16 @@ export interface WorktreeRuntimeStatus {
   scriptStatus?: 'running';
   hookStatus?: 'running';
   isRunningRun?: boolean;
+}
+
+export interface WorktreeRuntimeStatusOptions {
+  /**
+   * Include settled paused workflows (hydrated from persisted execution state
+   * and live pause broadcasts after a paused run leaves `activeExecutions`).
+   * Defaults to `true`. Auto Delete passes `false` so settled pauses do not
+   * block cleanup while still-active handles keep blocking it.
+   */
+  includeSettledPausedPipelines?: boolean;
 }
 
 interface WorktreeRuntimeStatusInput {
@@ -87,6 +111,325 @@ const persistedStatuses = new Map<string, PersistedStatus>();
 // The worktrees.json badge mirror as of the latest snapshot.
 const mirroredBadges = new Map<string, MirroredBadges>();
 
+interface DurablePausedPipelineEntry extends PipelineExecutionTarget {
+  ancestorIds: readonly string[];
+}
+
+// Durable paused workflows hydrated once at cold start and updated in memory
+// from live lifecycle broadcasts and explicit archive/restore/relocation
+// invalidations.
+const durablePausedByExecutionId = new Map<
+  string,
+  DurablePausedPipelineEntry
+>();
+const liveNonTerminalParentByExecutionId = new Map<
+  string,
+  string | undefined
+>();
+let durablePausedHydrated = false;
+let durablePausedHydration: Promise<boolean> | null = null;
+let durablePausedHydrationEpoch = 0;
+let hydratedExecutionsDir: string | null = null;
+let inFlightHydrationNonPausedIds: Set<string> | null = null;
+let inFlightHydrationTerminalIds: Set<string> | null = null;
+let inFlightHydrationLivePaused: Map<
+  string,
+  DurablePausedPipelineEntry
+> | null = null;
+
+function getExecutionsDir(): string {
+  return path.join(getDataDir(), 'pipeline-executions');
+}
+
+function isTerminalPipelineStatus(status: ExecutionSummary['status']): boolean {
+  return status === 'success' || status === 'failure' || status === 'cancelled';
+}
+
+function resolveHydratedAncestorIds(
+  summary: ExecutionSummary,
+  summaryById: ReadonlyMap<string, ExecutionSummary>,
+  terminalIds: ReadonlySet<string>,
+): string[] | null {
+  const ancestors: string[] = [];
+  const visited = new Set<string>([summary.id]);
+  let parentId = summary.parent_execution_id;
+  while (parentId !== undefined) {
+    if (visited.has(parentId) || terminalIds.has(parentId)) {
+      return null;
+    }
+    visited.add(parentId);
+    const parent = summaryById.get(parentId);
+    if (!parent || isTerminalPipelineStatus(parent.status)) {
+      return null;
+    }
+    ancestors.push(parentId);
+    parentId = parent.parent_execution_id;
+  }
+  return ancestors;
+}
+
+function resolveLivePausedAncestorIds(
+  executionId: string,
+  parentExecutionId: string | undefined,
+): string[] | null {
+  if (parentExecutionId === undefined) {
+    return [];
+  }
+  const activeById = new Map<string, ExecutionState>();
+  for (const handle of getActivePipelineExecutionHandles()) {
+    const state = handle.getState();
+    activeById.set(state.id, state);
+  }
+  const ancestors: string[] = [];
+  const visited = new Set<string>([executionId]);
+  let currentParentId: string | undefined = parentExecutionId;
+  while (currentParentId !== undefined) {
+    if (
+      visited.has(currentParentId) ||
+      inFlightHydrationTerminalIds?.has(currentParentId)
+    ) {
+      return null;
+    }
+    visited.add(currentParentId);
+    if (liveNonTerminalParentByExecutionId.has(currentParentId)) {
+      ancestors.push(currentParentId);
+      currentParentId = liveNonTerminalParentByExecutionId.get(currentParentId);
+      continue;
+    }
+    const activeParent = activeById.get(currentParentId);
+    if (activeParent && !isTerminalPipelineStatus(activeParent.status)) {
+      ancestors.push(currentParentId);
+      currentParentId = activeParent.parent_execution_id;
+      continue;
+    }
+    const durableParent = durablePausedByExecutionId.get(currentParentId);
+    if (durableParent) {
+      ancestors.push(currentParentId);
+      for (const ancestorId of durableParent.ancestorIds) {
+        if (
+          visited.has(ancestorId) ||
+          inFlightHydrationTerminalIds?.has(ancestorId)
+        ) {
+          return null;
+        }
+        visited.add(ancestorId);
+        ancestors.push(ancestorId);
+      }
+      return ancestors;
+    }
+    return null;
+  }
+  return ancestors;
+}
+
+function prunePausedMapForTerminalExecution(
+  map: Map<string, DurablePausedPipelineEntry>,
+  executionId: string,
+): void {
+  map.delete(executionId);
+  for (const [id, entry] of Array.from(map.entries())) {
+    if (entry.ancestorIds.includes(executionId)) {
+      map.delete(id);
+    }
+  }
+}
+
+function pruneLiveNonTerminalAncestry(executionId: string): void {
+  liveNonTerminalParentByExecutionId.delete(executionId);
+  const removed = new Set<string>([executionId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [id, parentId] of Array.from(
+      liveNonTerminalParentByExecutionId.entries(),
+    )) {
+      if (parentId !== undefined && removed.has(parentId)) {
+        liveNonTerminalParentByExecutionId.delete(id);
+        removed.add(id);
+        changed = true;
+      }
+    }
+  }
+}
+
+function clearDurablePausedCacheState(): void {
+  durablePausedHydrationEpoch += 1;
+  durablePausedHydration = null;
+  durablePausedHydrated = false;
+  hydratedExecutionsDir = null;
+  inFlightHydrationNonPausedIds = null;
+  inFlightHydrationTerminalIds = null;
+  inFlightHydrationLivePaused = null;
+  durablePausedByExecutionId.clear();
+}
+
+async function ensureDurablePausedPipelinesHydrated(): Promise<void> {
+  const executionsDir = getExecutionsDir();
+  if (
+    hydratedExecutionsDir !== null &&
+    hydratedExecutionsDir !== executionsDir
+  ) {
+    clearDurablePausedCacheState();
+  }
+  while (!durablePausedHydrated) {
+    if (durablePausedHydration) {
+      const failed = await durablePausedHydration;
+      if (failed && !durablePausedHydrated && durablePausedHydration === null) {
+        return;
+      }
+      continue;
+    }
+    const epoch = ++durablePausedHydrationEpoch;
+    const nonPausedDuringRead = new Set<string>();
+    const terminalDuringRead = new Set<string>();
+    const livePausedDuringRead = new Map<string, DurablePausedPipelineEntry>();
+    inFlightHydrationNonPausedIds = nonPausedDuringRead;
+    inFlightHydrationTerminalIds = terminalDuringRead;
+    inFlightHydrationLivePaused = livePausedDuringRead;
+    const run: Promise<boolean> = listExecutionSummariesForArchival(
+      executionsDir,
+    )
+      .then(({ summaries, unreadableFiles }): boolean => {
+        if (
+          epoch !== durablePausedHydrationEpoch ||
+          durablePausedHydration !== run
+        ) {
+          return false;
+        }
+        const summaryById = new Map<string, ExecutionSummary>();
+        for (const summary of summaries) {
+          summaryById.set(summary.id, summary);
+        }
+        durablePausedByExecutionId.clear();
+        for (const summary of summaries) {
+          if (
+            summary.status === 'paused' &&
+            summary.project_id &&
+            summary.worktree_id &&
+            !nonPausedDuringRead.has(summary.id)
+          ) {
+            const ancestorIds = resolveHydratedAncestorIds(
+              summary,
+              summaryById,
+              terminalDuringRead,
+            );
+            if (ancestorIds !== null) {
+              durablePausedByExecutionId.set(summary.id, {
+                projectId: summary.project_id,
+                worktreeId: summary.worktree_id,
+                ancestorIds,
+              });
+            }
+          }
+        }
+        for (const [id, entry] of livePausedDuringRead) {
+          durablePausedByExecutionId.set(id, entry);
+        }
+        hydratedExecutionsDir = executionsDir;
+        // Leave hydration retryable when any execution state file could not be
+        // read so a transiently unreadable pause appears once the file recovers.
+        if (unreadableFiles.length > 0) {
+          return true;
+        }
+        durablePausedHydrated = true;
+        return false;
+      })
+      .catch((): boolean => true)
+      .finally((): void => {
+        if (inFlightHydrationNonPausedIds === nonPausedDuringRead) {
+          inFlightHydrationNonPausedIds = null;
+        }
+        if (inFlightHydrationTerminalIds === terminalDuringRead) {
+          inFlightHydrationTerminalIds = null;
+        }
+        if (inFlightHydrationLivePaused === livePausedDuringRead) {
+          inFlightHydrationLivePaused = null;
+        }
+        if (durablePausedHydration === run) durablePausedHydration = null;
+      });
+    durablePausedHydration = run;
+    const failed = await run;
+    if (failed && !durablePausedHydrated && durablePausedHydration === null) {
+      return;
+    }
+  }
+}
+
+/**
+ * Invalidates the durable paused-workflow index after archive, restore,
+ * relocation, or deletion modifies persisted execution files outside live
+ * transitions.
+ */
+export function invalidateDurablePausedPipelinesCache(
+  executionIds?: readonly string[],
+): void {
+  if (executionIds && executionIds.length > 0) {
+    clearBroadcastPipelineExecutionTracking(executionIds);
+    for (const executionId of executionIds) {
+      pruneLiveNonTerminalAncestry(executionId);
+    }
+  }
+  clearDurablePausedCacheState();
+  requestDesktopSessionSnapshotInvalidation('pipeline.lifecycle');
+}
+
+subscribeDurablePausedPipelinesChanged(invalidateDurablePausedPipelinesCache);
+subscribePipelineLifecycleTransitions((event): void => {
+  const nextStatus = event.state.status;
+  const isTerminal =
+    event.type === 'execution.completed' ||
+    event.type === 'execution.cancelled' ||
+    event.type === 'execution.failed' ||
+    nextStatus === 'success' ||
+    nextStatus === 'failure' ||
+    nextStatus === 'cancelled';
+  if (isTerminal) {
+    pruneLiveNonTerminalAncestry(event.executionId);
+    prunePausedMapForTerminalExecution(
+      durablePausedByExecutionId,
+      event.executionId,
+    );
+    if (inFlightHydrationLivePaused) {
+      prunePausedMapForTerminalExecution(
+        inFlightHydrationLivePaused,
+        event.executionId,
+      );
+    }
+    inFlightHydrationNonPausedIds?.add(event.executionId);
+    inFlightHydrationTerminalIds?.add(event.executionId);
+    return;
+  }
+  liveNonTerminalParentByExecutionId.set(
+    event.executionId,
+    event.state.parent_execution_id,
+  );
+  if (
+    nextStatus === 'paused' &&
+    event.state.project_id &&
+    event.state.worktree_id
+  ) {
+    const ancestorIds = resolveLivePausedAncestorIds(
+      event.executionId,
+      event.state.parent_execution_id,
+    );
+    if (ancestorIds !== null) {
+      const entry: DurablePausedPipelineEntry = {
+        projectId: event.state.project_id,
+        worktreeId: event.state.worktree_id,
+        ancestorIds,
+      };
+      inFlightHydrationNonPausedIds?.delete(event.executionId);
+      inFlightHydrationLivePaused?.set(event.executionId, entry);
+      durablePausedByExecutionId.set(event.executionId, entry);
+      return;
+    }
+    liveNonTerminalParentByExecutionId.delete(event.executionId);
+  }
+  durablePausedByExecutionId.delete(event.executionId);
+  inFlightHydrationLivePaused?.delete(event.executionId);
+  inFlightHydrationNonPausedIds?.add(event.executionId);
+});
+
 function statusKey(workspaceId: string, worktreeId: string): string {
   return `${workspaceId}\0${worktreeId}`;
 }
@@ -125,7 +468,9 @@ function buildSessionStatuses(): Map<string, SessionStatus> {
   return statuses;
 }
 
-function buildExecutionStatuses(): Map<string, WorktreeRuntimeStatus> {
+function buildExecutionStatuses(
+  includeSettledPausedPipelines: boolean,
+): Map<string, WorktreeRuntimeStatus> {
   const statuses = new Map<string, WorktreeRuntimeStatus>();
   for (const handle of getActivePipelineExecutionHandles()) {
     const state = handle.getState();
@@ -143,6 +488,22 @@ function buildExecutionStatuses(): Map<string, WorktreeRuntimeStatus> {
       current?.pipelineStatus !== 'running'
     ) {
       statuses.set(key, { ...current, pipelineStatus: 'paused' });
+    }
+  }
+  if (includeSettledPausedPipelines) {
+    for (const target of durablePausedByExecutionId.values()) {
+      const key = statusKey(target.projectId, target.worktreeId);
+      const current = statuses.get(key);
+      if (current?.pipelineStatus !== 'running') {
+        statuses.set(key, { ...current, pipelineStatus: 'paused' });
+      }
+    }
+    for (const target of listBroadcastPausedPipelineTargets()) {
+      const key = statusKey(target.projectId, target.worktreeId);
+      const current = statuses.get(key);
+      if (current?.pipelineStatus !== 'running') {
+        statuses.set(key, { ...current, pipelineStatus: 'paused' });
+      }
     }
   }
   for (const target of workerTerminal.runningWorktrees()) {
@@ -266,14 +627,20 @@ export function stopWorktreeRuntimeStatusService(): void {
   mirroredBadges.clear();
 }
 
-export function getWorktreeRuntimeStatuses(
+export async function getWorktreeRuntimeStatuses(
   inputs: WorktreeRuntimeStatusInput[],
   target?: RemoteControlTarget,
+  options?: WorktreeRuntimeStatusOptions,
 ): Promise<Map<string, WorktreeRuntimeStatus>> {
   // A read answers its caller alone: the Portal snapshot, the desktop session
   // snapshot or auto-archive.
+  const includeSettledPausedPipelines =
+    options?.includeSettledPausedPipelines !== false;
+  if (includeSettledPausedPipelines) {
+    await ensureDurablePausedPipelinesHydrated();
+  }
   const sessions = buildSessionStatuses();
-  const executions = buildExecutionStatuses();
+  const executions = buildExecutionStatuses(includeSettledPausedPipelines);
   const selected = inputs.filter(
     ({ workspaceId, worktree }) =>
       (!target?.workspaceLocalId || target.workspaceLocalId === workspaceId) &&
@@ -291,7 +658,7 @@ export function getWorktreeRuntimeStatuses(
     });
     statuses.set(key, combineStatus(key, sessions, executions));
   }
-  return Promise.resolve(statuses);
+  return statuses;
 }
 
 export function handleChatTabsWritten(
@@ -311,4 +678,6 @@ export function handleChatTabsWritten(
 export function resetWorktreeRuntimeStatusServiceForTests(): void {
   stopWorktreeRuntimeStatusService();
   persistedStatuses.clear();
+  liveNonTerminalParentByExecutionId.clear();
+  clearDurablePausedCacheState();
 }

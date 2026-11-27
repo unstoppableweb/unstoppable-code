@@ -2,14 +2,14 @@ import type { JSX } from 'react';
 import { GitDraftIcon, GitForkIcon, GitHubIcon } from '../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import {
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionDescription,
-  PickerMenuOptionLabel,
-  PickerMenuOptionLeading,
-  PickerMenuOptionTrailing,
-} from '../primitives/PickerMenu';
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionDescription,
+  PickerOptionLabel,
+  PickerOptionLeading,
+  PickerOptionTrailing,
+} from '../primitives/PickerParts';
 import { Tooltip } from '../primitives/Tooltip';
 
 /** Disabled fork-PR row tooltip — worktrees need a branch in this repo. */
@@ -65,7 +65,7 @@ export function PullRequestPickerOption({
       ? DRAFT_PR_TOOLTIP
       : null;
   const option = (
-    <PickerMenuOption
+    <PickerOption
       role="option"
       id={optionId}
       aria-selected={selected}
@@ -78,29 +78,29 @@ export function PullRequestPickerOption({
       active={!disabled && active}
       selected={selected}
     >
-      <PickerMenuOptionLeading>
+      <PickerOptionLeading>
         <GitHubIcon />
-      </PickerMenuOptionLeading>
-      <PickerMenuOptionContent>
-        <PickerMenuOptionLabel>{pullRequest.title}</PickerMenuOptionLabel>
-        <PickerMenuOptionDescription>
+      </PickerOptionLeading>
+      <PickerOptionContent>
+        <PickerOptionLabel>{pullRequest.title}</PickerOptionLabel>
+        <PickerOptionDescription>
           #{pullRequest.number} ·{' '}
           {/* Session replay blocks the author's login. */}
           <span className={REPLAY_BLOCK_CLASS}>{pullRequest.authorLogin}</span>
-        </PickerMenuOptionDescription>
-      </PickerMenuOptionContent>
+        </PickerOptionDescription>
+      </PickerOptionContent>
       {selected ? (
-        <PickerMenuOptionCheck selected />
+        <PickerOptionCheck selected />
       ) : (
         marker && (
-          <PickerMenuOptionTrailing title={marker} aria-label={marker}>
+          <PickerOptionTrailing title={marker} aria-label={marker}>
             <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center [&>svg]:!h-4 [&>svg]:!w-4">
               {disabled ? <GitForkIcon /> : <GitDraftIcon />}
             </span>
-          </PickerMenuOptionTrailing>
+          </PickerOptionTrailing>
         )
       )}
-    </PickerMenuOption>
+    </PickerOption>
   );
   return (
     <div>

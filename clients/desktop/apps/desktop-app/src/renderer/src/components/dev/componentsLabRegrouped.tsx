@@ -219,7 +219,7 @@ export const REGROUPED_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     name: 'Menus',
     group: 'Unified',
     note: 'The row every right-click and … menu shares: a leading icon, groups split by a separator, submenus beside their row, and removal rows in their own group at the bottom.',
-    source: `${PRIMITIVES_SRC}/ActionMenuItems.tsx, ${PRIMITIVES_SRC}/DropdownMenu.tsx, ${SRC}/SpaceNotificationMenu.tsx`,
+    source: `${PRIMITIVES_SRC}/ActionMenuItems.tsx, ${PRIMITIVES_SRC}/MenuItem.tsx, ${SRC}/SpaceNotificationMenu.tsx`,
     prs: [],
     View: MenusSpecimen,
   },

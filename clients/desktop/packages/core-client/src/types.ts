@@ -44,6 +44,14 @@ export interface CanopyClientOptions<
    * Trusted main composition only; never from renderer, Portal or remote input.
    */
   readonly ownerProof?: (connectionId: string) => string;
+  /**
+   * The launching desktop's ordinary sessions: proves this
+   * connection comes from the desktop that holds the daemon's owner secret.
+   * Called once with the connection's server-issued id; the result is sent as
+   * `client.desktopPeerProof`. A refused proof leaves an ordinary session.
+   * Trusted main composition only; never from renderer, Portal or remote input.
+   */
+  readonly desktopPeerProof?: (connectionId: string) => string;
   /** Aborting closes the client and the connection. */
   readonly signal?: AbortSignal;
   /**

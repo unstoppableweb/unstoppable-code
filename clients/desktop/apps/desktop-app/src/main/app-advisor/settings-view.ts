@@ -228,7 +228,9 @@ export async function applyAppAdvisorSettingsPatch(
     // matching the native preferences-save broadcast.
     broadcastPreferencesSynced(saved, projectPreferencesForRuntime);
     trackDetachedWork(() =>
-      refreshCatalogAgentDefaults(preferencePatch).catch(() => undefined),
+      refreshCatalogAgentDefaults(new Set(Object.keys(preferencePatch))).catch(
+        () => undefined,
+      ),
     );
   }
   if (typeof payload.instructions === 'string') {

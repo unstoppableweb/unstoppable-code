@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useState, type JSX } from 'react';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import type {
   ChangedFileInfo,
   FileDiffImagePreview,
@@ -66,9 +67,15 @@ export const TurnDiffPopover = memo(function TurnDiffPopover({
     [file, treeRefs],
   );
 
+  const isPairedScope =
+    isPairedComputerId(projectId) || isPairedComputerId(worktreeId);
+
   // Only the turn's own trees: without them no other comparison stands in.
   useEffect(() => {
-    if (!treeRef) return;
+    if (isPairedScope || !treeRef) {
+      if (isPairedScope) setLoading(false);
+      return;
+    }
     setLoading(true);
     let cancelled = false;
 
@@ -103,7 +110,7 @@ export const TurnDiffPopover = memo(function TurnDiffPopover({
     return (): void => {
       cancelled = true;
     };
-  }, [file, projectId, worktreeId, treeRef]);
+  }, [file, isPairedScope, projectId, worktreeId, treeRef]);
 
   // Portaled to the body, out of the transcript's replay block. The header
   // (file path, counts, actions) is recorded; `DiffContentView` blocks the

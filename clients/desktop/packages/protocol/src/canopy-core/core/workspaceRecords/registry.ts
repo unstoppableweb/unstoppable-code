@@ -109,6 +109,10 @@ export const CORE_WORKSPACE_RECORDS_LIMITS = Object.freeze({
 });
 
 const REVISION = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+/** Matches core-runtime's `W5_CAPTURE_LOG_ID_PATTERN`. */
+const LOG_ID = z
+  .string()
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 const FINGERPRINT = z
   .string()
   .regex(/^[a-f0-9]{64}$/)
@@ -153,6 +157,8 @@ const CaptureResultSchema = z.strictObject({
     'invalid-index',
   ]),
   log: z.strictObject({
+    /** The log file captured; another id is another log, at any commit id. */
+    logId: LOG_ID,
     commitId: REVISION,
     retainedCommits: REVISION,
     unresolvedCommits: REVISION,

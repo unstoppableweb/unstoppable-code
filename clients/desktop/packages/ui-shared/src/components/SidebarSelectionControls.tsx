@@ -3,8 +3,8 @@
 import { useEffect, useRef, useState, type JSX } from 'react';
 import { Button } from '../primitives/Button';
 import { RailIconButton } from './RailIconButton';
-import { DropdownMenuSurface } from '../primitives/DropdownMenu';
-import { FloatingMenu } from '../primitives/FloatingMenu';
+import { MenuSurface } from '../primitives/MenuItem';
+import { Menu } from '../primitives/Menu';
 import {
   WorktreeActionMenuItems,
   type WorktreeMenuItem,
@@ -108,7 +108,7 @@ export function SidebarSelectionToolbar({
       aria-hidden={!visible}
       inert={!visible}
     >
-      <DropdownMenuSurface
+      <MenuSurface
         // A group, not a toolbar: its buttons are plain Tab stops, with no
         // arrow-key roving.
         role="group"
@@ -161,8 +161,8 @@ export function SidebarSelectionToolbar({
             onClick={onCancel}
           />
         </div>
-      </DropdownMenuSurface>
-      <FloatingMenu
+      </MenuSurface>
+      <Menu
         open={visible && moreOpen}
         onOpenChange={setMoreOpen}
         anchorRef={anchor}
@@ -177,7 +177,7 @@ export function SidebarSelectionToolbar({
             item.onSelect?.();
           }}
         />
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

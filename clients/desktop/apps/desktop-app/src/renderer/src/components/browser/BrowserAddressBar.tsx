@@ -6,11 +6,11 @@ import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import {
   Surface,
   ActionMenuRowStyle,
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuItemTrailing,
-  FloatingMenu,
+  MenuDivider,
+  MenuItem,
+  MenuItemIcon,
+  MenuItemTrailing,
+  Menu,
   HeaderActionButton,
   NestedMenuFlyout,
   TextInput,
@@ -227,7 +227,7 @@ export function BrowserAddressBar({
               />
             ) : null}
           </span>
-          <FloatingMenu
+          <Menu
             open={menuOpen}
             onOpenChange={setMenuOpen}
             anchorRef={moreRef}
@@ -248,7 +248,7 @@ export function BrowserAddressBar({
                   }}
                 />
               ) : null}
-              <DropdownMenuItem
+              <MenuItem
                 data-testid="browser-more-open-external"
                 disabled={!actions.canOpenExternally}
                 onClick={(): void => {
@@ -256,14 +256,14 @@ export function BrowserAddressBar({
                   actions.openExternally();
                 }}
               >
-                <DropdownMenuItemIcon>
+                <MenuItemIcon>
                   <ExternalIcon />
-                </DropdownMenuItemIcon>
+                </MenuItemIcon>
                 <span className="min-w-0 flex-1 truncate">
                   Open in external browser
                 </span>
-              </DropdownMenuItem>
-              <DropdownMenuDivider />
+              </MenuItem>
+              <MenuDivider />
               <NestedMenuFlyout
                 label="Appearance"
                 leading={
@@ -283,7 +283,7 @@ export function BrowserAddressBar({
                     ['dark', 'Dark'],
                   ] as const
                 ).map(([mode, label]) => (
-                  <DropdownMenuItem
+                  <MenuItem
                     key={mode}
                     role="menuitemradio"
                     aria-checked={snapshot.themeMode === mode}
@@ -295,59 +295,59 @@ export function BrowserAddressBar({
                   >
                     {/* The check leads, in the icon column, like the profile
                     submenu's rows. */}
-                    <DropdownMenuItemIcon tone="secondary">
+                    <MenuItemIcon tone="secondary">
                       {snapshot.themeMode === mode ? (
                         <CheckIcon size={16} />
                       ) : null}
-                    </DropdownMenuItemIcon>
+                    </MenuItemIcon>
                     <span className="min-w-0 flex-1 truncate">{label}</span>
-                  </DropdownMenuItem>
+                  </MenuItem>
                 ))}
               </NestedMenuFlyout>
               {fullTools ? (
                 <>
-                  <DropdownMenuDivider />
-                  <DropdownMenuItem
+                  <MenuDivider />
+                  <MenuItem
                     data-testid="browser-more-record"
                     onClick={(): void => {
                       closeMenu();
                       actions.toggleRecording();
                     }}
                   >
-                    <DropdownMenuItemIcon
+                    <MenuItemIcon
                       tone={snapshot.recording ? 'destructive' : undefined}
                     >
                       <RecordIcon />
-                    </DropdownMenuItemIcon>
+                    </MenuItemIcon>
                     <span className="min-w-0 flex-1 truncate">
                       {snapshot.recording ? 'Stop recording' : 'Record actions'}
                     </span>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
+                  </MenuItem>
+                  <MenuItem
                     data-testid="browser-more-screenshot"
                     onClick={(): void => {
                       closeMenu();
                       actions.screenshot();
                     }}
                   >
-                    <DropdownMenuItemIcon>
+                    <MenuItemIcon>
                       <CameraIcon />
-                    </DropdownMenuItemIcon>
+                    </MenuItemIcon>
                     <span className="min-w-0 flex-1 truncate">
                       Take screenshot
                     </span>
-                  </DropdownMenuItem>
-                  <DropdownMenuDivider />
-                  <DropdownMenuItem
+                  </MenuItem>
+                  <MenuDivider />
+                  <MenuItem
                     data-testid="browser-more-details"
                     onClick={(): void => {
                       closeMenu();
                       onToggleInspector();
                     }}
                   >
-                    <DropdownMenuItemIcon>
+                    <MenuItemIcon>
                       <CodeBracketsIcon />
-                    </DropdownMenuItemIcon>
+                    </MenuItemIcon>
                     <span className="min-w-0 flex-1 truncate">
                       {inspectorOpen
                         ? 'Hide console and network'
@@ -355,17 +355,17 @@ export function BrowserAddressBar({
                     </span>
                     {errorCount > 0 ? (
                       <div className="pl-3 empty:hidden">
-                        <DropdownMenuItemTrailing tone="destructive">
+                        <MenuItemTrailing tone="destructive">
                           {errorCount > 99 ? '99+' : errorCount}{' '}
                           {errorCount === 1 ? 'error' : 'errors'}
-                        </DropdownMenuItemTrailing>
+                        </MenuItemTrailing>
                       </div>
                     ) : null}
-                  </DropdownMenuItem>
+                  </MenuItem>
                 </>
               ) : null}
             </ActionMenuRowStyle>
-          </FloatingMenu>
+          </Menu>
           {fullTools ? (
             <BrowserProfilePicker
               snapshot={snapshot}

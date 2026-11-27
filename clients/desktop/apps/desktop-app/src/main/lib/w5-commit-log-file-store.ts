@@ -9,12 +9,21 @@ import {
   runW5FallbackRead,
 } from './w5-fallback-read';
 import { isUtf8 } from 'node:buffer';
+import { basename, dirname } from 'node:path';
+import { w5RecordReadPaths } from './paths';
+import {
+  ownsW5RepositoryLock,
+  w5WritersInFlight,
+  type W5RepositoryLock,
+  type W5WriterInFlight,
+} from './w5-repository-locks';
 import type {
   W5CommitRequest,
   W5Resource,
 } from '@canopy/desktop-shared/node/w5-commit-log';
 import {
   createW5CommitLogFileStore as createCoreW5CommitLogFileStore,
+  w5ChangedDecisionCount,
   W5FileWriteRefusedError,
   W5RevisionConflictError,
   type W5CommitLogFileStore,
@@ -35,6 +44,7 @@ import { readWorkspaceIndex } from '@canopy/core-runtime/node';
 import { W5_AGGREGATE_KEYS, w5RecordFileClass } from './w5-work-counters';
 import {
   isW5CaptureWorkspaceId,
+  type W5CaptureFile,
   type W5CaptureRequest,
   type W5CaptureResult,
 } from '../w5-commit-log/commit-log-worker-contract';
@@ -245,6 +255,97 @@ function runLive<T>(
   return runUncaptured(reason, work);
 }
 
+/** The workspace whose worktree list, under today's data root, a lock guards. */
+function listLockWorkspaceId(lock: W5RepositoryLock): string | undefined {
+  if (lock.kind !== 'list') return undefined;
+  const workspaceId = basename(dirname(lock.path));
+  return lock.path === w5RecordReadPaths.worktrees(workspaceId)
+    ? workspaceId
+    : undefined;
+}
+
+function worktreeListIds(files: readonly W5CaptureFile[]): Set<string> {
+  return new Set(
+    files.flatMap((file) =>
+      file.kind === 'worktrees' ? [file.workspaceId] : [],
+    ),
+  );
+}
+
+/**
+ * CAN-7249: a capture taken while an in-process writer holds a list the
+ * query reads would serve the rows from before that writer's commit; the
+ * query only waits for the writer later, at its own list lock. So a request
+ * waits for writers on the lists it names, then captures. Discovery names
+ * its lists only by capturing: it then waits for the writers that were
+ * already in flight on lists it captured, and captures once more only if one
+ * of them changed a file. Other processes' writers never hold these locks;
+ * W5e covers them. A writer that awaits, outside its async context, a read
+ * naming a list it holds deadlocks here, even where the query would never
+ * lock that list (an unindexed workspace's scoped read).
+ */
+async function captureAfterListWriters<T>(
+  request: W5CaptureRequest,
+  capture: () => Promise<T>,
+  captured: (result: T) => W5CaptureResult | undefined,
+): Promise<T> {
+  // A lock holder's own reads, and work it spawns, must not wait on it.
+  if (ownsW5RepositoryLock()) return capture();
+  let waited = false;
+  let waitedFor = 0;
+  const waitFor = async (
+    writers: readonly W5WriterInFlight[],
+  ): Promise<void> => {
+    if (!waited) recordW5Work('readView.waited.writer');
+    waited = true;
+    const startedAt = performance.now();
+    await Promise.all(writers.map((writer) => writer.released));
+    waitedFor += performance.now() - startedAt;
+  };
+  const listWriters = (
+    matches: (workspaceId: string) => boolean,
+  ): { writer: W5WriterInFlight; workspaceId: string }[] =>
+    w5WritersInFlight((lock) => {
+      const workspaceId = listLockWorkspaceId(lock);
+      return workspaceId !== undefined && matches(workspaceId);
+    }).flatMap((writer) => {
+      const workspaceId = listLockWorkspaceId(writer.lock);
+      return workspaceId === undefined ? [] : [{ writer, workspaceId }];
+    });
+  try {
+    const named = worktreeListIds(request.files);
+    const scoped = listWriters((workspaceId) => named.has(workspaceId));
+    if (scoped.length) await waitFor(scoped.map(({ writer }) => writer));
+    if (!request.discoverWorkspaces) return await capture();
+    const pending = listWriters((workspaceId) => !named.has(workspaceId)).map(
+      (entry) => ({
+        ...entry,
+        changed: w5ChangedDecisionCount(entry.writer.lock.path),
+      }),
+    );
+    const first = await capture();
+    if (!pending.length) return first;
+    const capturedIds = worktreeListIds(captured(first)?.files ?? []);
+    const racing = pending.filter(({ workspaceId }) =>
+      capturedIds.has(workspaceId),
+    );
+    if (!racing.length) return first;
+    await waitFor(racing.map(({ writer }) => writer));
+    if (
+      racing.every(
+        ({ writer, changed }) =>
+          w5ChangedDecisionCount(writer.lock.path) === changed,
+      )
+    )
+      return first;
+    recordW5Work('readView.recaptured.writer');
+    return await capture();
+  } finally {
+    if (waited)
+      recordW5Work('readView.waited.writer.us', Math.round(waitedFor * 1000));
+  }
+}
+
 /**
  * Runs one query's W5 reads over one worker capture of `request`. Writes
  * are refused. Where capture is unsupported, over its limits, or cannot name
@@ -275,7 +376,12 @@ export async function runW5ReadView<T>(
     return runLive('unsupported-id', work);
   let captured: { capture: W5CaptureResult; root: string };
   try {
-    captured = await store.capture(request);
+    const capture = store.capture.bind(store);
+    captured = await captureAfterListWriters(
+      request,
+      () => capture(request),
+      (result) => result.capture,
+    );
   } catch (error) {
     if (error instanceof W5AuthorityUnreachableError) {
       if (allowsW5ProjectionOnlyRead()) return runW5FallbackRead(work);
@@ -386,7 +492,13 @@ export async function prepareW5ReadBinding(
   )
     return { status: 'fallback', reason: 'unsupported-id' };
   try {
-    const result = await store.captureForPreparation(request);
+    const captureForPreparation = store.captureForPreparation.bind(store);
+    const result = await captureAfterListWriters(
+      request,
+      () => captureForPreparation(request),
+      (prepared) =>
+        prepared.status === 'captured' ? prepared.capture : undefined,
+    );
     if (result.status === 'unsupported')
       return { status: 'fallback', reason: 'preparation-unsupported' };
     const skipped = discoverySkippedReads(result.capture);

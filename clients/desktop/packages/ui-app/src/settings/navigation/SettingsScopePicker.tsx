@@ -3,12 +3,12 @@
 import { ControlButton } from '@canopy/ui-shared/components';
 import { useId, useMemo, useRef, useState, type JSX } from 'react';
 import {
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuItemTrailing,
-  DropdownMenuLabel,
-  FloatingMenu,
+  MenuDivider,
+  MenuItem,
+  MenuItemIcon,
+  MenuItemTrailing,
+  MenuLabel,
+  Menu,
 } from '@canopy/ui-shared/components';
 import {
   BuildingIcon,
@@ -142,7 +142,7 @@ export function SettingsScopePicker({
             className="shrink-0 fg-tertiary"
           />
         </ControlButton>
-        <FloatingMenu
+        <Menu
           id={menuId}
           open={open}
           onOpenChange={setOpen}
@@ -154,34 +154,34 @@ export function SettingsScopePicker({
           // The menu spans the trigger, as wide as the rail's rows.
           className="w-[var(--floating-menu-anchor-width)] min-w-60 pointer-coarse:[&_.canopy-dropdown-menu-item]:min-h-11"
         >
-          <DropdownMenuItem
+          <MenuItem
             role="menuitemradio"
             aria-checked={scope.kind === 'account' && !onListPage}
             data-testid={`${testIdPrefix}scope-option-account`}
             onClick={() => go(accountScopeHref(currentPath, model.account))}
           >
-            <DropdownMenuItemIcon>
+            <MenuItemIcon>
               <MemberAvatar
                 name={viewerName}
                 image={model.viewer?.image ?? null}
                 size="xs"
               />
-            </DropdownMenuItemIcon>
+            </MenuItemIcon>
             <span className="min-w-0 flex-1 truncate">Personal account</span>
             {scope.kind === 'account' && !onListPage ? (
               <CheckIcon size={16} aria-hidden="true" className="shrink-0" />
             ) : null}
-          </DropdownMenuItem>
+          </MenuItem>
           {organizations.length > 0 ? (
             <>
-              <DropdownMenuDivider />
-              <DropdownMenuLabel>Organizations</DropdownMenuLabel>
+              <MenuDivider />
+              <MenuLabel>Organizations</MenuLabel>
               {organizations.map((organization) => {
                 const selected =
                   scope.kind === 'organization' &&
                   scope.organizationId === organization.id;
                 return (
-                  <DropdownMenuItem
+                  <MenuItem
                     key={organization.id}
                     role="menuitemradio"
                     aria-checked={selected}
@@ -195,7 +195,7 @@ export function SettingsScopePicker({
                       go(organizationScopeHref(currentPath, organization));
                     }}
                   >
-                    <DropdownMenuItemIcon>
+                    <MenuItemIcon>
                       {organization.logoUrl ? (
                         <OrganizationLogo
                           name={organization.name}
@@ -205,15 +205,15 @@ export function SettingsScopePicker({
                       ) : (
                         <BuildingIcon size="xl" />
                       )}
-                    </DropdownMenuItemIcon>
+                    </MenuItemIcon>
                     <span
                       className={`min-w-0 flex-1 truncate ${maskClassName}`}
                     >
                       {organization.name}
                     </span>
-                    <DropdownMenuItemTrailing>
+                    <MenuItemTrailing>
                       {ROLE_LABEL[organization.role]}
-                    </DropdownMenuItemTrailing>
+                    </MenuItemTrailing>
                     {selected ? (
                       <CheckIcon
                         size={16}
@@ -221,36 +221,36 @@ export function SettingsScopePicker({
                         className="shrink-0"
                       />
                     ) : null}
-                  </DropdownMenuItem>
+                  </MenuItem>
                 );
               })}
             </>
           ) : null}
-          <DropdownMenuDivider />
-          <DropdownMenuItem
+          <MenuDivider />
+          <MenuItem
             role="menuitemradio"
             aria-checked={onListPage}
             data-testid={`${testIdPrefix}scope-all-organizations`}
             onClick={() => go(ORGANIZATIONS_PATH)}
           >
-            <DropdownMenuItemIcon>
+            <MenuItemIcon>
               <BuildingIcon size="xl" />
-            </DropdownMenuItemIcon>
+            </MenuItemIcon>
             <span className="min-w-0 flex-1 truncate">All organizations</span>
             {onListPage ? (
               <CheckIcon size={16} aria-hidden="true" className="shrink-0" />
             ) : null}
-          </DropdownMenuItem>
-          <DropdownMenuItem
+          </MenuItem>
+          <MenuItem
             data-testid={`${testIdPrefix}scope-create-organization`}
             onClick={() => go(CREATE_ORGANIZATION_PATH)}
           >
-            <DropdownMenuItemIcon>
+            <MenuItemIcon>
               <Plus size="xl" />
-            </DropdownMenuItemIcon>
+            </MenuItemIcon>
             Create an organization
-          </DropdownMenuItem>
-        </FloatingMenu>
+          </MenuItem>
+        </Menu>
       </div>
     </div>
   );

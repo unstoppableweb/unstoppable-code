@@ -1,4 +1,5 @@
 import { useCustomizeDiscoveryEnabled } from './CustomizeDiscoveryProvider';
+import type { CustomizeContentsRead } from './CustomizeManifestPreview';
 import {
   type ComponentType,
   type JSX,
@@ -31,8 +32,8 @@ import {
   focusPluginContentsOpener,
   type PluginContentsRow,
   type PluginDetailReadComponent,
-  DropdownMenuItem,
-  FloatingMenu,
+  MenuItem,
+  Menu,
   type CustomizeRowMenuItem,
   DetailFact,
   DetailEntityType,
@@ -157,6 +158,13 @@ export interface PluginCatalogDetailProps {
    * it) says; without it those rows are plain text.
    */
   readComponent?: PluginDetailReadComponent;
+  /**
+   * New Customize: where the light preview read stands. While it is out the
+   * Contents table loads, a failed read offers Try again, and an answered
+   * read with nothing in it says so; none of them claims the contents come
+   * only with Add.
+   */
+  contentsRead?: CustomizeContentsRead;
   /**
    * Which copy of the plugin `readComponent` and the rows read: its
    * marketplace, name and source. A member opened from one source closes
@@ -284,7 +292,7 @@ function PluginCatalogAddChoices({
         dataTestId="plugin-catalog-detail-add"
         stopKeyDownPropagation={false}
       />
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={setOpen}
         anchorRef={anchorRef}
@@ -294,7 +302,7 @@ function PluginCatalogAddChoices({
         className="min-w-40"
       >
         {choices.map((choice) => (
-          <DropdownMenuItem
+          <MenuItem
             key={choice.id}
             disabled={choice.disabled}
             onClick={() => {
@@ -303,18 +311,24 @@ function PluginCatalogAddChoices({
             }}
           >
             {choice.label}
-          </DropdownMenuItem>
+          </MenuItem>
         ))}
-      </FloatingMenu>
+      </Menu>
     </span>
   );
 }
 
 /**
  * What the named rows leave out: the kinds the listing counts that no copy
- * names, which arrive with the plugin when it is added.
+ * names, which arrive with the plugin when it is added. While the read is out
+ * it may still name them; after a failed or partial read, Try again may too,
+ * so only the count is reported.
  */
-function unnamedNote(entry: PluginCatalogDetailModel): string | null {
+function unnamedNote(
+  entry: PluginCatalogDetailModel,
+  read: CustomizeContentsRead['state'] | undefined,
+): string | null {
+  if (read === 'checking') return null;
   const named = (type: string): number =>
     (entry.items ?? []).filter((item) => item.type === type).length;
   const counted = (count: number, noun: string): string | null =>
@@ -326,9 +340,10 @@ function unnamedNote(entry: PluginCatalogDetailModel): string | null {
     counted(entry.components.commands - named('Command'), 'command'),
     counted(entry.components.agents - named('Agent'), 'agent'),
   ].filter((part): part is string => part !== null);
-  return left.length > 0
-    ? `Also ${left.join(', ')}, named once it's added.`
-    : null;
+  if (left.length === 0) return null;
+  return read === 'partial' || read === 'unavailable'
+    ? `The listing also counts ${left.join(', ')}.`
+    : `Also ${left.join(', ')}, named once it's added.`;
 }
 
 /** The kinds a listing counts, in the Contents table's order. */
@@ -342,6 +357,46 @@ const CONTENT_KINDS: readonly {
   { key: 'mcpServers', label: 'MCP servers' },
 ];
 
+/** Said when the listing is all that is known and it counts nothing. */
+const LISTING_NAMES_NO_CONTENTS =
+  "This plugin's listing doesn't name its contents.";
+
+/** The listing's count of each kind it names, one row per counted kind. */
+function ContentCountsTable({
+  components,
+  loading = false,
+  emptyLabel,
+}: {
+  components: PluginCatalogDetailModel['components'];
+  loading?: boolean;
+  emptyLabel?: string;
+}): JSX.Element {
+  return (
+    <DataTable
+      caption="Contents"
+      testId="plugin-catalog-detail-contents"
+      rows={CONTENT_KINDS.filter(({ key }) => components[key] > 0)}
+      rowKey={({ key }) => key}
+      loading={loading}
+      loadingRows={2}
+      emptyLabel={emptyLabel}
+      columns={[
+        {
+          key: 'kind',
+          header: 'Kind',
+          render: ({ label }): string => label,
+        },
+        {
+          key: 'count',
+          header: 'Count',
+          align: 'right',
+          render: ({ key }): number => components[key],
+        },
+      ]}
+    />
+  );
+}
+
 /** Pure marketplace plugin summary body; its actions are host chrome. */
 export function PluginCatalogDetail({
   entry,
@@ -354,6 +409,7 @@ export function PluginCatalogDetail({
   worksWith,
   readComponent,
   sourceKey = '',
+  contentsRead,
 }: PluginCatalogDetailProps): JSX.Element {
   // Customize's light logo plate, only while New Customize is on.
   const logoPlate = useCustomizeDiscoveryEnabled();
@@ -442,43 +498,78 @@ export function PluginCatalogDetail({
         : row;
     });
     const hasContents = componentCount > 0 || (entry.items?.length ?? 0) > 0;
+    const contentsEmptyLabel =
+      contentsRead === undefined
+        ? includedNote
+        : contentsRead.state === 'read'
+          ? "This plugin doesn't list any contents."
+          : contentsRead.state === 'listing'
+            ? LISTING_NAMES_NO_CONTENTS
+            : undefined;
+    // A failed or partial read says so, with Try again, under whatever the
+    // listing and the read named; with nothing counted there is no table.
+    const contentsUnavailable = contentsRead?.state === 'unavailable';
+    const contentsIncomplete =
+      contentsUnavailable || contentsRead?.state === 'partial';
+    const named = (rows?.length ?? 0) > 0;
+    const incompleteNote = !contentsIncomplete
+      ? null
+      : !contentsUnavailable
+        ? "Only part of this plugin's contents could be read."
+        : named
+          ? "Couldn't load this plugin's contents. Its listing's items are shown."
+          : hasContents
+            ? "Couldn't load this plugin's contents. Its listing's counts are shown."
+            : "Couldn't load this plugin's contents.";
+    const unnamed = unnamedNote(entry, contentsRead?.state);
+    const checkingNote = contentsRead?.state === 'checking' && (
+      <p
+        role="status"
+        className="text-xs fg-tertiary"
+        data-testid="plugin-catalog-detail-contents-checking"
+      >
+        Checking this plugin&apos;s contents…
+      </p>
+    );
     const contentsInner = (
       <>
-        {rows && rows.length > 0 ? (
+        {rows && named ? (
           <>
             <PluginContentsTable rows={rows} />
-            {unnamedNote(entry) && (
-              <p className="text-xs fg-tertiary">{unnamedNote(entry)}</p>
-            )}
+            {unnamed && <p className="text-xs fg-tertiary">{unnamed}</p>}
           </>
         ) : (
-          <>
-            {/* The listing counts each kind; names and files arrive
-                with the plugin when it is added. The table shows the counts,
-                so the count-only footnote is left out here. */}
-            <DataTable
-              caption="Contents"
-              testId="plugin-catalog-detail-contents"
-              rows={CONTENT_KINDS.filter(
-                ({ key }) => entry.components[key] > 0,
-              )}
-              rowKey={({ key }) => key}
-              emptyLabel={includedNote}
-              columns={[
-                {
-                  key: 'kind',
-                  header: 'Kind',
-                  render: ({ label }): string => label,
-                },
-                {
-                  key: 'count',
-                  header: 'Count',
-                  align: 'right',
-                  render: ({ key }): number => entry.components[key],
-                },
-              ]}
+          /* Nothing named yet: the listing's counts, while the preview
+             reads, after it failed or when it named nothing. The table
+             shows the counts, so the count-only footnote is left out. */
+          !(contentsIncomplete && !hasContents) && (
+            <ContentCountsTable
+              components={entry.components}
+              loading={contentsRead?.state === 'checking' && !hasContents}
+              emptyLabel={contentsEmptyLabel}
             />
-          </>
+          )
+        )}
+        {/* With rows or counts already shown, the table has no skeleton, so
+            a read (the first or Try again) says it is running beside them. */}
+        {hasContents && checkingNote}
+        {incompleteNote && (
+          <div
+            className="flex flex-wrap items-center gap-2"
+            data-testid="plugin-catalog-detail-contents-unavailable"
+          >
+            <p className="text-xs fg-secondary">{incompleteNote}</p>
+            {contentsRead?.retry && (
+              <Button
+                variant="secondary"
+                size="compact"
+                onClick={contentsRead.retry}
+                data-testid="plugin-catalog-detail-contents-retry"
+              >
+                Try again
+              </Button>
+            )}
+          </div>
         )}
       </>
     );
@@ -553,8 +644,18 @@ export function PluginCatalogDetail({
           }}
           worksWith={worksWith}
           contents={
-            readme && !hasContents ? (
-              <PluginPreloadedReadme {...readme} bare={false} />
+            // A read that left contents unknown keeps its note and retry
+            // beside the README instead of showing the README alone; a read
+            // still running says so above it.
+            readme && !hasContents && !incompleteNote ? (
+              checkingNote ? (
+                <div className="flex min-w-0 flex-col gap-2">
+                  {checkingNote}
+                  <PluginPreloadedReadme {...readme} bare={false} />
+                </div>
+              ) : (
+                <PluginPreloadedReadme {...readme} bare={false} />
+              )
             ) : readme ? (
               <PluginDetailTabs
                 contents={contentsInner}
@@ -632,7 +733,17 @@ export function PluginCatalogDetail({
           <Heading level={4} variant="title">
             Included
           </Heading>
-          <p className="text-xs fg-secondary">{includedNote}</p>
+          {logoPlate ? (
+            // New Customize, where this page has no preview read (the web's
+            // curated summary): the kinds its listing counts, and no claim
+            // that contents come only with Add when it counts none.
+            <ContentCountsTable
+              components={entry.components}
+              emptyLabel={LISTING_NAMES_NO_CONTENTS}
+            />
+          ) : (
+            <p className="text-xs fg-secondary">{includedNote}</p>
+          )}
         </div>
       </div>
     </div>

@@ -20,10 +20,10 @@ import type { RemoteControlStandaloneWorkEntryFields } from '@canopy/protocol';
 import {
   Dot,
   ErrorBanner,
-  DropdownMenuDivider,
+  MenuDivider,
   RailSectionHeader,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
+  MenuItem,
+  MenuItemIcon,
   SidebarMoreRow,
   SidebarToggleRow,
   StandaloneChatRow,
@@ -861,20 +861,20 @@ export function StandaloneChatsSidebarSection({
                   <>
                     {renderHeaderMenuItems?.()}
                     {renderHeaderMenuItems && onEnterSelection && (
-                      <DropdownMenuDivider />
+                      <MenuDivider />
                     )}
                     {onEnterSelection && (
-                      <DropdownMenuItem
+                      <MenuItem
                         onClick={() => {
                           close();
                           onEnterSelection();
                         }}
                       >
-                        <DropdownMenuItemIcon>
+                        <MenuItemIcon>
                           <ListChecks />
-                        </DropdownMenuItemIcon>
+                        </MenuItemIcon>
                         Select
-                      </DropdownMenuItem>
+                      </MenuItem>
                     )}
                   </>
                 )
@@ -1467,7 +1467,7 @@ function ChatsSectionWorkEntryRow({
                     <>
                       {(rowMenu.length > 0 ||
                         showsNotifications ||
-                        selectionItems.length > 0) && <DropdownMenuDivider />}
+                        selectionItems.length > 0) && <MenuDivider />}
                       <WorkEntryRowMenuItems
                         menu={menuContext}
                         archiveTitle="Archive this entry and all of its chats"

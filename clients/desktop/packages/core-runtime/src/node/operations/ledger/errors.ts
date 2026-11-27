@@ -2,7 +2,8 @@ export type OperationLedgerErrorCode =
   | 'STORAGE_UNAVAILABLE'
   | 'WRITER_UNAVAILABLE'
   | 'UNSUPPORTED_SCHEMA'
-  | 'BACKUP_UNVERIFIED';
+  | 'BACKUP_UNVERIFIED'
+  | 'NEWER_STATE';
 
 /** The ledger itself could not be used; nothing was recorded. */
 export class OperationLedgerError extends Error {
@@ -14,6 +15,18 @@ export class OperationLedgerError extends Error {
   ) {
     super(message);
     this.name = 'OperationLedgerError';
+  }
+}
+
+export class OperationLedgerOutcomeUnknownError extends Error {
+  constructor(
+    readonly operation: string,
+    readonly underlying?: unknown,
+  ) {
+    super(
+      'The operation ledger did not answer, so the write may have been recorded.',
+    );
+    this.name = 'OperationLedgerOutcomeUnknownError';
   }
 }
 

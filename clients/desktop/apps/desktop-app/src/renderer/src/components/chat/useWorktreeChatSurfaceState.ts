@@ -25,6 +25,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import {
   type AppAdvisorJson,
   type ChatAttachmentPromptContext,
@@ -390,6 +391,8 @@ export function useWorktreeChatTabSurfaceState(
   // Sanitized App Advisor snapshot flags (counts/booleans/ids only — never
   // prompt text or transcripts).
   const usageLimitBannerVisible =
+    (resolvedWorktree === null ||
+      !isPairedComputerId(resolvedWorktree.projectId)) &&
     composerTab?.llmProviderUsageLimitBanner !== undefined &&
     composerTab.dismissedLlmProviderUsageLimitBannerKey !==
       composerTab.llmProviderUsageLimitBanner.dismissKey;

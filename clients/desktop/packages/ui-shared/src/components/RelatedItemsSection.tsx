@@ -84,103 +84,108 @@ export function RelatedItemsSection({
         // `list` rows are the Customize list's row cards (CAN-4261): an
         // avatar, the name with its tinted type, the inset rounded hover,
         // in the same two-column grid as Installed and Browse.
-        <div
-          data-testid={`${testId}-rows`}
-          className={list ? CUSTOMIZE_ROW_GRID_CLASS : 'flex flex-col gap-2'}
-        >
-          {items.map((item) => (
-            <ControlButton
-              key={item.key}
-              type="button"
-              onClick={item.onOpen}
-              data-testid={`${testId}-item-${item.key}`}
-              // `hover:bg-subtle` is the app's row hover (DropdownMenuItem,
-              // the sidebar rows, SidebarPageNav), and it lives here rather
-              // than at a call site: hosts render this primitive as-is, and a
-              // restyling class on a shared component is a design-lint error.
-              presentation="customize-related-item"
-              appearance={{ list }}
-            >
-              {list && item.icon === undefined && item.logo !== undefined && (
-                <span
-                  data-testid={`${testId}-item-${item.key}-avatar`}
-                  className={`flex shrink-0${item.privateTitle ? ` ${REPLAY_MASK_CLASS}` : ''}`}
-                >
-                  {item.logo}
-                </span>
-              )}
-              {list && item.icon === undefined && item.logo === undefined && (
-                <span
-                  data-testid={`${testId}-item-${item.key}-avatar`}
-                  className={`flex shrink-0${item.privateTitle ? ` ${REPLAY_MASK_CLASS}` : ''}`}
-                >
-                  <McpServerLogo
-                    size={28}
-                    fallback="monogram"
-                    name={item.title}
-                    shape="circle"
-                    fit="contain"
-                  />
-                </span>
-              )}
-              {item.icon !== undefined && (
-                <div className="shrink-0 w-8 h-8 rounded-lg bg-accent-subtle flex items-center justify-center text-m">
-                  {item.icon || '⚡'}
-                </div>
-              )}
-              <div className="min-w-0 flex-1">
-                <div
-                  className={`flex items-center ${list ? 'gap-1.5' : 'gap-2'}`}
-                >
+        <div className="@container">
+          <div
+            data-testid={`${testId}-rows`}
+            className={list ? CUSTOMIZE_ROW_GRID_CLASS : 'flex flex-col gap-2'}
+          >
+            {items.map((item) => (
+              <ControlButton
+                key={item.key}
+                type="button"
+                onClick={item.onOpen}
+                data-testid={`${testId}-item-${item.key}`}
+                // `hover:bg-subtle` is the app's row hover (MenuItem,
+                // the sidebar rows, SidebarPageNav), and it lives here rather
+                // than at a call site: hosts render this primitive as-is, and a
+                // restyling class on a shared component is a design-lint error.
+                presentation="customize-related-item"
+                appearance={{ list }}
+              >
+                {list && item.icon === undefined && item.logo !== undefined && (
                   <span
-                    className={`min-w-0 truncate text-s font-medium fg-primary${item.privateTitle ? ` ${REPLAY_MASK_CLASS}` : ''}`}
+                    data-testid={`${testId}-item-${item.key}-avatar`}
+                    className={`flex shrink-0${item.privateTitle ? ` ${REPLAY_MASK_CLASS}` : ''}`}
                   >
-                    {item.title}
+                    {item.logo}
                   </span>
-                  {item.badge && item.kind && (
-                    <MarketplaceTypeLabel kind={item.kind} label={item.badge} />
+                )}
+                {list && item.icon === undefined && item.logo === undefined && (
+                  <span
+                    data-testid={`${testId}-item-${item.key}-avatar`}
+                    className={`flex shrink-0${item.privateTitle ? ` ${REPLAY_MASK_CLASS}` : ''}`}
+                  >
+                    <McpServerLogo
+                      size={28}
+                      fallback="monogram"
+                      name={item.title}
+                      shape="circle"
+                      fit="contain"
+                    />
+                  </span>
+                )}
+                {item.icon !== undefined && (
+                  <div className="shrink-0 w-8 h-8 rounded-lg bg-accent-subtle flex items-center justify-center text-m">
+                    {item.icon || '⚡'}
+                  </div>
+                )}
+                <div className="min-w-0 flex-1">
+                  <div
+                    className={`flex items-center ${list ? 'gap-1.5' : 'gap-2'}`}
+                  >
+                    <span
+                      className={`min-w-0 truncate text-s font-medium fg-primary${item.privateTitle ? ` ${REPLAY_MASK_CLASS}` : ''}`}
+                    >
+                      {item.title}
+                    </span>
+                    {item.badge && item.kind && (
+                      <MarketplaceTypeLabel
+                        kind={item.kind}
+                        label={item.badge}
+                      />
+                    )}
+                    {item.badge &&
+                      !item.kind &&
+                      (list ? (
+                        <span className="shrink-0 text-xs fg-secondary">
+                          {item.badge}
+                        </span>
+                      ) : (
+                        <Badge>{item.badge}</Badge>
+                      ))}
+                    {item.sourceLabel && (
+                      <PipelineSourceLabel>
+                        {item.sourceLabel}
+                      </PipelineSourceLabel>
+                    )}
+                  </div>
+                  {(item.subtitle ||
+                    (list && item.reasonInline && item.reason)) && (
+                    <p
+                      className={`mt-0.5 truncate text-xs ${list ? 'fg-tertiary' : 'fg-secondary'}`}
+                    >
+                      {item.subtitle && (
+                        <span className={item.subtitleReplayClass}>
+                          {item.subtitle}
+                        </span>
+                      )}
+                      {list && item.reasonInline && item.reason && (
+                        <>
+                          {item.subtitle && ' · '}
+                          {item.reason}
+                        </>
+                      )}
+                    </p>
                   )}
-                  {item.badge &&
-                    !item.kind &&
-                    (list ? (
-                      <span className="shrink-0 text-xs fg-secondary">
-                        {item.badge}
-                      </span>
-                    ) : (
-                      <Badge>{item.badge}</Badge>
-                    ))}
-                  {item.sourceLabel && (
-                    <PipelineSourceLabel>
-                      {item.sourceLabel}
-                    </PipelineSourceLabel>
+                  {item.reason && !list && (
+                    <p className="text-xs fg-secondary mt-0.5 truncate">
+                      {item.reason}
+                    </p>
                   )}
                 </div>
-                {(item.subtitle ||
-                  (list && item.reasonInline && item.reason)) && (
-                  <p
-                    className={`mt-0.5 truncate text-xs ${list ? 'fg-tertiary' : 'fg-secondary'}`}
-                  >
-                    {item.subtitle && (
-                      <span className={item.subtitleReplayClass}>
-                        {item.subtitle}
-                      </span>
-                    )}
-                    {list && item.reasonInline && item.reason && (
-                      <>
-                        {item.subtitle && ' · '}
-                        {item.reason}
-                      </>
-                    )}
-                  </p>
-                )}
-                {item.reason && !list && (
-                  <p className="text-xs fg-secondary mt-0.5 truncate">
-                    {item.reason}
-                  </p>
-                )}
-              </div>
-            </ControlButton>
-          ))}
+              </ControlButton>
+            ))}
+          </div>
         </div>
       )}
       {footer}

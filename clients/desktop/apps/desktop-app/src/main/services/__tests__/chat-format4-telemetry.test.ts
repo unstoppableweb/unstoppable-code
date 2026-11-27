@@ -766,3 +766,38 @@ describe('format 4 sweep telemetry from a real failing load (SWAN, 17 Nov)', () 
       expect(sent).not.toContain(secret);
   });
 });
+
+describe('the quarantine of a legacy file no reader can recover (CAN-7851)', () => {
+  it('is reported with fixed codes only: its own event, and the unrecoverable reason', () => {
+    expect(CHAT_FORMAT4_EVENTS).toContain('sweep_scope_quarantined');
+    expect(CHAT_FORMAT4_REASONS).toContain('unrecoverable');
+    expect(
+      chatFormat4Labels({
+        event: 'sweep_scope_quarantined',
+      } as unknown as ChatFormat4Outcome),
+    ).toMatchObject({
+      format4_event: 'sweep_scope_quarantined',
+      format4_reason: 'unrecoverable',
+      format4_attempt: 0,
+      format4_duration_bucket: 'none',
+      format4_remaining_bucket: 'none',
+      format4_pause_reason: 'none',
+    });
+    expect(
+      chatFormat4Labels({
+        event: 'sweep_scope_backed_off',
+        reason: 'unrecoverable',
+      } as unknown as ChatFormat4Outcome).format4_reason,
+    ).toBe('unrecoverable');
+  });
+
+  it('reports a scope whose journal still needs that file with its own reason (review of #10972)', () => {
+    expect(CHAT_FORMAT4_REASONS).toContain('unrecoverable_journal');
+    expect(
+      chatFormat4Labels({
+        event: 'sweep_scope_backed_off',
+        reason: 'unrecoverable_journal',
+      } as unknown as ChatFormat4Outcome).format4_reason,
+    ).toBe('unrecoverable_journal');
+  });
+});

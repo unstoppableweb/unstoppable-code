@@ -1,16 +1,16 @@
 'use client';
 
 import { useId, useRef, useState, type JSX } from 'react';
+import { Picker } from '../../primitives/Picker';
 import {
-  FloatingPickerMenu,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-  PickerMenuOptionTrailing,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
+  PickerOptionTrailing,
   PickerTrigger,
   PickerTriggerChevron,
-} from '../../primitives/PickerMenu';
+} from '../../primitives/PickerParts';
 import { Tooltip } from '../../primitives/Tooltip';
 
 export interface LedgerTargetOption {
@@ -94,7 +94,7 @@ export function LedgerTargetPicker({
       ) : (
         trigger
       )}
-      <FloatingPickerMenu
+      <Picker
         open={open}
         openOnArrowKeys={!disabled}
         onOpenChange={setOpen}
@@ -107,7 +107,7 @@ export function LedgerTargetPicker({
         {options.map((option) => {
           const selected = option.id === value;
           return (
-            <PickerMenuOption
+            <PickerOption
               key={option.id}
               role="menuitemradio"
               aria-checked={selected}
@@ -120,19 +120,19 @@ export function LedgerTargetPicker({
                 if (!selected) onSelect(option.id);
               }}
             >
-              <PickerMenuOptionContent>
-                <PickerMenuOptionLabel>{option.label}</PickerMenuOptionLabel>
-              </PickerMenuOptionContent>
+              <PickerOptionContent>
+                <PickerOptionLabel>{option.label}</PickerOptionLabel>
+              </PickerOptionContent>
               {option.unavailable !== undefined && (
-                <PickerMenuOptionTrailing tone="tertiary">
+                <PickerOptionTrailing tone="tertiary">
                   {option.unavailable}
-                </PickerMenuOptionTrailing>
+                </PickerOptionTrailing>
               )}
-              <PickerMenuOptionCheck selected={selected} />
-            </PickerMenuOption>
+              <PickerOptionCheck selected={selected} />
+            </PickerOption>
           );
         })}
-      </FloatingPickerMenu>
+      </Picker>
     </div>
   );
 }

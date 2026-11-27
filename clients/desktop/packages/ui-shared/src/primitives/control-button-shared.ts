@@ -106,6 +106,14 @@ const MUTED_DISABLED =
 
 export const FIELD_EDGE_CLASS = 'shadow-field transition-shadow';
 
+/**
+ * The neutral field focus, for a box whose input has focus. A field never
+ * fills on hover or focus: the edge and halo alone show focus. Here rather
+ * than in `Field`, so `SearchField` can take it without importing `Field`,
+ * which imports the picker that holds a `SearchField`.
+ */
+export const FIELD_FOCUS_WITHIN_CLASS = 'has-[input:focus]:shadow-field-focus';
+
 export const FIELD_INVALID_CLASS =
   'aria-invalid:shadow-field-invalid aria-invalid:focus-visible:shadow-field-invalid-focus';
 
@@ -691,7 +699,7 @@ export const SHARED_CONTROL_RECIPES = {
   }) =>
     `focus-ring flex min-h-8 w-full items-center rounded-xl px-2 py-1 text-left text-xs fg-secondary ${highlight === 'selected' ? 'bg-subtle' : highlight === 'hover' ? 'hover:bg-subtle' : ''}`,
   'customize-installed-primary':
-    'block min-w-0 text-left outline-none after:absolute after:inset-0',
+    'block w-full min-w-0 text-left outline-none after:absolute after:inset-0',
   'mcp-card-title': ({ compact }: { compact: boolean }) =>
     `focus-ring rounded text-left hover:underline min-w-0 break-words ${compact ? 'fg-primary' : 'text-s font-medium fg-primary'}`,
   'model-harness-tab': ({

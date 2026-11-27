@@ -88,9 +88,9 @@ import {
   ActionMenuRowStyle,
   Button,
   ConfirmDialog,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  FloatingMenu,
+  MenuItem,
+  MenuItemIcon,
+  Menu,
   InlineTextInput,
   Tooltip,
   type WorktreeRowPrStatus,
@@ -123,7 +123,7 @@ import {
   findBranchPresence,
   preserveBranchOption,
 } from '@/components/worktree/branch-options';
-import { FloatingPickerMenu } from '@canopy/ui-shared';
+import { Picker } from '@canopy/ui-shared';
 import {
   HoverCard,
   type HoverCardTriggerProps,
@@ -548,7 +548,7 @@ function BaseBranchDropdownPortal({
   };
 
   return (
-    <FloatingPickerMenu
+    <Picker
       id={menuId}
       open
       onOpenChange={(nextOpen) => {
@@ -576,7 +576,7 @@ function BaseBranchDropdownPortal({
           anchorRef.current?.focus();
         }}
       />
-    </FloatingPickerMenu>
+    </Picker>
   );
 }
 
@@ -2562,7 +2562,7 @@ export const PrStatusBar = memo(function PrStatusBar({
                 )}
               </Surface>
             )}
-            <FloatingMenu
+            <Menu
               id={branchMenuId}
               open={branchMenuOpen}
               onOpenChange={setBranchMenuOpen}
@@ -2577,7 +2577,7 @@ export const PrStatusBar = memo(function PrStatusBar({
               className="w-max max-w-[calc(100vw-16px)]"
             >
               <ActionMenuRowStyle>
-                <DropdownMenuItem
+                <MenuItem
                   data-testid="branch-menu-rename"
                   // Single-repo flips the pill into the inline input; multi-repo
                   // (several branches, no single inline target) opens the branch
@@ -2589,40 +2589,40 @@ export const PrStatusBar = memo(function PrStatusBar({
                       : beginInlineBranchRename
                   }
                 >
-                  <DropdownMenuItemIcon>
+                  <MenuItemIcon>
                     <PencilIcon />
-                  </DropdownMenuItemIcon>
+                  </MenuItemIcon>
                   Rename branch
-                </DropdownMenuItem>
+                </MenuItem>
                 {isSingleRepoWorkspace && (
-                  <DropdownMenuItem
+                  <MenuItem
                     data-testid="branch-menu-change"
                     onClick={branchChange.openPicker}
                   >
-                    <DropdownMenuItemIcon>
+                    <MenuItemIcon>
                       <BranchIcon size="md" />
-                    </DropdownMenuItemIcon>
+                    </MenuItemIcon>
                     Change branch
-                  </DropdownMenuItem>
+                  </MenuItem>
                 )}
                 {!hasMultipleBranches && (
-                  <DropdownMenuItem
+                  <MenuItem
                     data-testid="branch-menu-copy"
                     onClick={(event): void => {
-                      // preventDefault suppresses FloatingMenu's close-on-select
+                      // preventDefault suppresses Menu's close-on-select
                       // so the row stays mounted to show the Copied confirmation
                       // (the pre-redesign inline copy button behaved this way).
                       event.preventDefault();
                       handleCopyBranch();
                     }}
                   >
-                    <DropdownMenuItemIcon>
+                    <MenuItemIcon>
                       {copiedBranch ? (
                         <CheckIcon size={16} />
                       ) : (
                         <CopyIcon size={16} />
                       )}
-                    </DropdownMenuItemIcon>
+                    </MenuItemIcon>
                     {/* Stacked-label trick: an invisible copy of the LONGER
                     label always occupies the cell, so the visible swap to
                     "Copied" cannot narrow the `w-max` menu. */}
@@ -2637,22 +2637,22 @@ export const PrStatusBar = memo(function PrStatusBar({
                         {copiedBranch ? 'Copied' : 'Copy branch name'}
                       </span>
                     </span>
-                  </DropdownMenuItem>
+                  </MenuItem>
                 )}
-                <DropdownMenuItem
+                <MenuItem
                   data-testid="branch-menu-info"
                   onClick={(): void => {
                     setBranchMenuOpen(false);
                     handleOpenBranchInfo();
                   }}
                 >
-                  <DropdownMenuItemIcon>
+                  <MenuItemIcon>
                     <InfoIcon />
-                  </DropdownMenuItemIcon>
+                  </MenuItemIcon>
                   Branch info
-                </DropdownMenuItem>
+                </MenuItem>
               </ActionMenuRowStyle>
-            </FloatingMenu>
+            </Menu>
             {branchChange.open && (
               <WorktreeBranchTargetPicker
                 workspaceId={projectId}

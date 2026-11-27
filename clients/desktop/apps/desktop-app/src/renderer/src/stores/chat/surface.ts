@@ -9,7 +9,9 @@ import {
   PLAN_EXPLORE_CHAT_PROJECT_ID,
   type ChatTabPluginSelections,
 } from '@canopy/desktop-shared/types';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isBotProjectId } from '@canopy/protocol/chat-targets';
+import { isOneWindowEnabled } from '../oneWindowStore';
 import { withRequiredPipelineEditorSkill } from '@canopy/desktop-shared/lib/pipeline-editor-tools';
 import { canNavigateToWorktreeFromSidebarItems } from '@/lib/worktreeNavigation';
 import { isCoworkChatTarget } from '@/lib/cowork';
@@ -162,6 +164,10 @@ export function canReceiveWorktreeChatActivity(
 ): boolean {
   if (isSyntheticChatTarget(projectId, worktreeId)) {
     return true;
+  }
+
+  if (isPairedComputerId(projectId)) {
+    return isOneWindowEnabled();
   }
 
   if (isWorktreeArchiveSuppressedForChatActivity(projectId, worktreeId)) {

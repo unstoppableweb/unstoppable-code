@@ -29,6 +29,8 @@ import {
 import { getDocument } from '@canopy/ui-shared/panels';
 import { useAppAdvisorWatchersStore } from '@/stores/appAdvisorWatchersStore';
 import { useChatStore } from '@/stores/chatStore';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
+import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
 import { useGitHubStore } from '@/stores/githubStore';
 import { usePipelineRunsStore } from '@/stores/pipelineRunsStore';
 import { usePipelineExecutionSummaryInterest } from '@/stores/pipelineDetailCoordinator';
@@ -109,6 +111,12 @@ export const PipelineRunArtifactCard = memo(function PipelineRunArtifactCard({
   const watchers = useAppAdvisorWatchersStore(
     useShallow((state) => state.watchers),
   );
+  const scopeCapabilities = useScopeCapabilities({
+    projectId: chatTarget?.projectId ?? '',
+  });
+  const canExecutePipelines =
+    scopeCapabilities.pipelines === 'execute' &&
+    !(chatTarget && isPairedComputerId(chatTarget.projectId));
   const addToast = useGitHubStore((state) => state.addToast);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [cancellingId, setCancellingId] = useState<string | null>(null);
@@ -518,30 +526,36 @@ export const PipelineRunArtifactCard = memo(function PipelineRunArtifactCard({
     latestActions.current = handlers;
   });
   const actions = useMemo(
-    (): PipelineRunReceiptActions => ({
-      onOpenDetail: (rootId, viewStack, jobId) =>
-        latestActions.current?.onOpenDetail(rootId, viewStack, jobId),
-      onCancel: (executionId) => latestActions.current?.onCancel(executionId),
-      onResume: (executionId, pauseResponses) =>
-        latestActions.current?.onResume(executionId, pauseResponses),
-      onChatFollowUp: (executionId) =>
-        latestActions.current?.onChatFollowUp(executionId),
-      onReportChatFollowUp: (executionId) =>
-        latestActions.current?.onReportChatFollowUp(executionId),
-      onViewReport: (executionId) =>
-        latestActions.current?.onViewReport(executionId),
-      onPipelineFollowUp: (executionId) =>
-        latestActions.current?.onPipelineFollowUp(executionId),
-      onOpenPlan: (executionId) =>
-        latestActions.current?.onOpenPlan(executionId),
-      onRetry: (executionId) => latestActions.current?.onRetry(executionId),
-      onRerun: (executionId) => latestActions.current?.onRerun(executionId),
-      onDebugFailure: (executionId) =>
-        latestActions.current?.onDebugFailure(executionId),
-      onOpenSource: (executionId) =>
-        latestActions.current?.onOpenSource(executionId),
-    }),
-    [],
+    (): PipelineRunReceiptActions =>
+      canExecutePipelines
+        ? {
+            onOpenDetail: (rootId, viewStack, jobId) =>
+              latestActions.current?.onOpenDetail(rootId, viewStack, jobId),
+            onCancel: (executionId) =>
+              latestActions.current?.onCancel(executionId),
+            onResume: (executionId, pauseResponses) =>
+              latestActions.current?.onResume(executionId, pauseResponses),
+            onChatFollowUp: (executionId) =>
+              latestActions.current?.onChatFollowUp(executionId),
+            onReportChatFollowUp: (executionId) =>
+              latestActions.current?.onReportChatFollowUp(executionId),
+            onViewReport: (executionId) =>
+              latestActions.current?.onViewReport(executionId),
+            onPipelineFollowUp: (executionId) =>
+              latestActions.current?.onPipelineFollowUp(executionId),
+            onOpenPlan: (executionId) =>
+              latestActions.current?.onOpenPlan(executionId),
+            onRetry: (executionId) =>
+              latestActions.current?.onRetry(executionId),
+            onRerun: (executionId) =>
+              latestActions.current?.onRerun(executionId),
+            onDebugFailure: (executionId) =>
+              latestActions.current?.onDebugFailure(executionId),
+            onOpenSource: (executionId) =>
+              latestActions.current?.onOpenSource(executionId),
+          }
+        : {},
+    [canExecutePipelines],
   );
   const pending = useMemo(
     (): PipelineRunReceiptPending => ({

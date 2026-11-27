@@ -32,8 +32,8 @@ import {
   focusMenuTrigger,
   useDetailMoreItems,
 } from './DetailMoreMenu';
-import { DropdownMenuItem } from '../primitives/DropdownMenu';
-import { FLOATING_MENU_GAP, FloatingMenu } from '../primitives/FloatingMenu';
+import { MenuItem } from '../primitives/MenuItem';
+import { MENU_GAP, Menu } from '../primitives/Menu';
 import {
   InstalledItemStatusPicker,
   InstalledItemStatusUnavailable,
@@ -251,13 +251,13 @@ function InstalledItemMoreMenu({
           </Button>
         </Tooltip>
       </span>
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={open}
         onOpenChange={setOpen}
         anchorRef={anchorRef}
         placement="bottom-right"
-        gap={FLOATING_MENU_GAP}
+        gap={MENU_GAP}
         interaction="menu"
         aria-label={`Actions for ${itemName}`}
         data-testid={`${testId}-menu`}
@@ -289,7 +289,7 @@ function InstalledItemMoreMenu({
             }}
           />
         ) : (
-          <DropdownMenuItem
+          <MenuItem
             tone="destructive"
             disabled={disabled}
             data-testid={`${testId}-uninstall`}
@@ -299,9 +299,9 @@ function InstalledItemMoreMenu({
             }}
           >
             {verb}…
-          </DropdownMenuItem>
+          </MenuItem>
         )}
-      </FloatingMenu>
+      </Menu>
     </>
   );
 }

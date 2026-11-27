@@ -1,6 +1,9 @@
 import * as yaml from 'js-yaml';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
-import type { Pipeline } from '@canopy/execution-engine/types/pipeline';
+import {
+  getTriggerInputDefs,
+  type Pipeline,
+} from '@canopy/execution-engine/types/pipeline';
 import {
   CHAT_AUTOMATION_JOB,
   retitleChatAutomationEntry,
@@ -24,6 +27,36 @@ export function serializePipelineToYaml(pipeline: Pipeline): string {
   return yaml.dump({ pipeline }, { lineWidth: 120, noRefs: true });
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// The editor serializes drafts without aliases. Count repeated references
+// each time they would be written, and reject cycles along the current path.
+function validateDraftSize(pipeline: Pipeline): void {
+  const ancestors = new Set<object>();
+  let nodes = 0;
+  let characters = 0;
+  function visit(value: unknown, depth: number): void {
+    if (++nodes > 100_000 || depth > 64 || characters > 4 * 1024 * 1024) {
+      throw new Error(
+        'The expanded workflow definition is too large or deeply nested.',
+      );
+    }
+    if (typeof value !== 'object' || value === null) return;
+    if (ancestors.has(value)) {
+      throw new Error('Workflow aliases must not refer back to themselves.');
+    }
+    ancestors.add(value);
+    for (const [key, child] of Object.entries(value)) {
+      characters += key.length + (typeof child === 'string' ? child.length : 0);
+      visit(child, depth + 1);
+    }
+    ancestors.delete(value);
+  }
+  visit(pipeline, 0);
+}
+
 /**
  * Parse YAML text and validate the resulting pipeline.
  * Returns the parsed Pipeline on success, or an error string on failure.
@@ -31,32 +64,63 @@ export function serializePipelineToYaml(pipeline: Pipeline): string {
 export function tryParseAndValidateYaml(
   text: string,
 ): { success: true; pipeline: Pipeline } | { success: false; error: string } {
-  let parsed: Pipeline;
   try {
-    parsed = parsePipelineText(text);
+    const pipeline = parsePipelineText(text);
+    validateDraftSize(pipeline);
+    for (const [id, job] of Object.entries(pipeline.jobs)) {
+      if (!job || !Array.isArray(job.steps) || !job.steps.every(isRecord)) {
+        return {
+          success: false,
+          error: `Job "${id}" must define a list of steps.`,
+        };
+      }
+    }
+    const collections = pipeline.plugin_collections;
+    if (
+      collections !== undefined &&
+      (!Array.isArray(collections) ||
+        collections.some(
+          (entry: unknown) => !isRecord(entry) || typeof entry.id !== 'string',
+        ))
+    ) {
+      return {
+        success: false,
+        error: 'Plugin collections must be a list of collections with IDs.',
+      };
+    }
+    for (const trigger of ['dispatch', 'workflow'] as const) {
+      const inputs = getTriggerInputDefs(pipeline.on, trigger);
+      if (
+        inputs != null &&
+        (!isRecord(inputs) || !Object.values(inputs).every(isRecord))
+      ) {
+        return {
+          success: false,
+          error:
+            trigger === 'dispatch'
+              ? 'Dispatch inputs must define their options by input name.'
+              : 'Workflow inputs must define their options by input name.',
+        };
+      }
+    }
+    const errors = getDraftValidation(pipeline).filter(
+      (issue) => issue.type === 'error',
+    );
+    if (errors.length > 0) {
+      return {
+        success: false,
+        error: errors
+          .map(({ path, message }) => `${path}: ${message}`)
+          .join('\n'),
+      };
+    }
+    return { success: true, pipeline };
   } catch (err: unknown) {
     return {
       success: false,
       error: `Invalid workflow definition: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
-
-  if (!parsed || typeof parsed !== 'object') {
-    return { success: false, error: 'YAML must define a workflow object' };
-  }
-
-  if (!parsed.jobs || typeof parsed.jobs !== 'object') {
-    return { success: false, error: 'Workflow must define a "jobs" object' };
-  }
-
-  const issues = getDraftValidation(parsed);
-  const errors = issues.filter((v) => v.type === 'error');
-  if (errors.length > 0) {
-    const messages = errors.map((e) => `${e.path}: ${e.message}`);
-    return { success: false, error: messages.join('\n') };
-  }
-
-  return { success: true, pipeline: parsed };
 }
 
 function entryTitleOf(pipeline: Pipeline): unknown {

@@ -87,7 +87,11 @@
     "apiNamespace": "desktop-app",
     "wellKnownNamespace": "canopy",
     "title": "Canopy",
-    "description": "Autonomous multi-agent orchestration framework"
+    "description": "Autonomous multi-agent orchestration framework",
+    "supportEmail": "support@unstoppable.ai",
+    "legalEmail": "legal@unstoppabledomains.com",
+    "privacyEmail": "privacy@unstoppabledomains.com",
+    "demoUrl": "https://calendly.com/camp-unstoppable"
   },
   "release": {
     "enabled": ["internal"],

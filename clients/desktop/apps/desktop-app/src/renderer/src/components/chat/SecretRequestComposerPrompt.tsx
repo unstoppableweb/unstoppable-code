@@ -20,6 +20,8 @@ export interface SecretRequestComposerPromptProps {
   /** Keeps the request mounted while its submission is in flight. */
   readonly onDeliveryChange: (requestId: string, retained: boolean) => void;
   readonly onClose: () => void;
+  /** Shows the request read-only when this window cannot answer it. */
+  readonly readOnlyHint?: string;
 }
 
 /**
@@ -35,6 +37,7 @@ export function SecretRequestComposerPrompt({
   projectId,
   onDeliveryChange,
   onClose,
+  readOnlyHint,
 }: SecretRequestComposerPromptProps): JSX.Element {
   const disconnected = useChatSurfaceScope()?.disconnected === true;
   const [busy, setBusy] = useState<'submit' | 'decline' | null>(null);
@@ -47,6 +50,7 @@ export function SecretRequestComposerPrompt({
       kind: 'submit' | 'decline',
       send: () => Promise<SecretRequestSettleResponse>,
     ): void => {
+      if (readOnlyHint !== undefined) return;
       setBusy(kind);
       setErrorKind(null);
       setErrorMessage(undefined);
@@ -72,7 +76,7 @@ export function SecretRequestComposerPrompt({
           setBusy(null);
         });
     },
-    [onDeliveryChange, requestId],
+    [onDeliveryChange, readOnlyHint, requestId],
   );
 
   const submit = useCallback(
@@ -111,6 +115,7 @@ export function SecretRequestComposerPrompt({
       errorKind={errorKind}
       {...(errorMessage !== undefined ? { errorMessage } : {})}
       {...(settled !== undefined ? { settled } : {})}
+      {...(readOnlyHint !== undefined ? { readOnlyHint } : {})}
       disconnected={disconnected}
       onSubmit={submit}
       onDecline={decline}

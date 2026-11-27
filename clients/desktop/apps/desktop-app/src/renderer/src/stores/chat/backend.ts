@@ -1,4 +1,5 @@
 import type {
+  ApprovalRequestEvent,
   ApprovalsApi,
   ChatApi,
   ChatCancelRequest,
@@ -6,9 +7,13 @@ import type {
   SecretRequestSettleResponse,
 } from '@canopy/desktop-shared/types';
 import { CoreCoworkRequestError } from '@canopy/app-state/core-cowork';
-import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
+import {
+  isPairedComputerId,
+  parseAuthorityQualifiedId,
+} from '@canopy/protocol/authority-qualified-id';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { reportUnhandledRendererRejection } from '@/lib/renderer-error-logging';
+import { pairedComputerChatBackend } from './paired-computer';
 import { webCoreChatBackend } from './web-core';
 
 /**
@@ -82,24 +87,24 @@ type ChatBackendChatIo = Pick<
 >;
 
 /** The approval I/O a scope's authority must serve for the chat store. */
-export type ChatBackendApprovalsApi = Pick<
-  ApprovalsApi,
-  | 'dismiss'
-  | 'getResolvedDefault'
-  | 'onAutoResolved'
-  | 'onCancelled'
-  | 'onRequest'
-  | 'pendingRequests'
-  | 'respond'
-  | 'respondSecretInput'
-  | 'setMode'
->;
+export type ChatBackendApprovalsApi = Omit<
+  Pick<
+    ApprovalsApi,
+    | 'dismiss'
+    | 'getResolvedDefault'
+    | 'onAutoResolved'
+    | 'onCancelled'
+    | 'onRequest'
+    | 'pendingRequests'
+    | 'respond'
+    | 'respondSecretInput'
+    | 'setMode'
+  >,
+  'pendingRequests'
+> & {
+  pendingRequests(scope?: ChatBackendScope): Promise<ApprovalRequestEvent[]>;
+};
 
-/**
- * Where the chat store reads and commands one chat authority's chats
- * (CAN-6175 D3). The store's state and the components over it are the same
- * for every authority; only this I/O differs.
- */
 /**
  * Where a chat's secret request answer goes (agent secret requests): a local
  * chat's to main over `secretRequest.submit`/`decline`, a cloud chat's to the
@@ -119,6 +124,11 @@ export interface ChatBackendSecretRequestApi {
   }): Promise<SecretRequestSettleResponse>;
 }
 
+/**
+ * Where the chat store reads and commands one chat authority's chats
+ * (CAN-6175 D3). The store's state and the components over it are the same
+ * for every authority; only this I/O differs.
+ */
 export interface ChatBackend {
   readonly chat: ChatBackendChatApi;
   readonly approvals: ChatBackendApprovalsApi;
@@ -194,15 +204,25 @@ export function reportUnlessUnavailable(error: unknown): void {
 
 /**
  * The backend that serves this scope's chats: the web core's for a web core
- * scope, the local core's for a local one. A scope is never served by another
- * authority's backend: a paired computer's scope has no backend yet, so it is
- * refused rather than sent to the local core (CAN-7757).
+ * scope, the paired-computer backend for a paired computer's scope (CAN-7767,
+ * gated on the one-window switch inside the backend), and the local core's for
+ * a local one. A scope is never served by another authority's backend.
+ * Sidebar and main-window selection of paired scopes lands in CAN-7766 / CAN-7777.
  */
 export function chatBackendFor(scope: ChatBackendScope): ChatBackend {
   if (isWebCoreScope(scope.projectId)) return webCoreChatBackend();
-  if (isPairedComputerId(scope.projectId))
-    throw new Error('No chat backend serves another computer yet.');
+  if (isPairedComputerId(scope.projectId)) return pairedComputerChatBackend();
   return localBackend;
+}
+
+/** Key grouping scopes that share one approval-list read (authority or paired device). */
+export function chatApprovalAuthorityKey(scope: ChatBackendScope): string {
+  const parsed = parseAuthorityQualifiedId(scope.projectId);
+  if (parsed?.authority.kind === 'paired-computer') {
+    return `paired:${parsed.authority.deviceId}`;
+  }
+  if (isWebCoreScope(scope.projectId)) return 'web-core';
+  return 'local';
 }
 
 /**
@@ -216,7 +236,7 @@ export function servesTurnPages(scope: ChatBackendScope): boolean {
 
 /** Every backend, for subscriptions that are not tied to one scope. */
 export function chatBackends(): readonly ChatBackend[] {
-  return [localBackend, webCoreChatBackend()];
+  return [localBackend, webCoreChatBackend(), pairedComputerChatBackend()];
 }
 
 /**

@@ -7,13 +7,22 @@ import { subscribePreferencesUpdated } from '@/lib/preferences-events';
  * The last answer any mount read. A picker mounted later starts from it, so a
  * connected user does not see "Connect OpenCode" while the new read is pending.
  */
-let lastKnownAvailable = false;
+let lastKnownAvailable: boolean | undefined;
 
-export function useOpenCodeChatAvailable(enabled: boolean): boolean {
+/**
+ * Tri-state availability (installed and on): `undefined` until the first
+ * status read settles, so billing readiness never treats a pending read as
+ * "not set up". The harness flag being off settles `false` straight away.
+ */
+export function useOpenCodeChatAvailability(
+  enabled: boolean,
+): boolean | undefined {
   const opencodeHarnessEnabled = useFeatureFlagsStore((state) =>
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarness.key),
   );
-  const [available, setAvailable] = useState(lastKnownAvailable);
+  const [available, setAvailable] = useState<boolean | undefined>(
+    lastKnownAvailable,
+  );
   useEffect(() => {
     if (!enabled || !opencodeHarnessEnabled) return;
     let mounted = true;
@@ -52,5 +61,10 @@ export function useOpenCodeChatAvailable(enabled: boolean): boolean {
       offHost();
     };
   }, [enabled, opencodeHarnessEnabled]);
-  return enabled && opencodeHarnessEnabled && available;
+  if (!enabled || !opencodeHarnessEnabled) return false;
+  return available;
+}
+
+export function useOpenCodeChatAvailable(enabled: boolean): boolean {
+  return useOpenCodeChatAvailability(enabled) === true;
 }

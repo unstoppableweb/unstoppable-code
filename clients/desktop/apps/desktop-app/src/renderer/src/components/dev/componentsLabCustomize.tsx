@@ -992,6 +992,46 @@ export function CustomizePartsSpecimen(): JSX.Element {
           })}
         </SpecimenGrid>
       </SpecimenPanel>
+      <SpecimenPanel title="Recommended MCP row (New Customize search)">
+        <SpecimenGrid min={320}>
+          {[
+            { label: 'Recommended', name: 'Google Calendar', width: 420 },
+            {
+              label: 'Long name truncates before the mark',
+              name: LONG_NAME,
+              width: 320,
+            },
+          ].map(({ label, name, width }) => {
+            const entry: UnifiedPluginEntry = {
+              id: `lab-recommended-${name.length}`,
+              kind: 'app',
+              origin: 'curated',
+              name,
+              description: '',
+              categories: [],
+              typeLabel: 'MCP server',
+              components: { skills: 0, mcpServers: 1, commands: 0, agents: 0 },
+              providerSupport: { claude: true, codex: true },
+              state: 'available',
+              recommended: true,
+              ref: { type: 'curated-mcp', key: 'lab-recommended' },
+            };
+            return (
+              <SpecimenCell key={entry.id} label={label} wide>
+                <div className="max-w-full" style={{ width }}>
+                  <CustomizeInstalledRow
+                    entry={entry}
+                    sectionId="all"
+                    onSelect={noop}
+                    showEntryType
+                    recommended
+                  />
+                </div>
+              </SpecimenCell>
+            );
+          })}
+        </SpecimenGrid>
+      </SpecimenPanel>
       <SpecimenPanel title="Plugin row skill match (New Customize search)">
         <SpecimenGrid min={320}>
           {[

@@ -4,6 +4,7 @@ import type { W5FileConflict } from './apply';
 import {
   W5_CAPTURE_LIMITS,
   W5_CAPTURE_KEY_MAX,
+  W5_CAPTURE_LOG_ID_PATTERN,
   type W5CaptureEvidence,
   type W5CaptureFile,
   type W5FileChainEvidence,
@@ -370,7 +371,17 @@ export class W5CommitLog {
          FROM w5_commit_totals`,
       )
       .get();
+    const logId = asText(
+      this.db.prepare("SELECT value FROM w5_meta WHERE key = 'log_id'").get()
+        ?.value,
+    );
+    if (!W5_CAPTURE_LOG_ID_PATTERN.test(logId))
+      throw new W5CommitLogError(
+        'STORAGE_UNAVAILABLE',
+        'Unexpected log identity.',
+      );
     return {
+      logId,
       commitId: asInteger(
         this.db
           .prepare(

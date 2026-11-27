@@ -168,7 +168,8 @@ export function CustomizeWorksWithChips({
     | 'chatGptAppStandIn'
     | 'harnessRows'
     | 'alsoAvailableFrom'
-  >;
+  > &
+    Partial<Pick<UnifiedPluginEntry, 'state'>>;
 }): JSX.Element | null {
   const rows = customizeEntryHarnessRows(entry);
   if (rows !== undefined)
@@ -266,11 +267,12 @@ export function customizeWorksWithRows(
    */
   notAddedYet = entry.state === 'available',
 ): PluginWorksWithRow[] {
-  const rows = customizeEntryHarnessRows(entry);
+  const rows = customizeEntryHarnessRows(entry, !notAddedYet);
   if (rows !== undefined) {
     // An installed copy in the group (another marketplace's listing) fills
-    // the harnesses it serves.
-    const installedRows = (entry.marketplaceListings ?? [])
+    // the harnesses it serves, once this listing is added: before that its
+    // Add installs this listing, not the copy (Sergii's QA B).
+    const installedRows = (notAddedYet ? [] : (entry.marketplaceListings ?? []))
       .filter(
         (listing) =>
           listing.state === 'installed' || listing.state === 'needs-auth',
@@ -326,11 +328,13 @@ export function customizeWorksWithRows(
         listing !== entry &&
         (listing.state === 'installed' || listing.state === 'needs-auth'),
     );
-  // A harness an installed copy in the group serves reads Installed.
+  // A harness an installed copy in the group serves reads Installed, once
+  // this item is added: a not-added item's Add installs it, not the copy.
   const installedVia = new Set(
     listings
       .filter(
         (listing) =>
+          !notAddedYet &&
           listing !== entry &&
           (listing.state === 'installed' || listing.state === 'needs-auth'),
       )

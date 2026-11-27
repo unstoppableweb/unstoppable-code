@@ -600,6 +600,7 @@ export function resetProviderAuthStateForTests(): void {
   codexAuthStatusCache = null;
   codexAuthStatusRefresh = null;
   lastConfirmedCodexAuthStatus = null;
+  lastNativeAuthFailureReprobeAtMs.clear();
 }
 
 export function markProviderAuthSessionCreatedWithoutBaseline(
@@ -1301,6 +1302,86 @@ export async function isProviderNativelyAuthenticated(
     return true;
   }
   return status.authenticated;
+}
+
+/**
+ * Max age of the auth read that confirms a no-billing-source refusal. A
+ * cached "signed out" can lag a sign-in done outside the app (`claude /login`
+ * in a terminal) by the 30 s status cache; re-reading one older than this
+ * bounds that lag. Concurrent callers share the one in-flight probe.
+ */
+const REFUSAL_AUTH_MAX_AGE_MS = 5_000;
+
+/**
+ * `isProviderNativelyAuthenticated` for a turn about to be refused: the same
+ * answer (a `probeFailed` status reads as authenticated). A cached
+ * "authenticated" is used as is, so a signed-in user never waits on a probe;
+ * only a cached "signed out" older than {@link REFUSAL_AUTH_MAX_AGE_MS} is
+ * re-read before the refusal, which then waits on that probe (bounded by the
+ * probe's own timeout).
+ */
+export async function isProviderNativelyAuthenticatedBeforeRefusal(
+  provider: Extract<AgentProviderType, 'claude' | 'codex'>,
+  reason: string,
+): Promise<boolean> {
+  if (await isProviderNativelyAuthenticated(provider, reason)) return true;
+  const status =
+    provider === 'claude'
+      ? await getCachedClaudeAuthStatusObserved(reason, {
+          maxAgeMs: REFUSAL_AUTH_MAX_AGE_MS,
+        })
+      : await getCachedCodexAuthStatusObserved(reason, {
+          maxAgeMs: REFUSAL_AUTH_MAX_AGE_MS,
+        });
+  return status.probeFailed === true ? true : status.authenticated;
+}
+
+/**
+ * Minimum gap between two forced re-probes for the same provider after a
+ * native turn fails authentication. A chat that keeps failing (retries, queued
+ * turns, several open chats on one stale login) must not spawn a probe per
+ * failure; one fresh answer per window is enough for readiness to settle.
+ */
+const NATIVE_AUTH_FAILURE_REPROBE_COOLDOWN_MS = 60_000;
+const lastNativeAuthFailureReprobeAtMs = new Map<
+  Extract<AgentProviderType, 'claude' | 'codex'>,
+  number
+>();
+
+/**
+ * Force a fresh auth probe after a NATIVE turn ended in an authentication
+ * failure (billing setup gate, 2026-11-25). A stale credential can keep the
+ * cached status at signed in while every turn fails; re-probing lets a
+ * confirmed sign-out reach the renderer through the usual confirmed-status
+ * notification, so readiness and the no-billing-source surfaces update.
+ *
+ * Native turns only: callers must not invoke this for a routed (AI Credits,
+ * gateway or account proxy) turn, whose auth failure says nothing about the
+ * user's own login. At most one probe runs per provider (the cached getters
+ * dedupe in-flight refreshes) and a repeated failure inside the cooldown does
+ * not probe again. A probe that still reads signed in leaves the status alone;
+ * this never overrides a probe with turn evidence. Fire-and-forget: errors are
+ * absorbed by the observed getters, which cache a `probeFailed` status.
+ */
+export function refreshProviderAuthAfterNativeFailure(
+  provider: Extract<AgentProviderType, 'claude' | 'codex'>,
+  nowMs: number = Date.now(),
+): boolean {
+  const last = lastNativeAuthFailureReprobeAtMs.get(provider);
+  if (
+    last !== undefined &&
+    nowMs - last < NATIVE_AUTH_FAILURE_REPROBE_COOLDOWN_MS
+  ) {
+    return false;
+  }
+  lastNativeAuthFailureReprobeAtMs.set(provider, nowMs);
+  const reason = 'native-turn-auth-failure';
+  const refresh =
+    provider === 'claude'
+      ? getCachedClaudeAuthStatusObserved(reason, { forceRefresh: true })
+      : getCachedCodexAuthStatusObserved(reason, { forceRefresh: true });
+  void refresh.catch(() => undefined);
+  return true;
 }
 
 /**

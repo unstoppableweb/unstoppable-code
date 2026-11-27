@@ -128,6 +128,11 @@ export async function runLocalMemoryStructuredHelper<T>(
     invocation = await resolveHelperInvocation(model, undefined, {
       allowNoNativeAuthFallback: false,
       preserveModelSelection: options.preserveModelSelection,
+      // Memory runs only on the model chosen for it (see
+      // `resolveLocalMemoryRunModel`); a skill scan may use the user's gateway.
+      ...(options.kind === 'skill-suggestion-scan'
+        ? {}
+        : { personalGatewaySwap: false }),
       workspaceId: options.workspaceId,
       ...(ownerOverride ?? {}),
       signal: abortController.signal,

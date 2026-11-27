@@ -90,12 +90,26 @@
     "description": "Unstoppable agentic development environment",
     "mobileApps": {
       "appStoreUrl": "https://apps.apple.com/us/app/unstoppable-ai/id6786961568",
-      "playStoreUrl": "https://play.google.com/store/apps/details?id=com.unstoppabledomains.canopy"
+      "playStoreUrl": "https://play.google.com/store/apps/details?id=com.unstoppabledomains.canopy",
+      "androidPackage": "com.unstoppabledomains.canopy",
+      "androidCertFingerprints": [
+        "44:EC:CA:53:84:9C:47:98:07:20:32:FF:19:C9:09:8A:D2:A3:8F:33:E4:97:E1:B0:4F:59:6D:8B:47:59:D7:8D"
+      ],
+      "androidAppLinkHosts": [
+        "app.unstoppable.ai",
+        "code.unstoppabledomains.com",
+        "code.ud-staging.com"
+      ]
     },
+    "supportEmail": "support@unstoppable.ai",
+    "legalEmail": "legal@unstoppabledomains.com",
+    "privacyEmail": "privacy@unstoppabledomains.com",
     "marketing": {
       "demoUrl": "https://calendly.com/camp-unstoppable",
       "chatUrl": "https://unstoppabledomains.com/chat",
       "legacySiteOrigin": "https://unstoppabledomains.com",
+      "canonicalOrigin": "https://unstoppable.ai",
+      "homebrewCask": "unstoppableweb/tap/unstoppable-code",
       "copyrightHolder": "Unstoppable Domains Inc.",
       "footerLinkGroups": [
         {

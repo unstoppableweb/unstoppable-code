@@ -67,10 +67,10 @@ import { AccountMenuExternalAgentsItem } from '@canopy/ui-app/external-agents/Ac
 import { externalAgentsPathFromDesktop } from '@canopy/ui-app/external-agents/paths';
 import {
   ActionMenuRowStyle,
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuStatusRow,
+  MenuDivider,
+  MenuItem,
+  MenuItemIcon,
+  MenuStatusRow,
   HoverCard,
 } from '@canopy/ui-shared';
 import { BalanceSurface } from '@canopy/ui-app/credits';
@@ -555,17 +555,17 @@ export function SidebarAccountMenu({
               <>
                 {header}
                 {aiCreditsRow}
-                <DropdownMenuDivider />
+                <MenuDivider />
               </>
             ) : null;
           // Sign out (or Sign in) closes the menu in its own last group: the
           // Computers row, when present, ends with its own divider.
           const signInOutRow = (
-            <DropdownMenuItem
+            <MenuItem
               onClick={handleSignInOutClick}
               data-testid="sidebar-account-menu-item-sign-in-out"
             >
-              <DropdownMenuItemIcon>
+              <MenuItemIcon>
                 {canSignOut ? (
                   <LogoutIcon size={16} aria-hidden="true" />
                 ) : (
@@ -579,18 +579,18 @@ export function SidebarAccountMenu({
                     }
                   />
                 )}
-              </DropdownMenuItemIcon>
+              </MenuItemIcon>
               {/* The guest variant of this label is the longest string any row in
                 this menu renders. A bare text node would wrap and overflow the
                 fixed 32px row, so it truncates like the sidebar pill instead. */}
               <span className="min-w-0 flex-1 truncate">{signInOutLabel}</span>
-            </DropdownMenuItem>
+            </MenuItem>
           );
           // The quiet rows every action menu shares (the worktree menu's).
           return (
             <ActionMenuRowStyle>
               {topSection}
-              <DropdownMenuItem
+              <MenuItem
                 onClick={() => handleItemClick(() => onNavigate('usage'))}
                 data-testid="sidebar-account-menu-item-usage"
                 data-onboarding-anchor="sidebar-usage"
@@ -599,9 +599,9 @@ export function SidebarAccountMenu({
                 // carries the status.
                 alert={undefined}
               >
-                <DropdownMenuItemIcon>
+                <MenuItemIcon>
                   <DataUsageIcon aria-hidden="true" />
-                </DropdownMenuItemIcon>
+                </MenuItemIcon>
                 Usage
                 {usageAlertLevel !== 'normal' && (
                   <span
@@ -617,9 +617,9 @@ export function SidebarAccountMenu({
                     />
                   </span>
                 )}
-              </DropdownMenuItem>
+              </MenuItem>
               {(remoteControlAvailable || remoteControlLive) && (
-                <DropdownMenuItem
+                <MenuItem
                   onClick={() =>
                     handleItemClick(
                       remoteControlLive
@@ -636,9 +636,9 @@ export function SidebarAccountMenu({
                   data-testid="sidebar-account-menu-item-remote-control"
                   data-remote-control-live={remoteControlLive || undefined}
                 >
-                  <DropdownMenuItemIcon>
+                  <MenuItemIcon>
                     <RemoteControlIcon size="xl" aria-hidden="true" />
-                  </DropdownMenuItemIcon>
+                  </MenuItemIcon>
                   {REMOTE_CONTROL_LABEL}
                   {remoteControlLive && (
                     <span
@@ -652,7 +652,7 @@ export function SidebarAccountMenu({
                       />
                     </span>
                   )}
-                </DropdownMenuItem>
+                </MenuItem>
               )}
               {canSignOut && externalAgentsMenuEnabled && (
                 <AccountMenuExternalAgentsItem
@@ -681,16 +681,16 @@ export function SidebarAccountMenu({
                     surfaceClassName="w-max max-w-72"
                     preferRightPlacement
                   >
-                    <DropdownMenuStatusRow
+                    <MenuStatusRow
                       data-testid="sidebar-account-menu-sync-paused"
                       aria-describedby={syncPausedDescriptionId}
                     >
-                      <DropdownMenuItemIcon>
+                      <MenuItemIcon>
                         <SyncIcon
                           aria-hidden="true"
                           data-testid="sidebar-account-menu-sync-icon"
                         />
-                      </DropdownMenuItemIcon>
+                      </MenuItemIcon>
                       <span
                         data-testid="sidebar-account-menu-sync-label"
                         className="min-w-0 flex-1 truncate"
@@ -706,7 +706,7 @@ export function SidebarAccountMenu({
                           data-testid="sidebar-account-sync-paused-dot"
                         />
                       </span>
-                    </DropdownMenuStatusRow>
+                    </MenuStatusRow>
                   </HoverCard>
                   <span id={syncPausedDescriptionId} className="sr-only">
                     {syncPausedExplanation()}
@@ -715,7 +715,7 @@ export function SidebarAccountMenu({
               )}
               {cloudAccountAvailable && (
                 <>
-                  <DropdownMenuDivider />
+                  <MenuDivider />
                   <AccountMenuComputersItem onClose={close} />
                   {signInOutRow}
                 </>

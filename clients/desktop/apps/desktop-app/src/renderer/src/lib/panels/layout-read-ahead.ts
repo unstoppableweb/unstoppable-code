@@ -28,6 +28,7 @@ import type {
   LoadWorktreeModeResponse,
   LoadWorktreePanelLayoutResponse,
 } from '@canopy/desktop-shared/types';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { whenExperimentalFeaturesHydrated } from '@/stores/experimentalFeaturesStore';
 
@@ -71,7 +72,11 @@ export function readWorktreeLayoutAhead(
     projectId: worktreeKey.slice(0, separator),
     worktreeId: worktreeKey.slice(separator + 1),
   };
-  if (separator < 0 || isWebCoreScope(scope.projectId)) {
+  if (
+    separator < 0 ||
+    isWebCoreScope(scope.projectId) ||
+    isPairedComputerId(scope.projectId)
+  ) {
     return Promise.resolve();
   }
   const kept = freshEntry(worktreeKey, Math.min(reuseWithinMs, MAX_AGE_MS));

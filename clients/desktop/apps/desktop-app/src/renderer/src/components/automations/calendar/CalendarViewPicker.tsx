@@ -1,11 +1,11 @@
 import { useId, useRef, useState, type JSX } from 'react';
 import {
   Button,
-  FloatingPickerMenu,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
+  Picker,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
 } from '@canopy/ui-shared/components';
 import { ChevronDownIcon } from '@canopy/ui-shared/icons';
 import type { CalendarView } from './calendarPreferences';
@@ -55,7 +55,7 @@ export function CalendarViewPicker({
         <span>{VIEW_LABELS[calendarView]}</span>
         <ChevronDownIcon size="sm" />
       </Button>
-      <FloatingPickerMenu
+      <Picker
         id={menuId}
         open={open}
         onOpenChange={setOpen}
@@ -69,7 +69,7 @@ export function CalendarViewPicker({
         {VIEW_ORDER.map((view) => {
           const selected = view === calendarView;
           return (
-            <PickerMenuOption
+            <PickerOption
               key={view}
               role="option"
               aria-selected={selected}
@@ -80,16 +80,14 @@ export function CalendarViewPicker({
                 onChange(view);
               }}
             >
-              <PickerMenuOptionContent>
-                <PickerMenuOptionLabel>
-                  {VIEW_LABELS[view]}
-                </PickerMenuOptionLabel>
-              </PickerMenuOptionContent>
-              <PickerMenuOptionCheck selected={selected} />
-            </PickerMenuOption>
+              <PickerOptionContent>
+                <PickerOptionLabel>{VIEW_LABELS[view]}</PickerOptionLabel>
+              </PickerOptionContent>
+              <PickerOptionCheck selected={selected} />
+            </PickerOption>
           );
         })}
-      </FloatingPickerMenu>
+      </Picker>
     </>
   );
 }

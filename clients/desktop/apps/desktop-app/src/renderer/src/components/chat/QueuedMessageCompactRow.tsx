@@ -74,7 +74,7 @@ function useQueuedAttachments(
 interface QueuedMessageCompactRowProps {
   readonly message: QueuedChatMessage;
   readonly index: number;
-  readonly onClear: (index: number) => void;
+  readonly onClear?: (index: number) => void;
   readonly onForce?: (index: number) => void;
   readonly forceKind?: QueuedMessageForceKind;
   readonly onSteer?: (index: number) => void;
@@ -204,7 +204,7 @@ export const QueuedMessageCompactRow = memo(function QueuedMessageCompactRow({
             ? message.retryBlockedReason
             : undefined
         }
-        onDelete={(): void => onClear(index)}
+        onDelete={onClear ? (): void => onClear(index) : undefined}
         surface={surface}
         interruptIcon={surface === 'drawer' ? ArrowUpIcon : undefined}
       />

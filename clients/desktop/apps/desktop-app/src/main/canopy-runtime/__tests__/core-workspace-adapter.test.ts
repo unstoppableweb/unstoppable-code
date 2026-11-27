@@ -1344,6 +1344,7 @@ describe('core workspace reads over one W5 read view (CAN-5318)', () => {
     files: [],
     discovery: 'complete',
     log: {
+      logId: '00000000-0000-4000-8000-000000000001',
       commitId: 3,
       retainedCommits: 3,
       unresolvedCommits: 0,
@@ -2008,6 +2009,7 @@ describe('the read cache answers as the captured read (CAN-7155)', () => {
       ),
       discovery: 'complete',
       log: {
+        logId: '00000000-0000-4000-8000-000000000001',
         commitId: 9,
         retainedCommits: 9,
         unresolvedCommits: 0,
@@ -2338,6 +2340,7 @@ describe('cached read views answer as a fresh capture (CAN-7155 Seam A)', () => 
       ),
       discovery,
       log: {
+        logId: '00000000-0000-4000-8000-000000000001',
         commitId,
         retainedCommits: commitId,
         unresolvedCommits: 0,

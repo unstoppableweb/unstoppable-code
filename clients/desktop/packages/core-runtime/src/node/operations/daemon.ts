@@ -8,9 +8,13 @@ export {
 } from './module';
 export {
   createDaemonOperationService,
+  DAEMON_OPERATION_LEDGER_BACKUP_DIR,
+  DAEMON_OPERATION_LEDGER_BACKUP_RETRY_AFTER_MS,
   DAEMON_OPERATION_LEDGER_OPEN_BUSY_TIMEOUT_MS,
   DAEMON_OPERATION_LEDGER_RETRY_AFTER_MS,
   isDaemonOperationLedgerOwner,
   operationLedgerPath,
+  reclaimDaemonOperationLedger,
   type DaemonOperationServiceOptions,
+  type ReclaimDaemonOperationLedgerOptions,
 } from './daemon-ledger';

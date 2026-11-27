@@ -17,20 +17,20 @@ import {
 import { Button } from '../../primitives/Button';
 import { Skeleton } from '../../primitives/Skeleton';
 import { Tooltip } from '../../primitives/Tooltip';
+import { Picker } from '../../primitives/Picker';
 import {
-  FloatingPickerMenu,
-  PickerMenuFooter,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionDescription,
-  PickerMenuOptionLabel,
-  PickerMenuSampleOptions,
-  PickerMenuState,
+  PickerFooter,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionDescription,
+  PickerOptionLabel,
+  PickerSampleOptions,
+  PickerState,
   PickerTrigger,
   PickerTriggerChevron,
   type PickerTriggerVariant,
-} from '../../primitives/PickerMenu';
+} from '../../primitives/PickerParts';
 import { LedgerInPlaceTrigger } from './LedgerInPlaceTrigger';
 
 export interface LedgerOwnerPickerProps {
@@ -196,7 +196,7 @@ export function LedgerOwnerPicker({
           </PickerTrigger>
         ),
       )}
-      <FloatingPickerMenu
+      <Picker
         open={open}
         // Arrow keys on the trigger open it too: never while unavailable,
         // and loading the owners as a click does.
@@ -214,7 +214,7 @@ export function LedgerOwnerPicker({
         maximumWidth="22rem"
         data-testid="ledger-owner-menu"
       >
-        <PickerMenuOption
+        <PickerOption
           role="menuitemradio"
           aria-checked={youSelected}
           selected={youSelected}
@@ -223,28 +223,28 @@ export function LedgerOwnerPicker({
             if (!youSelected) onSelect(self ?? null);
           }}
         >
-          <PickerMenuOptionContent>
-            <PickerMenuOptionLabel>
+          <PickerOptionContent>
+            <PickerOptionLabel>
               <span className={REPLAY_BLOCK_CLASS}>You</span>
-            </PickerMenuOptionLabel>
-          </PickerMenuOptionContent>
-          <PickerMenuOptionCheck selected={youSelected} />
-        </PickerMenuOption>
+            </PickerOptionLabel>
+          </PickerOptionContent>
+          <PickerOptionCheck selected={youSelected} />
+        </PickerOption>
         {status === 'loading' && (
           <Skeleton loading label="Loading owners">
-            <PickerMenuSampleOptions rows={3} leading={false} />
+            <PickerSampleOptions rows={3} leading={false} />
           </Skeleton>
         )}
         {status === 'problem' && (
-          <PickerMenuState data-testid="ledger-owner-problem">
+          <PickerState data-testid="ledger-owner-problem">
             <span className="flex-1">Couldn&apos;t load owners.</span>
             <Button type="button" variant="ghost" size="sm" onClick={onOpen}>
               Try again
             </Button>
-          </PickerMenuState>
+          </PickerState>
         )}
         {status === 'ready' && others.length === 0 && (
-          <PickerMenuState>No chats or agents to assign yet.</PickerMenuState>
+          <PickerState>No chats or agents to assign yet.</PickerState>
         )}
         {others.map((candidate) => {
           const selected =
@@ -256,7 +256,7 @@ export function LedgerOwnerPicker({
               ));
           const description = ledgerOwnerCandidateDescription(candidate);
           return (
-            <PickerMenuOption
+            <PickerOption
               key={candidate.actor.actorId}
               role="menuitemradio"
               aria-checked={selected}
@@ -269,8 +269,8 @@ export function LedgerOwnerPicker({
                 if (!selected) onSelect(candidate);
               }}
             >
-              <PickerMenuOptionContent>
-                <PickerMenuOptionLabel>
+              <PickerOptionContent>
+                <PickerOptionLabel>
                   <span
                     className={
                       candidate.actor.kind === 'user'
@@ -280,23 +280,23 @@ export function LedgerOwnerPicker({
                   >
                     {candidate.displayName}
                   </span>
-                </PickerMenuOptionLabel>
+                </PickerOptionLabel>
                 {description.length > 0 && (
-                  <PickerMenuOptionDescription>
+                  <PickerOptionDescription>
                     {description}
-                  </PickerMenuOptionDescription>
+                  </PickerOptionDescription>
                 )}
-              </PickerMenuOptionContent>
-              <PickerMenuOptionCheck selected={selected} />
-            </PickerMenuOption>
+              </PickerOptionContent>
+              <PickerOptionCheck selected={selected} />
+            </PickerOption>
           );
         })}
-        <PickerMenuFooter>
+        <PickerFooter>
           <p className="px-2 py-1 text-2xs fg-tertiary">
             Assigning this entry does not start the session.
           </p>
-        </PickerMenuFooter>
-      </FloatingPickerMenu>
+        </PickerFooter>
+      </Picker>
     </div>
   );
 }

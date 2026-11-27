@@ -13,12 +13,12 @@ import { ActionMenuRowStyle } from '../primitives/ActionMenuItems';
 import { ARCHIVED_ROW_ACTIONS_VISIBLE_WIDE } from './ArchivedOverviewRow';
 import { Button } from '../primitives/Button';
 import {
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuLabel,
-} from '../primitives/DropdownMenu';
-import { FLOATING_MENU_GAP, FloatingMenu } from '../primitives/FloatingMenu';
+  MenuDivider,
+  MenuItem,
+  MenuItemIcon,
+  MenuLabel,
+} from '../primitives/MenuItem';
+import { MENU_GAP, Menu } from '../primitives/Menu';
 
 export interface ArchivedRowActionsMenuProps {
   /** Item title, used for the trigger's and menu's accessible names. */
@@ -115,13 +115,13 @@ export function ArchivedRowActionsMenu({
           <MoreHorizontalIcon size="sm" aria-hidden="true" />
         </Button>
       </span>
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={open}
         onOpenChange={setOpen}
         anchorRef={triggerRef}
         placement="bottom-right"
-        gap={FLOATING_MENU_GAP}
+        gap={MENU_GAP}
         interaction="menu"
         aria-label={`Actions for ${itemName}`}
         data-testid={`${testIdPrefix}-menu`}
@@ -129,7 +129,7 @@ export function ArchivedRowActionsMenu({
         onClick={(event) => event.stopPropagation()}
       >
         <ActionMenuRowStyle>
-          <DropdownMenuItem
+          <MenuItem
             disabled={busy || restoreBlocked}
             aria-describedby={restoreBlocked ? reasonId : undefined}
             data-testid={`${testIdPrefix}-restore`}
@@ -138,24 +138,24 @@ export function ArchivedRowActionsMenu({
               onRestore();
             }}
           >
-            <DropdownMenuItemIcon>
+            <MenuItemIcon>
               <RefreshIcon />
-            </DropdownMenuItemIcon>
+            </MenuItemIcon>
             Restore
-          </DropdownMenuItem>
+          </MenuItem>
           {restoreBlocked && (
-            <DropdownMenuLabel
+            <MenuLabel
               id={reasonId}
               role="note"
               data-testid={`${testIdPrefix}-restore-reason`}
               className="whitespace-normal"
             >
               {restoreBlockedReason}
-            </DropdownMenuLabel>
+            </MenuLabel>
           )}
           {/* The removal rows close the menu in their own group. */}
-          <DropdownMenuDivider />
-          <DropdownMenuItem
+          <MenuDivider />
+          <MenuItem
             disabled={busy}
             data-testid={`${testIdPrefix}-state`}
             onClick={() => {
@@ -163,12 +163,12 @@ export function ArchivedRowActionsMenu({
               onToggleState();
             }}
           >
-            <DropdownMenuItemIcon>
+            <MenuItemIcon>
               {archived ? <TrashIcon /> : <ArchiveIcon />}
-            </DropdownMenuItemIcon>
+            </MenuItemIcon>
             {archived ? 'Delete' : 'Archive'}
-          </DropdownMenuItem>
-          <DropdownMenuItem
+          </MenuItem>
+          <MenuItem
             tone="destructive"
             disabled={busy}
             data-testid={`${testIdPrefix}-delete`}
@@ -177,13 +177,13 @@ export function ArchivedRowActionsMenu({
               onDeletePermanently();
             }}
           >
-            <DropdownMenuItemIcon>
+            <MenuItemIcon>
               <TrashPermanentlyIcon />
-            </DropdownMenuItemIcon>
+            </MenuItemIcon>
             Delete permanently
-          </DropdownMenuItem>
+          </MenuItem>
         </ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
     </>
   );
 }

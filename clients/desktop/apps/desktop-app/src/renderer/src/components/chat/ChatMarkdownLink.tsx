@@ -17,6 +17,7 @@ import {
   isBrowserRenderedFile,
   openFileInBrowserPanel,
 } from '@/lib/openFileInBrowserPanel';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { ChatMarkdownFileTargetContext } from './chat-markdown-file-target';
 import { CoreCoworkRequestError } from '@canopy/app-state/core-cowork';
 import {
@@ -114,6 +115,7 @@ export function ChatMarkdownLink({
   // load as in any chat (CAN-4785).
   if (
     !target ||
+    isPairedComputerId(target.projectId) ||
     !href ||
     href.startsWith('#') ||
     /^[\\/]{2}/.test(href) ||

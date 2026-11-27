@@ -30,6 +30,8 @@ import {
   createFeedbackScrub,
   type FeedbackScrubMode,
   type FeedbackScrubOptions,
+  type WithheldReason,
+  type WithheldSummary,
 } from './feedback-scrub';
 export const MAX_FILE_BYTES = 25 * 1024 * 1024;
 export const MAX_FEEDBACK_MANIFEST_BYTES = 1024 * 1024;
@@ -72,6 +74,11 @@ type SkippedReason =
 interface SkippedFile {
   path: string;
   reason: SkippedReason;
+}
+
+/** A file the bundle copied with some of its content withheld (CAN-7623). */
+interface WithheldContent extends WithheldSummary {
+  path: string;
 }
 
 export interface FeedbackManifest {
@@ -137,11 +144,15 @@ export interface FeedbackManifest {
     includedFilesOmitted: number;
     skippedFilesOmitted: number;
     skippedFileReasons: Partial<Record<SkippedReason, number>>;
+    withheldContentOmitted: number;
+    withheldContentReasons: Partial<Record<WithheldReason, number>>;
   };
   collectionLimits?: {
     traversalPaths: number;
     cutoffPath: string;
   };
+  /** Counts and reasons only, never the withheld text. */
+  withheldContent?: WithheldContent[];
 }
 
 interface AddFileOptions {
@@ -221,6 +232,7 @@ export class FeedbackBundleBuilder {
   private readonly reserved = new Set<string>();
   private readonly retainedReservations = new Set<string>();
   private readonly skipped: SkippedFile[] = [];
+  private readonly withheld: WithheldContent[] = [];
   private skippedFilesOmitted = 0;
   private readonly skippedFileReasons: Partial<Record<SkippedReason, number>> =
     {};
@@ -241,6 +253,11 @@ export class FeedbackBundleBuilder {
 
   skippedFiles(): SkippedFile[] {
     return [...this.skipped];
+  }
+
+  /** Records what a file's scrub withheld, for the manifest. */
+  recordWithheld(path: string, summary: WithheldSummary): void {
+    this.withheld.push({ path, ...summary });
   }
 
   async addFileIfSafe(
@@ -328,11 +345,15 @@ export class FeedbackBundleBuilder {
     this.included.add(normalizedZipPath);
   }
 
+  /** `scrub` applies to every file under the directory. */
   async addDirectoryIfSafe(
     sourceDir: string,
     zipDir: string,
-    options: AddFileOptions,
+    directoryOptions: AddFileOptions,
+    scrub?: FeedbackScrubMode,
   ): Promise<void> {
+    const options =
+      scrub === undefined ? directoryOptions : { ...directoryOptions, scrub };
     this.assertCollecting();
     if (options.omitForSize && this.hasReachedCollectionLimit()) return;
     const normalizedZipDir = normalizeZipPath(zipDir);
@@ -567,10 +588,11 @@ export class FeedbackBundleBuilder {
                 settle(null, source);
                 return;
               }
-              const scrubbed = createFeedbackScrub(
-                entry.scrub,
-                entry.scrubOptions,
-              );
+              const scrubbed = createFeedbackScrub(entry.scrub, {
+                ...entry.scrubOptions,
+                path: entry.path,
+                report: (summary) => this.recordWithheld(entry.path, summary),
+              });
               scrubbed.on('error', fail);
               settle(null, source.pipe(scrubbed));
             })().catch((error: unknown) => {
@@ -589,6 +611,7 @@ export class FeedbackBundleBuilder {
         zip.addReadStreamLazy('feedback.json', (callback) => {
           let settled = false;
           try {
+            // Each scrubbed file has been written by now: this is the last entry.
             const bytes = this.manifestBytes(bounded);
             settled = true;
             callback(null, Readable.from([bytes]));
@@ -675,27 +698,45 @@ export class FeedbackBundleBuilder {
       throw new Error('Feedback manifest is required');
     const includedFiles = this.includedFiles();
     const skippedFiles = this.skippedFiles();
+    const withheld = [...this.withheld].sort((left, right) =>
+      left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+    );
     // The manifest also spends the expanded budget the other entries leave.
     const limit = Math.min(
       MAX_FEEDBACK_MANIFEST_BYTES,
       MAX_FEEDBACK_ARCHIVE_EXPANDED_BYTES - this.sourceBytes,
     );
+    const withheldContentReasons: Partial<Record<WithheldReason, number>> = {};
+    for (const entry of withheld)
+      for (const reason of entry.reasons)
+        withheldContentReasons[reason] =
+          (withheldContentReasons[reason] ?? 0) + 1;
     let includedCount = includedFiles.length;
+    let withheldCount = withheld.length;
     let skippedCount = skippedFiles.length;
     for (;;) {
       const includedFilesOmitted = includedFiles.length - includedCount;
+      const withheldContentOmitted = withheld.length - withheldCount;
       const skippedFilesOmitted =
         this.skippedFilesOmitted + skippedFiles.length - skippedCount;
       const manifest: FeedbackManifest = {
         ...this.manifest,
         includedFiles: includedFiles.slice(0, includedCount),
         skippedFiles: skippedFiles.slice(0, skippedCount),
-        ...(includedFilesOmitted + skippedFilesOmitted > 0
+        // Counts and reasons only, never the withheld text; always set here.
+        withheldContent:
+          withheldCount === 0 ? undefined : withheld.slice(0, withheldCount),
+        ...(includedFilesOmitted +
+          withheldContentOmitted +
+          skippedFilesOmitted >
+        0
           ? {
               inventorySummary: {
                 includedFilesOmitted,
                 skippedFilesOmitted,
                 skippedFileReasons: this.skippedFileReasons,
+                withheldContentOmitted,
+                withheldContentReasons,
               },
             }
           : {}),
@@ -713,11 +754,15 @@ export class FeedbackBundleBuilder {
         'utf8',
       );
       if (!bounded || bytes.length <= limit) return bytes;
-      if (!this.reduceChatDetails || includedCount + skippedCount === 0)
+      if (
+        !this.reduceChatDetails ||
+        includedCount + withheldCount + skippedCount === 0
+      )
         throw new FeedbackArchiveSizeLimitError('contents');
       // Inventory comes from the ZIP; shorten only its duplicate manifest list
       // first, keeping omission reasons whenever they fit.
       if (includedCount > 0) includedCount = Math.floor(includedCount / 2);
+      else if (withheldCount > 0) withheldCount = Math.floor(withheldCount / 2);
       else skippedCount = Math.floor(skippedCount / 2);
     }
   }

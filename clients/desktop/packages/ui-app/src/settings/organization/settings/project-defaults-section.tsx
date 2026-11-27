@@ -417,7 +417,7 @@ function ProjectDefaultConnectorsCard({
   return (
     <SettingsCard
       title="Connectors"
-      subtitle="A connector that is on is in every project, including new ones. People on a project can use it."
+      subtitle="A connector that is on is in every project, including new ones. Only people added to a project can use it there."
       testId="organization-project-defaults-connectors"
     >
       {rows.length === 0 ? (

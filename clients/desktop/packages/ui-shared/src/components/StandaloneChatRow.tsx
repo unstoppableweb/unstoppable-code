@@ -5,7 +5,7 @@ import { ArchiveIcon, MoreHorizontalIcon } from '../icons/AppIcons';
 import { ModelProviderIcon } from '../icons/ModelProviderIcon';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { RailIconButton } from './RailIconButton';
-import { FloatingMenu } from '../primitives/FloatingMenu';
+import { Menu } from '../primitives/Menu';
 import { ActionMenuRowStyle } from '../primitives/ActionMenuItems';
 import { WorkEntryRowMenuItems } from './WorkEntryRow';
 
@@ -159,7 +159,7 @@ export function StandaloneChatRow({
             aria-expanded={menuOpen}
             data-testid="standalone-chat-row-menu"
           />
-          <FloatingMenu
+          <Menu
             open={menuOpen}
             onOpenChange={setMenuOpen}
             anchorRef={menuAnchor}
@@ -180,7 +180,7 @@ export function StandaloneChatRow({
                 onArchive={onArchive}
               />
             </ActionMenuRowStyle>
-          </FloatingMenu>
+          </Menu>
         </span>
       )}
     </CompositeListRow>

@@ -30,6 +30,10 @@ import {
 } from '@canopy/ui-shared/components';
 import { McpPlacementSlotProvider } from './McpServerManagement';
 import {
+  curatedMcpPublishedContents,
+  type PublishedMcpContent,
+} from './curatedMcpPublishedContents';
+import {
   MCP_PROVIDER_CONNECTOR_LABELS,
   mcpProviderOnlyGuidance,
 } from './mcpConnectionCopy';
@@ -68,6 +72,7 @@ export type McpDetailEntry = Pick<
     Pick<
       CuratedMcpServerEntry,
       | 'key'
+      | 'url'
       | 'longDescription'
       | 'logoUrl'
       | 'authorName'
@@ -189,6 +194,7 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
   const toolsBody = (
     <McpToolsBody
       inlineError={layout}
+      published={curatedMcpPublishedContents(entry.url)}
       installed={installedServerId !== null}
       toolNames={toolNames}
       toolsLoading={toolsLoading}
@@ -577,18 +583,63 @@ function McpToolsBody({
   toolsLoading,
   toolsError,
   inlineError = false,
+  published,
 }: {
   /** New Customize: a failure as a line, not a banner; names replay-blocked. */
   inlineError?: boolean;
+  published?: PublishedMcpContent;
   installed: boolean;
   toolNames: string[] | null;
   toolsLoading: boolean;
   toolsError: string;
 }): JSX.Element {
+  if (!installed && published)
+    return (
+      <div
+        className="flex min-w-0 flex-col gap-3"
+        data-testid="mcp-published-contents"
+      >
+        <p className="text-xs fg-secondary">
+          Published by {published.publisher}. Workspace permissions determine
+          which tools your account can use.
+        </p>
+        <DataTable
+          caption="Published tools and capabilities"
+          rows={[...published.tools]}
+          rowKey={(tool): string => tool.name}
+          columns={[
+            {
+              key: 'name',
+              header: 'Capability',
+              overflow: 'wrap',
+              render: (tool): JSX.Element => (
+                <span className="text-xs font-medium">{tool.name}</span>
+              ),
+            },
+            {
+              key: 'description',
+              header: 'Description',
+              overflow: 'wrap',
+              render: (tool): JSX.Element => (
+                <span className="text-xs fg-secondary">{tool.description}</span>
+              ),
+            },
+          ]}
+        />
+        <TextLink
+          href={published.sourceUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          size="xs"
+        >
+          Read the publisher’s full documentation
+        </TextLink>
+      </div>
+    );
   if (!installed)
     return (
       <p className="text-xs fg-secondary">
-        Tools appear after you add this server.
+        The publisher hasn’t provided a tool inventory for this server.
       </p>
     );
   if (toolsLoading)

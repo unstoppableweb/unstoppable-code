@@ -1,27 +1,27 @@
 'use client';
 
-import { PickListSearch } from '../primitives/PickList';
+import { PickerSearchCombobox } from '../primitives/PickerSearch';
 
 import { ControlButton } from '../primitives/Button';
 import { useId, useRef, useState, type JSX, type ReactNode } from 'react';
 import { ChevronDownMediumIcon, PlusIcon } from '../icons/AppIcons';
-import { FLOATING_MENU_GAP } from '../primitives/FloatingMenu';
+import { MENU_GAP } from '../primitives/Menu';
 import { Inline } from '../primitives/Stack';
 import { useMediaQuery } from '../primitives/useMediaQuery';
+import { Picker } from '../primitives/Picker';
 import {
-  FloatingPickerMenu,
-  PickerMenuList,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionDescription,
-  PickerMenuOptionLabel,
-  PickerMenuOptionLeading,
-  PickerMenuOptionTrailing,
-  PickerMenuSearchHeader,
-  PickerMenuSection,
-  PickerMenuState,
-} from '../primitives/PickerMenu';
+  PickerList,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionDescription,
+  PickerOptionLabel,
+  PickerOptionLeading,
+  PickerOptionTrailing,
+  PickerSearchHeader,
+  PickerSection,
+  PickerState,
+} from '../primitives/PickerParts';
 
 export interface CreatablePickerOption {
   /** Stable value reported to onValueChange (for sidebar groups: the group name). */
@@ -252,7 +252,7 @@ export function CreatablePickerSelect({
 
     if (row.type === 'empty') {
       return (
-        <PickerMenuOption
+        <PickerOption
           key={rowId}
           id={rowId}
           role="option"
@@ -263,18 +263,18 @@ export function CreatablePickerSelect({
           onMouseMove={(): void => setActiveRowId(rowId)}
           onClick={(): void => chooseRow(row)}
         >
-          <PickerMenuOptionLeading />
-          <PickerMenuOptionContent>
-            <PickerMenuOptionLabel>{emptyLabel}</PickerMenuOptionLabel>
-          </PickerMenuOptionContent>
-          <PickerMenuOptionCheck selected={selected} />
-        </PickerMenuOption>
+          <PickerOptionLeading />
+          <PickerOptionContent>
+            <PickerOptionLabel>{emptyLabel}</PickerOptionLabel>
+          </PickerOptionContent>
+          <PickerOptionCheck selected={selected} />
+        </PickerOption>
       );
     }
 
     if (row.type === 'unmatched') {
       return (
-        <PickerMenuOption
+        <PickerOption
           key={rowId}
           id={rowId}
           role="option"
@@ -285,25 +285,21 @@ export function CreatablePickerSelect({
           onMouseMove={(): void => setActiveRowId(rowId)}
           onClick={(): void => chooseRow(row)}
         >
-          <PickerMenuOptionLeading>
-            {unmatchedValueLeading}
-          </PickerMenuOptionLeading>
-          <PickerMenuOptionContent>
-            <PickerMenuOptionLabel>{value}</PickerMenuOptionLabel>
-          </PickerMenuOptionContent>
+          <PickerOptionLeading>{unmatchedValueLeading}</PickerOptionLeading>
+          <PickerOptionContent>
+            <PickerOptionLabel>{value}</PickerOptionLabel>
+          </PickerOptionContent>
           {unmatchedValueHint ? (
-            <PickerMenuOptionTrailing>
-              {unmatchedValueHint}
-            </PickerMenuOptionTrailing>
+            <PickerOptionTrailing>{unmatchedValueHint}</PickerOptionTrailing>
           ) : null}
-          <PickerMenuOptionCheck selected={selected} />
-        </PickerMenuOption>
+          <PickerOptionCheck selected={selected} />
+        </PickerOption>
       );
     }
 
     if (row.type === 'option') {
       return (
-        <PickerMenuOption
+        <PickerOption
           key={rowId}
           id={rowId}
           role="option"
@@ -314,24 +310,22 @@ export function CreatablePickerSelect({
           onMouseMove={(): void => setActiveRowId(rowId)}
           onClick={(): void => chooseRow(row)}
         >
-          <PickerMenuOptionLeading>
-            {row.option.leading}
-          </PickerMenuOptionLeading>
-          <PickerMenuOptionContent>
-            <PickerMenuOptionLabel>{row.option.label}</PickerMenuOptionLabel>
+          <PickerOptionLeading>{row.option.leading}</PickerOptionLeading>
+          <PickerOptionContent>
+            <PickerOptionLabel>{row.option.label}</PickerOptionLabel>
             {row.option.description ? (
-              <PickerMenuOptionDescription>
+              <PickerOptionDescription>
                 {row.option.description}
-              </PickerMenuOptionDescription>
+              </PickerOptionDescription>
             ) : null}
-          </PickerMenuOptionContent>
-          <PickerMenuOptionCheck selected={selected} />
-        </PickerMenuOption>
+          </PickerOptionContent>
+          <PickerOptionCheck selected={selected} />
+        </PickerOption>
       );
     }
 
     return (
-      <PickerMenuOption
+      <PickerOption
         key={rowId}
         id={rowId}
         role="option"
@@ -343,13 +337,13 @@ export function CreatablePickerSelect({
         onMouseMove={(): void => setActiveRowId(rowId)}
         onClick={(): void => chooseRow(row)}
       >
-        <PickerMenuOptionLeading tone="accent">
+        <PickerOptionLeading tone="accent">
           <PlusIcon size="sm" />
-        </PickerMenuOptionLeading>
-        <PickerMenuOptionContent>
-          <PickerMenuOptionLabel>{createLabel(row.text)}</PickerMenuOptionLabel>
-        </PickerMenuOptionContent>
-      </PickerMenuOption>
+        </PickerOptionLeading>
+        <PickerOptionContent>
+          <PickerOptionLabel>{createLabel(row.text)}</PickerOptionLabel>
+        </PickerOptionContent>
+      </PickerOption>
     );
   };
 
@@ -413,22 +407,22 @@ export function CreatablePickerSelect({
       >
         <ChevronDownMediumIcon size={16} />
       </span>
-      <FloatingPickerMenu
+      <Picker
         open={open}
         onOpenChange={setOpen}
         anchorRef={triggerRef}
         returnFocusRef={triggerRef}
         initialFocusRef={finePointer ? searchRef : undefined}
         placement="bottom-left"
-        gap={FLOATING_MENU_GAP}
+        gap={MENU_GAP}
         interaction="manual"
         role="dialog"
         aria-label={ariaLabel}
         aria-labelledby={ariaLabelledBy}
         maximumWidth="max(20rem, var(--canopy-picker-trigger-width))"
       >
-        <PickerMenuSearchHeader>
-          <PickListSearch
+        <PickerSearchHeader>
+          <PickerSearchCombobox
             ref={searchRef}
             type="search"
             autoComplete="off"
@@ -462,25 +456,22 @@ export function CreatablePickerSelect({
             }
             data-testid={testId === undefined ? undefined : `${testId}-search`}
           />
-        </PickerMenuSearchHeader>
-        <PickerMenuList
-          id={listboxId}
-          aria-label={ariaLabel ?? searchPlaceholder}
-        >
+        </PickerSearchHeader>
+        <PickerList id={listboxId} aria-label={ariaLabel ?? searchPlaceholder}>
           {rows.length === 0 ? (
-            <PickerMenuState>{emptyListMessage}</PickerMenuState>
+            <PickerState>{emptyListMessage}</PickerState>
           ) : (
             <>
               {rows
                 .filter((row) => row.type !== 'create')
                 .map((row) => renderRow(row))}
               {createRow ? (
-                <PickerMenuSection>{renderRow(createRow)}</PickerMenuSection>
+                <PickerSection>{renderRow(createRow)}</PickerSection>
               ) : null}
             </>
           )}
-        </PickerMenuList>
-      </FloatingPickerMenu>
+        </PickerList>
+      </Picker>
     </span>
   );
 }

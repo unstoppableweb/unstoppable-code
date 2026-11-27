@@ -8,7 +8,7 @@ import {
   type ActionMenuItem,
 } from '../primitives/ActionMenuItems';
 import { Button } from '../primitives/Button';
-import { FLOATING_MENU_GAP, FloatingMenu } from '../primitives/FloatingMenu';
+import { MENU_GAP, Menu } from '../primitives/Menu';
 import { UninstallConfirmDialog } from './UninstallConfirmDialog';
 
 /**
@@ -128,13 +128,13 @@ export function InstalledShareMenu({
       >
         <MoreHorizontalIcon size="sm" aria-hidden />
       </Button>
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={open}
         onOpenChange={setOpen}
         anchorRef={kebabRef}
         placement={placement === 'above' ? 'top-right' : 'bottom-right'}
-        gap={FLOATING_MENU_GAP}
+        gap={MENU_GAP}
         interaction="menu"
         data-testid={ids.menu}
         className="w-52"
@@ -144,13 +144,13 @@ export function InstalledShareMenu({
             items={items}
             onSelect={(item): void => {
               setOpen(false);
-              // Hand focus back to the kebab, as a FloatingMenu pick does.
+              // Hand focus back to the kebab, as a Menu pick does.
               kebabRef.current?.focus({ preventScroll: true });
               item.onSelect?.();
             }}
           />
         </ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
       {confirming && onUninstall && (
         <UninstallConfirmDialog
           {...(uninstallErrorRecorded

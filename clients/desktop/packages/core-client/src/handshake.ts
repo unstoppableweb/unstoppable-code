@@ -38,6 +38,8 @@ export interface CanopyInitializeParamsInput {
   readonly maxMessageBytes?: number;
   /** `client.ownerProof` for a daemon owner session (CAN-5771). */
   readonly ownerProof?: string;
+  /** `client.desktopPeerProof` for the launching desktop's sessions. */
+  readonly desktopPeerProof?: string;
 }
 
 export interface CanopyAcceptedInitialize {
@@ -97,6 +99,9 @@ export function buildCanopyInitializeParams(
       }),
       ...(options.ownerProof !== undefined && {
         ownerProof: options.ownerProof,
+      }),
+      ...(options.desktopPeerProof !== undefined && {
+        desktopPeerProof: options.desktopPeerProof,
       }),
     },
   });

@@ -26,15 +26,15 @@ import {
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
   ActionMenuRowStyle,
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  type DropdownMenuItemStatus,
-  DropdownMenuRowStyleProvider,
+  MenuDivider,
+  MenuItem,
+  MenuItemIcon,
+  type MenuItemStatus,
+  MenuRowStyleProvider,
   DEFAULT_MENU_ROW_STYLE,
   QUIET_MENU_ROW_STYLE,
-  FloatingMenu,
-  FloatingMenuPointAnchor,
+  Menu,
+  MenuPointAnchor,
   SidebarMoreControl,
   SidebarNavMarker,
   useContextMenuPlacement,
@@ -2820,7 +2820,7 @@ export function AppSidebar({
   ]);
 
   // Single chokepoint for every More-menu open/close path — pointer clicks,
-  // Enter/Space on the button, and FloatingMenu's ArrowDown/ArrowUp anchor
+  // Enter/Space on the button, and Menu's ArrowDown/ArrowUp anchor
   // opening measure the navigation boundary directly, including restored
   // scroll positions that have not dispatched a scroll event.
   const handleMoreOpenChange = (open: boolean): void => {
@@ -2861,8 +2861,11 @@ export function AppSidebar({
   const appAdvisorActiveEntryId = useAppAdvisorActiveEntryId();
   const appAdvisorCollapsed = useSidebarStore((s) => s.orchestratorCollapsed);
   // Thinking outranks unread outranks open, in both regions.
-  const appAdvisorStatus: DropdownMenuItemStatus | undefined =
-    appAdvisorThinking ? 'active' : appAdvisorUnread ? 'unread' : undefined;
+  const appAdvisorStatus: MenuItemStatus | undefined = appAdvisorThinking
+    ? 'active'
+    : appAdvisorUnread
+      ? 'unread'
+      : undefined;
 
   // App Advisor keeps its bespoke thinking/unread/open treatment in either
   // region, its orbit turning while it works; only padding, testid, onboarding
@@ -2874,7 +2877,7 @@ export function AppSidebar({
     const isMain = region === 'main';
     if (!isMain) {
       return (
-        <DropdownMenuItem
+        <MenuItem
           key={def.key}
           onClick={(): void => handleMoreItemClick(onAppAdvisorClick)}
           data-testid="sidebar-more-item-app-advisor"
@@ -2883,11 +2886,11 @@ export function AppSidebar({
           status={appAdvisorStatus}
           selected={appAdvisorStatus === undefined && appAdvisorOpen}
         >
-          <DropdownMenuItemIcon>
+          <MenuItemIcon>
             <RunningGlyph running={appAdvisorThinking}>{def.icon}</RunningGlyph>
-          </DropdownMenuItemIcon>
+          </MenuItemIcon>
           {def.label}
-        </DropdownMenuItem>
+        </MenuItem>
       );
     }
     const rowIcon = (
@@ -3042,7 +3045,7 @@ export function AppSidebar({
     const isCurrentPage = activePage === page;
     if (!isMain) {
       return (
-        <DropdownMenuItem
+        <MenuItem
           key={def.key}
           onClick={(): void =>
             handleMoreItemClick(() => activateNavPage(page, isCurrentPage))
@@ -3057,9 +3060,9 @@ export function AppSidebar({
           status={workersActive ? 'active' : undefined}
           selected={!workersActive && isCurrentPage}
         >
-          <DropdownMenuItemIcon>{workersIcon(def)}</DropdownMenuItemIcon>
+          <MenuItemIcon>{workersIcon(def)}</MenuItemIcon>
           {def.label}
-        </DropdownMenuItem>
+        </MenuItem>
       );
     }
     return (
@@ -3112,7 +3115,7 @@ export function AppSidebar({
     // `onNavigate` dispatches `navigation.go_to_page` through App.tsx's
     // `dispatchUiAction`, shared with App Advisor navigation.
     return (
-      <DropdownMenuItem
+      <MenuItem
         key={def.key}
         onClick={(): void =>
           handleMoreItemClick(() =>
@@ -3127,10 +3130,10 @@ export function AppSidebar({
         }
         selected={isNavKeySelected(key, page, activePage)}
       >
-        <DropdownMenuItemIcon>{def.icon}</DropdownMenuItemIcon>
+        <MenuItemIcon>{def.icon}</MenuItemIcon>
         {def.label}
         {navKeyMarker(key)}
-      </DropdownMenuItem>
+      </MenuItem>
     );
   };
 
@@ -3164,7 +3167,7 @@ export function AppSidebar({
     >
       {rolledMainItems}
       {rolledMainItems.length > 0 && hasCustomGroup && (
-        <DropdownMenuDivider data-testid="sidebar-more-workspace-divider" />
+        <MenuDivider data-testid="sidebar-more-workspace-divider" />
       )}
       {customItems}
       {devPagesTarget !== null && (
@@ -3172,25 +3175,25 @@ export function AppSidebar({
         // page; the page itself carries tabs between them (DevPagesShell).
         // Not a customizable nav key, so it can never be persisted into a
         // sidebar layout.
-        <DropdownMenuItem
+        <MenuItem
           onClick={(): void =>
             handleMoreItemClick(() => onNavigate(devPagesTarget))
           }
           data-testid="sidebar-more-item-dev-pages"
           selected={isDevPage(activePage)}
         >
-          <DropdownMenuItemIcon>
+          <MenuItemIcon>
             <ExperimentIcon />
-          </DropdownMenuItemIcon>
+          </MenuItemIcon>
           Dev pages
           <SidebarNavMarker kind="dev" />
-        </DropdownMenuItem>
+        </MenuItem>
       )}
       {/* Sections above, the setting that governs them below. */}
       {(rolledMainItems.length > 0 || hasCustomGroup) && (
-        <DropdownMenuDivider data-testid="sidebar-more-customize-divider" />
+        <MenuDivider data-testid="sidebar-more-customize-divider" />
       )}
-      <DropdownMenuItem
+      <MenuItem
         onClick={() =>
           handleMoreItemClick(() => {
             setCustomizeOpen(true);
@@ -3202,11 +3205,11 @@ export function AppSidebar({
         aria-haspopup="dialog"
         aria-expanded={customizeOpen}
       >
-        <DropdownMenuItemIcon>
+        <MenuItemIcon>
           <SettingsIcon />
-        </DropdownMenuItemIcon>
+        </MenuItemIcon>
         Customize sidebar
-      </DropdownMenuItem>
+      </MenuItem>
     </SidebarMoreControl>
   );
 
@@ -3372,7 +3375,7 @@ export function AppSidebar({
                   and section menus alike) takes the quiet row style of the
                   worktree row menu: small text, tertiary icons. Context
                   reaches the menus through their portals. */}
-              <DropdownMenuRowStyleProvider value={sidebarMenuRowStyle}>
+              <MenuRowStyleProvider value={sidebarMenuRowStyle}>
                 {/* Titlebar row: a spacer reserves the persistent titlebar corner's
               full width (traffic lights + toggle, rendered by App.tsx as the
               app root's last child). No toggle is rendered here — the corner
@@ -3679,13 +3682,13 @@ export function AppSidebar({
                           </nav>
                           {navContextMenu && (
                             <>
-                              <FloatingMenuPointAnchor
+                              <MenuPointAnchor
                                 ref={navContextMenuAnchorRef}
                                 x={navContextMenu.x}
                                 y={navContextMenu.y}
                                 ownerDocument={document}
                               />
-                              <FloatingMenu
+                              <Menu
                                 open
                                 onOpenChange={(open): void => {
                                   if (!open) setNavContextMenu(null);
@@ -3700,7 +3703,7 @@ export function AppSidebar({
                                 }
                               >
                                 <ActionMenuRowStyle>
-                                  <DropdownMenuItem
+                                  <MenuItem
                                     data-testid="sidebar-nav-context-customize"
                                     aria-haspopup="dialog"
                                     onClick={(): void => {
@@ -3708,13 +3711,13 @@ export function AppSidebar({
                                       setCustomizeOpen(true);
                                     }}
                                   >
-                                    <DropdownMenuItemIcon>
+                                    <MenuItemIcon>
                                       <SettingsIcon />
-                                    </DropdownMenuItemIcon>
+                                    </MenuItemIcon>
                                     Customize sidebar…
-                                  </DropdownMenuItem>
+                                  </MenuItem>
                                 </ActionMenuRowStyle>
-                              </FloatingMenu>
+                              </Menu>
                             </>
                           )}
                         </div>
@@ -3903,7 +3906,7 @@ export function AppSidebar({
                     }
                   />
                 </div>
-              </DropdownMenuRowStyleProvider>
+              </MenuRowStyleProvider>
             </div>
           </SidebarWorkspaceHoverPanel>
         </div>

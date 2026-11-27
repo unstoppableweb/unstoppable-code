@@ -19,6 +19,7 @@ import {
   type ProviderChoiceTarget,
   type ProviderConnection,
   type ProviderSourceFacts,
+  type ProviderSourceId,
 } from './types';
 
 const READY: ProviderConnection = { kind: 'ready' };
@@ -105,14 +106,24 @@ function currentOutcome<TModel extends ProviderChoiceModel>(
     : sameModel(target);
 }
 
+/**
+ * Sources set up in the host's settings rather than signed in to: the AI
+ * gateway and a local Ollama. Their not-connected action is Set up, and they
+ * list models only once set up.
+ */
+function isSetUpSource(source: ProviderSourceId): boolean {
+  return source === 'gateway' || source === 'ollama';
+}
+
 function accountRow<TModel extends ProviderChoiceModel>(
   facts: ProviderSourceFacts<TModel>,
   target: ProviderChoiceTarget<TModel>,
   isCurrent: boolean,
 ): UngroupedRow<TModel> {
   const { connection } = facts;
-  const connectAction: ProviderChoiceAction =
-    facts.source === 'gateway' ? 'set-up' : 'connect';
+  const connectAction: ProviderChoiceAction = isSetUpSource(facts.source)
+    ? 'set-up'
+    : 'connect';
   if (isCurrent) {
     // A signed-out current source offers Reconnect: reconnecting is how
     // this chat keeps going on the same model. Otherwise it offers nothing;
@@ -137,7 +148,7 @@ function accountRow<TModel extends ProviderChoiceModel>(
   // default without signing in, so signing in would not find one: they keep
   // "no runnable model".
   const notConnectedYet =
-    (facts.source === 'gateway' || facts.modelsAfterConnect === true) &&
+    (isSetUpSource(facts.source) || facts.modelsAfterConnect === true) &&
     connection.kind === 'not-connected' &&
     facts.connectable &&
     outcome.kind === 'unavailable' &&
@@ -343,7 +354,7 @@ function setUpRow<TModel extends ProviderChoiceModel>(
     connection.kind !== 'not-connected' ||
     !facts.connectable
       ? 'none'
-      : facts.source === 'gateway'
+      : isSetUpSource(facts.source)
         ? 'set-up'
         : 'connect';
   return {

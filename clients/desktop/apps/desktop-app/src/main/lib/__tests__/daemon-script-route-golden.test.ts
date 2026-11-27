@@ -92,7 +92,7 @@ jest.mock('../../resource-monitor', () => ({
 }));
 
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   mkdirSync,
   mkdtempSync,
@@ -194,6 +194,10 @@ interface DaemonDouble {
   client: unknown;
   /** Awaited before each output stream opens; a rejection refuses it. */
   openGate?: () => Promise<void>;
+  /** Thrown by the next clear once it reaches the double. */
+  clearFailure?: Error;
+  /** What a clear that reaches the double answers, in place of its worker. */
+  clearResult?: { cleared: boolean };
 }
 
 function nodeChild(
@@ -379,6 +383,20 @@ function createDaemonDouble(): DaemonDouble {
             context(options),
           ),
         );
+      if (name === 'worker.script.execution.clear') {
+        if (state.clearFailure !== undefined)
+          return Promise.reject(state.clearFailure);
+        if (state.clearResult !== undefined)
+          return Promise.resolve(state.clearResult);
+        return Promise.resolve(
+          scripts.instructions['worker.script.execution.clear'](
+            params as Parameters<
+              (typeof scripts.instructions)['worker.script.execution.clear']
+            >[0],
+            context(options),
+          ),
+        );
+      }
       if (name === 'worker.script.execution.cancel')
         return Promise.resolve(
           scripts.instructions['worker.script.execution.cancel'](
@@ -1383,5 +1401,205 @@ describePosix('daemon script read route records (CAN-7663)', () => {
       'scripts.list.daemon.fallback': 1,
       'scripts.groupMembers.daemon.fallback': 1,
     });
+  });
+});
+
+// CAN-7663: a finished run's clear, sent through the real desktop dispatcher
+// and worker.script adapter with the caller's key.
+describePosix('daemon script run clears (CAN-7663)', () => {
+  const CLEARER: CanopyCallerDescriptor = {
+    principalId: 'local-desktop-user',
+    clientInstanceId: 'renderer',
+    authorityId: 'local',
+    interfaceKind: 'desktop',
+    grants: ['worker.script.execute'],
+  };
+  const params = {
+    scope: { workspaceId: 'project', worktreeId: 'task' },
+    scriptKey: 'echo',
+    executionId: 'not-a-run',
+  };
+  const clear = (): Promise<unknown> =>
+    runtime.instruction('worker.script.execution.clear', params, {
+      caller: CLEARER,
+      metadata: { idempotencyKey: 'clear-key' },
+    });
+  const clears = (): DaemonCall[] =>
+    double.calls.filter(({ name }) => name === 'worker.script.execution.clear');
+  // The daemon scopes keys per peer, so the caller's key is bound to its
+  // principal before it shares main's script session.
+  const boundKey = (principalId: string, key: string): string =>
+    createHash('sha256')
+      .update(`worker.script.execution.clear\0${principalId}\0${key}`)
+      .digest('hex');
+  const clearRoutes = (): Record<string, number> =>
+    Object.fromEntries(
+      Object.entries(snapshotWorkCounters().route).filter(([key]) =>
+        key.startsWith('scripts.clear.'),
+      ),
+    );
+
+  beforeEach(() => {
+    resetWorkCounters();
+  });
+
+  it.each(['darwin', 'linux'])(
+    "clears a run on the daemon with the caller's key (%s)",
+    async (platform) => {
+      mockPlatform = platform;
+      const local = jest.spyOn(desktopScriptWorker, 'clear');
+      try {
+        await expect(clear()).resolves.toEqual({ cleared: false });
+        expect(
+          clears().map(({ params: sent, idempotencyKey }) => ({
+            sent,
+            idempotencyKey,
+          })),
+        ).toEqual([
+          {
+            sent: params,
+            idempotencyKey: boundKey('local-desktop-user', 'clear-key'),
+          },
+        ]);
+        expect(local).not.toHaveBeenCalled();
+        expect(clearRoutes()).toEqual({ 'scripts.clear.daemon.served': 1 });
+      } finally {
+        local.mockRestore();
+      }
+    },
+  );
+
+  it("keeps two principals' clears apart when they reuse a key, and replays a retry", async () => {
+    mockPlatform = 'darwin';
+    const other: CanopyCallerDescriptor = {
+      ...CLEARER,
+      principalId: 'remote-user',
+      clientInstanceId: 'remote',
+    };
+    const as = (caller: CanopyCallerDescriptor): Promise<unknown> =>
+      runtime.instruction('worker.script.execution.clear', params, {
+        caller,
+        metadata: { idempotencyKey: 'clear-key' },
+      });
+    await expect(as(CLEARER)).resolves.toEqual({ cleared: false });
+    await expect(as(other)).resolves.toEqual({ cleared: false });
+    await expect(as(CLEARER)).resolves.toEqual({ cleared: false });
+    expect(clears().map(({ idempotencyKey }) => idempotencyKey)).toEqual([
+      boundKey('local-desktop-user', 'clear-key'),
+      boundKey('remote-user', 'clear-key'),
+    ]);
+    expect(boundKey('local-desktop-user', 'clear-key')).not.toBe(
+      boundKey('remote-user', 'clear-key'),
+    );
+  });
+
+  it('replays a same-key clear after the route changes, with nothing cleared again', async () => {
+    mockPlatform = 'darwin';
+    double.clearResult = { cleared: true };
+    const local = jest.spyOn(desktopScriptWorker, 'clear');
+    try {
+      await expect(clear()).resolves.toEqual({ cleared: true });
+      mockLatched = true;
+      await expect(clear()).resolves.toEqual({ cleared: true });
+      expect(clears()).toHaveLength(1);
+      expect(local).not.toHaveBeenCalled();
+    } finally {
+      local.mockRestore();
+    }
+  });
+
+  it('refuses a same-key clear with other parameters after the route changes', async () => {
+    mockPlatform = 'darwin';
+    double.clearResult = { cleared: true };
+    const local = jest.spyOn(desktopScriptWorker, 'clear');
+    try {
+      await expect(clear()).resolves.toEqual({ cleared: true });
+      mockLatched = true;
+      await expect(
+        runtime.instruction(
+          'worker.script.execution.clear',
+          { ...params, executionId: 'another-run' },
+          { caller: CLEARER, metadata: { idempotencyKey: 'clear-key' } },
+        ),
+      ).rejects.toMatchObject({
+        payload: { code: 'worker.script.idempotencyKeyReused' },
+      });
+      expect(clears()).toHaveLength(1);
+      expect(local).not.toHaveBeenCalled();
+    } finally {
+      local.mockRestore();
+    }
+  });
+
+  it.each([
+    ['on Windows', (): void => void (mockPlatform = 'win32')],
+    [
+      'while the daemon is latched unreachable',
+      (): void => void (mockLatched = true),
+    ],
+  ])('clears a run in process %s', async (_name, arrange) => {
+    arrange();
+    const local = jest.spyOn(desktopScriptWorker, 'clear');
+    try {
+      await expect(clear()).resolves.toEqual({ cleared: false });
+      expect(double.calls).toEqual([]);
+      expect(mockGet).not.toHaveBeenCalled();
+      expect(local).toHaveBeenCalledTimes(1);
+      expect(clearRoutes()).toEqual({ 'scripts.clear.direct': 1 });
+    } finally {
+      local.mockRestore();
+    }
+  });
+
+  it('sends a retry after a lost reply again, with the same key', async () => {
+    mockPlatform = 'darwin';
+    const lost = new Error('gone');
+    markUnreachable(lost, 'connection_lost');
+    double.clearFailure = lost;
+    await expect(clear()).rejects.toMatchObject({
+      payload: { kind: 'internal' },
+    });
+    double.clearFailure = undefined;
+    double.clearResult = { cleared: true };
+    await expect(clear()).resolves.toEqual({ cleared: true });
+    expect(clears().map(({ idempotencyKey }) => idempotencyKey)).toEqual([
+      boundKey('local-desktop-user', 'clear-key'),
+      boundKey('local-desktop-user', 'clear-key'),
+    ]);
+  });
+
+  it('a daemon unreachable before the send clears in process and notes the fallback', async () => {
+    mockGet.mockRejectedValue(
+      markUnreachable(new Error('down'), 'connection_lost'),
+    );
+    const local = jest.spyOn(desktopScriptWorker, 'clear');
+    try {
+      await expect(clear()).resolves.toEqual({ cleared: false });
+      expect(local).toHaveBeenCalledTimes(1);
+      expect(mockNoteFallback).toHaveBeenCalledWith(
+        'scripts',
+        'connection_lost',
+      );
+      expect(clearRoutes()).toEqual({ 'scripts.clear.daemon.fallback': 1 });
+    } finally {
+      local.mockRestore();
+    }
+  });
+
+  it('a clear lost after the send is the answer, never cleared in process', async () => {
+    const lost = new Error('gone');
+    markUnreachable(lost, 'connection_lost');
+    double.clearFailure = lost;
+    const local = jest.spyOn(desktopScriptWorker, 'clear');
+    try {
+      await expect(clear()).rejects.toMatchObject({
+        payload: { kind: 'internal' },
+      });
+      expect(clears()).toHaveLength(1);
+      expect(local).not.toHaveBeenCalled();
+      expect(clearRoutes()).toEqual({ 'scripts.clear.daemon.failed': 1 });
+    } finally {
+      local.mockRestore();
+    }
   });
 });

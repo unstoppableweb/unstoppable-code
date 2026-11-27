@@ -5,10 +5,7 @@ import { useStore } from 'zustand';
 import type { ExternalAgentsClient } from '@canopy/app-core';
 import { useCanopyClient, useCapabilities } from '@canopy/app-state';
 import { createExternalAgentsWaitingCountStore } from '@canopy/app-state/external-agents';
-import {
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-} from '@canopy/ui-shared/components';
+import { MenuItem, MenuItemIcon } from '@canopy/ui-shared/components';
 import { Bot } from '@canopy/ui-shared/icons/AppIcons';
 import { EXTERNAL_AGENTS_LABEL, EXTERNAL_AGENTS_PATH } from './paths';
 import { useMountedStore } from './use-mounted-store';
@@ -78,15 +75,15 @@ function ExternalAgentsMenuRow({
     ? `${EXTERNAL_AGENTS_LABEL}, ${count} ${count === 1 ? 'request' : 'requests'} waiting`
     : undefined;
   return (
-    <DropdownMenuItem
+    <MenuItem
       onClick={(): void => onOpenPath(EXTERNAL_AGENTS_PATH)}
       data-testid="account-external-agents-row"
       aria-label={accessibleName}
       status={waiting ? 'unread' : undefined}
     >
-      <DropdownMenuItemIcon>
+      <MenuItemIcon>
         <Bot size={14} />
-      </DropdownMenuItemIcon>
+      </MenuItemIcon>
       <span className="min-w-0 flex-1 truncate">{EXTERNAL_AGENTS_LABEL}</span>
       {waiting ? (
         <span
@@ -96,6 +93,6 @@ function ExternalAgentsMenuRow({
           {count}
         </span>
       ) : null}
-    </DropdownMenuItem>
+    </MenuItem>
   );
 }

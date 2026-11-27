@@ -3,8 +3,8 @@ import {
   ActionMenuItems,
   ActionMenuRowStyle,
   Button,
-  FLOATING_MENU_GAP,
-  FloatingMenu,
+  MENU_GAP,
+  Menu,
   ModelProviderIcon,
   ProviderAccountUsageDetails,
   useMinuteClock,
@@ -138,12 +138,12 @@ function AccountMenu({
       >
         <MoreHorizontalIcon size="sm" aria-hidden />
       </Button>
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={setOpen}
         anchorRef={buttonRef}
         placement="bottom-right"
-        gap={FLOATING_MENU_GAP}
+        gap={MENU_GAP}
         aria-label={ACCOUNT_MENU_LABEL}
         data-testid={`account-proxy-account-menu-surface-${account.authIndex}`}
         className="w-56"
@@ -177,7 +177,7 @@ function AccountMenu({
             }}
           />
         </ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
     </>
   );
 }

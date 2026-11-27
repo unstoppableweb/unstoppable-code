@@ -1,11 +1,7 @@
 import { useId, useRef, useState, type JSX } from 'react';
 import type { DevServerHit } from '@/lib/scriptDevServerDetection';
 import { GlobeIcon } from '@canopy/ui-shared/icons';
-import {
-  ActionMenuRowStyle,
-  Button,
-  FloatingMenu,
-} from '@canopy/ui-shared/components';
+import { ActionMenuRowStyle, Button, Menu } from '@canopy/ui-shared/components';
 import { DevServerMenuItem } from './DevServerMenuItem';
 import {
   getDevServerOpenAriaLabel,
@@ -71,7 +67,7 @@ export function DevServerOpenControl({
         <GlobeIcon size="sm" aria-hidden="true" />
         Open ({hits.length})
       </Button>
-      <FloatingMenu
+      <Menu
         id={menuId}
         open={menuOpen}
         onOpenChange={setMenuOpen}
@@ -93,7 +89,7 @@ export function DevServerOpenControl({
             />
           ))}
         </ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

@@ -2,11 +2,11 @@
 
 import type { JSX } from 'react';
 import {
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-} from '../primitives/PickerMenu';
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
+} from '../primitives/PickerParts';
 
 export interface DirectoryPickerOptionRowProps {
   readonly name: string;
@@ -23,7 +23,7 @@ export function DirectoryPickerOptionRow({
   'data-testid': testId,
 }: DirectoryPickerOptionRowProps): JSX.Element {
   return (
-    <PickerMenuOption
+    <PickerOption
       role="option"
       aria-selected={selected}
       selected={selected}
@@ -31,10 +31,10 @@ export function DirectoryPickerOptionRow({
       onMouseDown={(event): void => event.preventDefault()}
       onClick={onSelect}
     >
-      <PickerMenuOptionCheck selected={selected} reserveSpace />
-      <PickerMenuOptionContent>
-        <PickerMenuOptionLabel tone="quiet">{name}</PickerMenuOptionLabel>
-      </PickerMenuOptionContent>
-    </PickerMenuOption>
+      <PickerOptionCheck selected={selected} reserveSpace />
+      <PickerOptionContent>
+        <PickerOptionLabel tone="quiet">{name}</PickerOptionLabel>
+      </PickerOptionContent>
+    </PickerOption>
   );
 }

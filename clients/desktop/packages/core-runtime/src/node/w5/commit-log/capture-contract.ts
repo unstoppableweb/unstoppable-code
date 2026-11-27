@@ -84,7 +84,13 @@ export interface W5FileChainEvidence {
   readonly discontinuities: number;
 }
 
+/** A log identity: a lowercase UUID, as `randomUUID` writes it. */
+export const W5_CAPTURE_LOG_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 export interface W5CaptureEvidence {
+  /** The log file captured; another id is another log, at any commit id. */
+  readonly logId: string;
   /** The allocation high-water mark, not the newest surviving commit. */
   readonly commitId: number;
   /** Surviving commits; fewer than `commitId` means abandoned history. */
@@ -265,6 +271,7 @@ export function isW5CaptureResultShape(
       value.discovery === 'unavailable' ||
       value.discovery === 'invalid-index') &&
     hasOnlyKeys(log, [
+      'logId',
       'commitId',
       'retainedCommits',
       'unresolvedCommits',
@@ -274,6 +281,8 @@ export function isW5CaptureResultShape(
       'chains',
       'resourceRevisionEligibility',
     ]) &&
+    typeof log.logId === 'string' &&
+    W5_CAPTURE_LOG_ID_PATTERN.test(log.logId) &&
     isRevision(log.commitId) &&
     isRevision(log.retainedCommits) &&
     log.retainedCommits <= log.commitId &&

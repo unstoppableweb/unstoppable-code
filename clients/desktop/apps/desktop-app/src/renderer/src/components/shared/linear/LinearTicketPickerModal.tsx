@@ -4,11 +4,11 @@ import type { LinearTicketSearchResult } from '@canopy/desktop-shared/types';
 import {
   DialogModal,
   KeyHintFooter,
-  PickList,
-  PickerMenuOptionContent,
-  PickerMenuOptionDescription,
-  PickerMenuOptionLabel,
-  PickerMenuOptionTrailing,
+  PickerSearchList,
+  PickerOptionContent,
+  PickerOptionDescription,
+  PickerOptionLabel,
+  PickerOptionTrailing,
   WordBoundaryTruncatedText,
 } from '@canopy/ui-shared/components';
 import { pickerKeyHints } from '@canopy/ui-shared/lib/shortcuts';
@@ -16,7 +16,7 @@ import { pickerKeyHints } from '@canopy/ui-shared/lib/shortcuts';
 const SEARCH_DEBOUNCE_MS = 300;
 const NO_TICKETS: readonly LinearTicketSearchResult[] = [];
 
-// Stable across renders, so PickList's row list memoizes.
+// Stable across renders, so PickerSearchList's row list memoizes.
 function ticketKey(ticket: LinearTicketSearchResult): string {
   return ticket.id;
 }
@@ -38,7 +38,7 @@ export interface LinearTicketPickerModalProps {
 
 /**
  * Cmd+P-style Linear ticket picker: a palette (`DialogModal` holding a
- * `PickList`) whose results come from a debounced
+ * `PickerSearchList`) whose results come from a debounced
  * `window.api.searchLinearIssues`. Selecting a ticket (click or Enter) calls
  * `onSelect` and then `onClose`.
  */
@@ -118,7 +118,7 @@ export function LinearTicketPickerModal({
       dataTestId="linear-ticket-picker"
     >
       <div className="flex min-h-0 flex-1 flex-col px-4 pb-2">
-        <PickList
+        <PickerSearchList
           items={showPrompt ? NO_TICKETS : results}
           getKey={ticketKey}
           getLabel={ticketLabel}
@@ -131,29 +131,29 @@ export function LinearTicketPickerModal({
             const description = ticket.description?.trim() ?? '';
             return (
               <>
-                <PickerMenuOptionContent>
+                <PickerOptionContent>
                   <span className="flex min-w-0 items-center gap-2">
                     <Badge>
                       <span className="font-mono">{ticket.identifier}</span>
                     </Badge>
-                    <PickerMenuOptionLabel className="min-w-0 flex-1">
+                    <PickerOptionLabel className="min-w-0 flex-1">
                       <WordBoundaryTruncatedText
                         text={ticket.title}
                         hoverTitle
                         data-testid="linear-ticket-picker-result-title"
                         className="block"
                       />
-                    </PickerMenuOptionLabel>
+                    </PickerOptionLabel>
                   </span>
                   {description.length > 0 && (
-                    <PickerMenuOptionDescription>
+                    <PickerOptionDescription>
                       {description}
-                    </PickerMenuOptionDescription>
+                    </PickerOptionDescription>
                   )}
-                </PickerMenuOptionContent>
-                <PickerMenuOptionTrailing>
+                </PickerOptionContent>
+                <PickerOptionTrailing>
                   {ticket.priorityLabel}
-                </PickerMenuOptionTrailing>
+                </PickerOptionTrailing>
               </>
             );
           }}

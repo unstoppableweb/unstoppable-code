@@ -39,7 +39,6 @@ import {
 } from '@canopy/ui-shared/components';
 import { McpWorkspaceDefaultsSection } from '@canopy/ui-app';
 import {
-  MCP_CONNECT_ONCE_FOR_HARNESSES,
   MCP_SHARED_ACROSS_HARNESSES,
   MCP_WORKSPACE_SETTINGS_HINT,
   McpConnectActionButton,
@@ -1203,7 +1202,7 @@ function AppMcpConnectionDetail({
     ? MCP_SIGN_IN_WAITING_LABEL
     : noAuth
       ? 'Not required'
-      : mcpConnectionStatusLabel(serviceName, copyState);
+      : mcpConnectionStatusLabel(serviceName, copyState, installed);
   const usableHere = connected || accountBehindConnected;
   const statusConnected = !signInPending && !noAuth && usableHere;
   const offersMove =
@@ -1232,11 +1231,7 @@ function AppMcpConnectionDetail({
   const connectedDescription = providerConnections
     ? undefined
     : MCP_SHARED_ACROSS_HARNESSES;
-  const notConnectedDescription = providerConnections
-    ? skillsNote
-    : skillsNote
-      ? `${MCP_CONNECT_ONCE_FOR_HARNESSES} ${skillsNote}`
-      : MCP_CONNECT_ONCE_FOR_HARNESSES;
+  const notConnectedDescription = skillsNote;
   const connectAction = (variant: 'primary' | 'secondary'): JSX.Element => (
     <McpConnectActionButton
       size="compact"

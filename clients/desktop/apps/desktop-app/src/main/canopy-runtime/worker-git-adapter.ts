@@ -445,7 +445,7 @@ const changeSetCapture = new AsyncLocalStorage<ChangeSetCapture>();
  * The checkout `repoId` names: the worktree root, or a directory under its
  * `repos/`, as the multi-repository listing enumerates them.
  */
-async function resolveDiffRepository({
+export async function resolveDiffRepository({
   scope,
   repoId,
 }: WorkerGitDiffGetParams): Promise<string | null> {

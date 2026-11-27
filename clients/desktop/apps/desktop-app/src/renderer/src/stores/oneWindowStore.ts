@@ -128,6 +128,17 @@ export function isOneWindowEnabled(): boolean {
   return useOneWindowStore.getState().enabled;
 }
 
+/** Subscribes to changes in the one-window switch outside React. */
+export function subscribeOneWindowEnabled(
+  listener: (enabled: boolean, previous: boolean) => void,
+): () => void {
+  return useOneWindowStore.subscribe((state, previous) => {
+    if (state.enabled !== previous.enabled) {
+      listener(state.enabled, previous.enabled);
+    }
+  });
+}
+
 /**
  * Whether the one-window work is on, and whether the saved choice has been
  * read yet; re-renders when either changes.
@@ -142,6 +153,14 @@ export function useOneWindowSwitch(): OneWindowState {
 /** Whether the one-window work is on; re-renders when it changes. */
 export function useOneWindowEnabled(): boolean {
   return useOneWindowSwitch().enabled;
+}
+
+/** Subscribes to the one-window switch only while `active` is true. */
+export function useOneWindowEnabledWhen(active: boolean): boolean {
+  useEffect(() => {
+    if (active) followOneWindowSwitch();
+  }, [active]);
+  return useOneWindowStore((state) => (active ? state.enabled : false));
 }
 
 function pairedComputersApi(enabled: boolean): PairedComputersApi | null {

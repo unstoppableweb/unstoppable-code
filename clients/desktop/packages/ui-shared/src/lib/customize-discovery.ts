@@ -56,6 +56,17 @@ export function customizeDiscoveryTabs(
     : CUSTOMIZE_DISCOVERY_TABS.filter((tab) => tab.id !== 'agent');
 }
 
+/**
+ * Whether a tab lists workflows. New Customize leaves them to the Workflows
+ * view (CAN-7691), so its All neither lists nor pages them.
+ */
+export function customizeTabListsWorkflows(
+  tab: MarketplaceTypeTabId,
+  discoveryEnabled: boolean,
+): boolean {
+  return tab === 'workflow' || (tab === 'all' && !discoveryEnabled);
+}
+
 export type CustomizeDiscoveryStatus =
   | 'any'
   | 'installed'

@@ -130,6 +130,7 @@ export async function runScriptTerminal(
   try {
     shell = buildScriptShellCommand(host, options.script, options.shell, {
       interactive: options.shellStartup !== 'login',
+      environment: options.env,
     });
   } catch (error) {
     return failedBeforeStart(

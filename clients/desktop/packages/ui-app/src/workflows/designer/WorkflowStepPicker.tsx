@@ -1,13 +1,12 @@
 'use client';
 
-import { useMemo, useRef, type JSX, type RefObject } from 'react';
+import { useMemo, type JSX, type RefObject } from 'react';
 import {
-  FloatingPickerMenu,
-  PickerMenuOptionContent,
-  PickerMenuOptionDescription,
-  PickerMenuOptionLabel,
-  PickerMenuOptionLeading,
-  PickList,
+  Picker,
+  PickerOptionContent,
+  PickerOptionDescription,
+  PickerOptionLabel,
+  PickerOptionLeading,
 } from '@canopy/ui-shared/components';
 import {
   workflowStepPickerSections,
@@ -43,7 +42,6 @@ export function WorkflowStepPicker({
   onChoose,
   offerSplit = false,
 }: WorkflowStepPickerProps): JSX.Element {
-  const searchRef = useRef<HTMLInputElement>(null);
   const rows = useMemo(
     (): readonly PickerRow[] =>
       workflowStepPickerSections('', { offerSplit }).flatMap((section) =>
@@ -52,11 +50,10 @@ export function WorkflowStepPicker({
     [offerSplit],
   );
   return (
-    <FloatingPickerMenu
+    <Picker
       open={open}
       onOpenChange={onOpenChange}
       anchorRef={anchorRef}
-      initialFocusRef={searchRef}
       placement="bottom-left"
       interaction="manual"
       role="dialog"
@@ -64,53 +61,49 @@ export function WorkflowStepPicker({
       minimumWidth="18rem"
       aria-label="Add a step"
       data-testid="workflow-step-picker"
-    >
-      <PickList
-        items={rows}
-        getKey={(row) => row.option.key}
-        getLabel={(row) => row.option.entry.label}
-        getSection={(row) => row.section}
-        filter={(row, query) => {
+      search={{
+        items: rows,
+        getKey: (row) => row.option.key,
+        getLabel: (row) => row.option.entry.label,
+        getSection: (row) => row.section,
+        filter: (row, query) => {
           const needle = query.trim().toLowerCase();
           return (
             row.option.entry.label.toLowerCase().includes(needle) ||
             row.option.entry.description.toLowerCase().includes(needle)
           );
-        }}
-        renderItem={(row) => {
+        },
+        renderItem: (row) => {
           const Icon = row.option.entry.icon;
           return (
             <>
-              <PickerMenuOptionLeading>
+              <PickerOptionLeading>
                 <Icon size="sm" aria-hidden="true" />
-              </PickerMenuOptionLeading>
-              <PickerMenuOptionContent>
-                <PickerMenuOptionLabel>
-                  {row.option.entry.label}
-                </PickerMenuOptionLabel>
-                <PickerMenuOptionDescription>
+              </PickerOptionLeading>
+              <PickerOptionContent>
+                <PickerOptionLabel>{row.option.entry.label}</PickerOptionLabel>
+                <PickerOptionDescription>
                   {row.option.entry.description}
-                </PickerMenuOptionDescription>
-              </PickerMenuOptionContent>
+                </PickerOptionDescription>
+              </PickerOptionContent>
             </>
           );
-        }}
-        onPick={(row) => {
+        },
+        onPick: (row) => {
           onOpenChange(false);
           onChoose(row.option.choice);
-        }}
-        onEscape={() => {
+        },
+        onEscape: () => {
           onOpenChange(false);
           returnFocusRef.current?.focus();
-        }}
-        inputRef={searchRef}
-        searchLabel="Search steps"
-        placeholder="Search steps"
-        listLabel="Steps"
-        emptyLabel="No steps match."
-        optionTestId={() => 'workflow-step-picker-option'}
-        searchTestId="workflow-step-picker-search"
-      />
-    </FloatingPickerMenu>
+        },
+        searchLabel: 'Search steps',
+        placeholder: 'Search steps',
+        listLabel: 'Steps',
+        emptyLabel: 'No steps match.',
+        optionTestId: () => 'workflow-step-picker-option',
+        searchTestId: 'workflow-step-picker-search',
+      }}
+    />
   );
 }

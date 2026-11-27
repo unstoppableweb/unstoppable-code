@@ -14,12 +14,12 @@ import {
   ErrorBanner,
   Heading,
   OverlayScrollArea,
-  PickListResults,
+  PickerSearchResults,
   SearchEmptyState,
   SearchField,
   SearchPaletteLayout,
-  pickListOptionId,
-  usePickListKeys,
+  pickerSearchOptionId,
+  usePickerSearchKeys,
 } from '@canopy/ui-shared/components';
 import { useOptionalCanopyClient } from '@canopy/app-state';
 import type { SearchPaletteItem } from './search-palette-items';
@@ -323,7 +323,7 @@ export function SearchPalette<T extends SearchPaletteItem>({
   );
   // The field keeps focus: the arrows, Home and End move the highlight and
   // Enter opens it.
-  const handleListKeys = usePickListKeys({
+  const handleListKeys = usePickerSearchKeys({
     keys: listKeys,
     activeKey,
     onActiveKeyChange: handleActiveKeyChange,
@@ -422,7 +422,7 @@ export function SearchPalette<T extends SearchPaletteItem>({
               aria-activedescendant={
                 activeKey === null
                   ? undefined
-                  : pickListOptionId(listId, activeKey)
+                  : pickerSearchOptionId(listId, activeKey)
               }
               placeholder={searchPalettePlaceholder(scopes, scope)}
               data-testid="command-palette-input"
@@ -468,7 +468,7 @@ export function SearchPalette<T extends SearchPaletteItem>({
             </OverlayScrollArea>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col px-2 py-1">
-              <PickListResults
+              <PickerSearchResults
                 items={flatItems}
                 getKey={(entry): string => entry.id}
                 getLabel={(entry): string =>

@@ -425,6 +425,7 @@ export const ToolApprovalDock = memo(function ToolApprovalDock({
               onRespond={onRespond}
               onRespondSecretInput={onRespondSecretInput}
               focusHandleRef={cardHandleRef}
+              readOnlyHint={readOnlyHint}
             />
           ) : (
             <ToolApprovalCard

@@ -443,9 +443,9 @@ export function createDesktopW5ReadCache(
       }
       reconcileCoverage();
       // A view opens before its reader takes the list lock, so a cached serve
-      // would miss an in-process writer whose commit is in flight, which
-      // today's capture may be ordered after. Locks taken inside open read
-      // views are readers' and never step aside.
+      // would miss an in-process writer whose commit is in flight; today's
+      // capture waits for it (CAN-7249). Locks taken inside open read views
+      // are readers' and never step aside.
       if (hasW5WritableLocksInFlight()) {
         recordW5Work('readView.cacheMiss.writing');
         return undefined;

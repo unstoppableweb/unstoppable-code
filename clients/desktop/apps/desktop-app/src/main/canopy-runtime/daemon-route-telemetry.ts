@@ -20,8 +20,19 @@ const FALLBACK_REASONS = [
 ] as const;
 
 export const DAEMON_ROUTE_REASONS = {
-  // Eligible local window branch lists (CAN-4729).
-  git_reads: ['served', ...SELECTION_REASONS, ...FALLBACK_REASONS],
+  // Eligible local window branch lists, health checks and changed files
+  // (CAN-4729). Changed files only: `version_skew`, an older daemon build
+  // refused the diff revision; `object_missing`, the daemon would not fetch an
+  // object, and `read_timed_out`, a daemon read hit its Git host's request
+  // deadline, so main listed in process once.
+  git_reads: [
+    'served',
+    ...SELECTION_REASONS,
+    ...FALLBACK_REASONS,
+    'version_skew',
+    'object_missing',
+    'read_timed_out',
+  ],
   scripts: [
     'served',
     ...SELECTION_REASONS,

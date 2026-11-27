@@ -78,6 +78,8 @@ export interface PreferencesRepositoryOptions<T extends object> {
   readonly codec: PreferencesCodec<T>;
   readonly hooks?: PreferencesRepositoryHooks<T>;
   readonly log: PreferencesLog;
+  /** The envelope version saves write; a readable version (T23). */
+  readonly writeVersion?: number;
 }
 
 export type StoredPreferencesPayloadRead =
@@ -118,7 +120,16 @@ export interface PreferencesRepository<T extends object> {
 export function createPreferencesRepository<T extends object>(
   options: PreferencesRepositoryOptions<T>,
 ): PreferencesRepository<T> {
-  const { codec, hooks = {}, log } = options;
+  const {
+    codec,
+    hooks = {},
+    log,
+    writeVersion = PREFERENCES_ENVELOPE_WRITE_VERSION,
+  } = options;
+  if (!isReadablePreferencesEnvelopeVersion(writeVersion))
+    throw new RangeError(
+      `Preferences cannot write unreadable envelope version ${writeVersion}.`,
+    );
   const refresher = createLastGoodRefresher(log);
   let writePreferencesQueue: Promise<void> = Promise.resolve();
   let loadError: PreferencesLoadError | null = null;
@@ -131,7 +142,7 @@ export function createPreferencesRepository<T extends object>(
     return options.document();
   }
   interface PreferencesEnvelope {
-    version: typeof PREFERENCES_ENVELOPE_WRITE_VERSION;
+    version: number;
     generation: number;
     preferences: T;
   }
@@ -192,7 +203,7 @@ export function createPreferencesRepository<T extends object>(
       filePath: document.key,
       backupPath,
       code,
-      expectedVersion: PREFERENCES_ENVELOPE_WRITE_VERSION,
+      expectedVersion: writeVersion,
       actualVersion,
     };
   }
@@ -233,7 +244,7 @@ export function createPreferencesRepository<T extends object>(
     generation: number,
   ): string {
     const payload: PreferencesEnvelope = {
-      version: PREFERENCES_ENVELOPE_WRITE_VERSION,
+      version: writeVersion,
       generation,
       preferences,
     };

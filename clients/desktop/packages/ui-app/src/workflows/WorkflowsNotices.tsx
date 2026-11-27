@@ -4,9 +4,9 @@ import { useRef, useState, type JSX } from 'react';
 import {
   ActionMenuRowStyle,
   Button,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  FloatingMenu,
+  MenuItem,
+  MenuItemIcon,
+  Menu,
 } from '@canopy/ui-shared/components';
 import { PipelineIcon, ScheduleIcon } from '@canopy/ui-shared/icons/AppIcons';
 
@@ -25,7 +25,7 @@ export interface NewWorkflowMenuProps {
  * creates a pipeline. Renders nothing when the host can create neither.
  *
  * Two-line rows (a label over a description), so the rows are
- * `DropdownMenuItem`s with their icon in `DropdownMenuItemIcon` rather than
+ * `MenuItem`s with their icon in `MenuItemIcon` rather than
  * the single-line shared action rows. The two pipeline rows are one action's
  * two forms and share an icon, shown on the first of them only.
  */
@@ -51,7 +51,7 @@ export function NewWorkflowMenu({
       >
         New workflow
       </Button>
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={setOpen}
         anchorRef={anchorRef}
@@ -61,48 +61,48 @@ export function NewWorkflowMenu({
       >
         <ActionMenuRowStyle>
           {onSchedule ? (
-            <DropdownMenuItem
+            <MenuItem
               multiline
               data-testid="workflows-new-schedule"
               onClick={onSchedule}
             >
-              <DropdownMenuItemIcon>
+              <MenuItemIcon>
                 <ScheduleIcon />
-              </DropdownMenuItemIcon>
+              </MenuItemIcon>
               <span className="flex min-w-0 flex-col">
                 <span>On a schedule</span>
                 <span className="text-xs fg-tertiary">
                   Runs at set times, or once at a time you pick
                 </span>
               </span>
-            </DropdownMenuItem>
+            </MenuItem>
           ) : null}
           {onDescribePipeline ? (
-            <DropdownMenuItem
+            <MenuItem
               multiline
               data-testid="workflows-new-describe"
               onClick={onDescribePipeline}
             >
-              <DropdownMenuItemIcon>
+              <MenuItemIcon>
                 <PipelineIcon />
-              </DropdownMenuItemIcon>
+              </MenuItemIcon>
               <span className="flex min-w-0 flex-col">
                 <span>When you start it</span>
                 <span className="text-xs fg-tertiary">
                   Describe the workflow to an agent
                 </span>
               </span>
-            </DropdownMenuItem>
+            </MenuItem>
           ) : null}
           {onBuildPipeline ? (
-            <DropdownMenuItem
+            <MenuItem
               multiline
               data-testid="workflows-new-build"
               onClick={onBuildPipeline}
             >
-              <DropdownMenuItemIcon>
+              <MenuItemIcon>
                 {onDescribePipeline ? null : <PipelineIcon />}
-              </DropdownMenuItemIcon>
+              </MenuItemIcon>
               <span className="flex min-w-0 flex-col">
                 <span>
                   {onDescribePipeline
@@ -115,10 +115,10 @@ export function NewWorkflowMenu({
                     : 'Describe it to the assistant, or build it yourself'}
                 </span>
               </span>
-            </DropdownMenuItem>
+            </MenuItem>
           ) : null}
         </ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
     </>
   );
 }

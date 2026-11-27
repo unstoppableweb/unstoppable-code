@@ -12,6 +12,7 @@ import {
   customizeEntrySharedWithViewer,
   customizeSkillMatch,
   customizeSkillMatchHint,
+  customizeTabListsWorkflows,
   type CustomizeDefaultHarness,
   type CustomizeDiscoveryFilters,
   type CustomizeSkillMatch,
@@ -22,6 +23,7 @@ import {
   isBundledSkill,
   isPluginServerResult,
   marketplaceEntryInTab,
+  mergeEntryHarnessInstalls,
   pipelineFiltersActive,
   rankCustomizeByRelevance,
   rankCustomizeSearch,
@@ -593,6 +595,21 @@ function allBrowseGroups(
   );
 }
 
+/**
+ * Whether a host may fold a curated plugin with one curated MCP key into that
+ * key's card (REG-3033). New Customize's MCP servers tab and All search list
+ * the server and the plugin as their own rows (CAN-7857), so they never fold.
+ */
+export function customizeFoldsSingleKeyPlugins(input: {
+  readonly discovery: boolean;
+  readonly tab: MarketplaceTypeTabId;
+  readonly query?: string;
+}): boolean {
+  if (!input.discovery) return true;
+  if (input.tab === 'app') return false;
+  return !(input.tab === 'all' && (input.query?.trim() ?? '') !== '');
+}
+
 /** Pure section policy. Hosts own reads, expansion resets, mutations and retries. */
 export function buildCustomizeTabModel(
   input: CustomizeTabModelInput,
@@ -606,6 +623,12 @@ export function buildCustomizeTabModel(
   const discoveryFilters = input.discoveryFilters;
   const discovery = discoveryFilters !== undefined;
   const splitSearchResults = discovery && searchActive && input.tab === 'all';
+  // MCP servers lists each standalone server as its own row (CAN-7857), as
+  // All search does, so a plugin of the same service, installed or not,
+  // never hides the server you can add or have added on its own. The plugin
+  // keeps its row there for the server it bundles.
+  const splitMcpCopies =
+    splitSearchResults || (discovery && input.tab === 'app');
   const hasUpdate = (entry: UnifiedPluginEntry): boolean =>
     entryHasUpdate(entry, input.supportedUpdateKinds);
   const statusFilter = effectiveInstalledStatusFilter(
@@ -629,23 +652,138 @@ export function buildCustomizeTabModel(
           status: discoveryFilters.status,
         }
       : undefined;
-  // New Customize's publisher and logo rule (Sergii's QA); off, every entry
-  // keeps the projection's own.
-  const candidates = unique(
+  // New Customize's All leaves workflows to their own view (CAN-7691).
+  const tabInputEntries =
+    input.tab === 'all' && !customizeTabListsWorkflows(input.tab, discovery)
+      ? input.entries.filter(
+          (entry) => !marketplaceEntryInTab(entry, 'workflow'),
+        )
+      : input.entries;
+  // Search offers each provider's plugin as its own install target, even
+  // when the host supplied a marketplace row with grouped listings.
+  const searchEntries = splitSearchResults
+    ? tabInputEntries.flatMap((entry): UnifiedPluginEntry[] =>
+        entry.marketplaceListings?.length
+          ? entry.marketplaceListings.map((listing) => ({
+              ...listing,
+              marketplaceListings: undefined,
+              marketplaceProviders: undefined,
+            }))
+          : [entry],
+      )
+    : tabInputEntries;
+  const projectedCandidates = unique(
+    // New Customize's publisher and logo rule; off, keep the projection's own.
     discovery
-      ? input.entries.map((entry) =>
+      ? searchEntries.map((entry) =>
           customizeDiscoveryIdentity(
             // A plugin can supply the same curated MCP, which remains
-            // available as a standalone install in All search.
-            splitSearchResults &&
+            // available as a standalone install wherever MCP copies split.
+            splitMcpCopies &&
               entry.ref.type === 'curated-mcp' &&
               entry.installedVia !== undefined
               ? { ...entry, installedVia: undefined }
               : entry,
           ),
         )
-      : input.entries,
+      : searchEntries,
   );
+  const typedMatchTier = (entry: UnifiedPluginEntry): number => {
+    const suffix =
+      entry.kind === 'plugin'
+        ? 'plugin'
+        : entry.kind === 'app'
+          ? 'mcp'
+          : undefined;
+    if (!suffix || !query.toLowerCase().endsWith(` ${suffix}`)) return 7;
+    const name = query.slice(0, -(suffix.length + 1));
+    const tier = customizeMatchTier(entry, name);
+    return tier <= 2 ? tier : 7;
+  };
+  // Only a catalog MCP the search's filters and query keep stands in for a
+  // connector.
+  const allSearchFilters = splitSearchResults
+    ? customizeDiscoveryFiltersForTab(discoveryFilters, input.tab)
+    : undefined;
+  const catalogMcps =
+    allSearchFilters === undefined
+      ? []
+      : projectedCandidates.filter(
+          (entry) =>
+            entry.ref.type === 'curated-mcp' &&
+            entry.integrationKey !== undefined &&
+            customizeDiscoveryEntryMatches(
+              entry,
+              allSearchFilters,
+              marketplaceEntryIsInstalled(entry, input.installedStatusStates),
+              hasUpdate(entry),
+            ),
+        );
+  const catalogQueryMatches = new Set(
+    marketplaceResultEntries(searchUnifiedEntries(catalogMcps, query, null))
+      .map(({ id }) => id)
+      .concat(input.searchMatchedEntryIds ?? []),
+  );
+  const catalogMcpKeys = new Set(
+    catalogMcps.flatMap((entry) =>
+      entry.integrationKey !== undefined &&
+      (catalogQueryMatches.has(entry.id) || typedMatchTier(entry) < 7)
+        ? [entry.integrationKey]
+        : [],
+    ),
+  );
+  // General discovery search offers the catalog MCP once. Provider-account
+  // bindings remain addressable and visible when filtering installed items;
+  // their connected state must never be copied onto the catalog connection.
+  const candidates =
+    splitSearchResults && discoveryFilters.status === 'any'
+      ? projectedCandidates.filter(
+          (entry) =>
+            entry.ref.type !== 'provider-connector' ||
+            entry.integrationKey === undefined ||
+            !catalogMcpKeys.has(entry.integrationKey),
+        )
+      : projectedCandidates;
+  const pluginIntegrationKeys = new Set(
+    candidates.flatMap((entry) =>
+      entry.kind === 'plugin' && entry.integrationKey !== undefined
+        ? [entry.integrationKey]
+        : [],
+    ),
+  );
+  // A query on MCP servers reaches a plugin-provided server that shares no
+  // plugin's integration as a result of its own.
+  const searchedOnItsOwn = (entry: UnifiedPluginEntry): boolean =>
+    keepPluginProvided &&
+    (entry.integrationKey === undefined ||
+      !pluginIntegrationKeys.has(entry.integrationKey));
+  const pluginIds = new Set(
+    candidates.flatMap((entry) => (entry.kind === 'plugin' ? [entry.id] : [])),
+  );
+  // On MCP servers, a server its plugin stands for stays behind that plugin's
+  // row (its bundledBy owner, whatever integration either joins); a query or
+  // Works with matching the server still reaches that row, as when they
+  // shared it.
+  const behindPlugin =
+    splitMcpCopies && input.tab === 'app'
+      ? candidates.filter(
+          (entry) =>
+            entry.kind === 'app' &&
+            listedAsItsPlugin(entry) &&
+            entry.bundledBy !== undefined &&
+            pluginIds.has(entry.bundledBy.entryId) &&
+            !searchedOnItsOwn(entry),
+        )
+      : [];
+  const behindPluginOf = (
+    copies: readonly UnifiedPluginEntry[],
+  ): UnifiedPluginEntry[] =>
+    behindPlugin.filter((server) =>
+      copies.some(
+        (copy) =>
+          copy.kind === 'plugin' && copy.id === server.bundledBy?.entryId,
+      ),
+    );
   // Choose a representative from the copies eligible for standalone results.
   const matchingCopies = splitSearchResults
     ? candidates.filter((entry) => {
@@ -667,15 +805,57 @@ export function buildCustomizeTabModel(
             ))
         );
       })
-    : candidates;
-  const integrationRows = discovery
+    : splitMcpCopies
+      ? // Split from its plugin, a server the plugin stands for would become
+        // a row of its own; it stays behind its plugin as without the split,
+        // where it shared the plugin's row. A query on MCP servers still
+        // reaches the plugin-provided servers that never did.
+        candidates.filter(
+          (entry) =>
+            entry.kind !== 'app' ||
+            !listedAsItsPlugin(entry) ||
+            searchedOnItsOwn(entry),
+        )
+      : candidates;
+  const mergedRows = discovery
     ? mergeCustomizeIntegrations(
         matchingCopies,
         input.defaultHarness ?? DEFAULT_CUSTOMIZE_HARNESS,
         input.installedStatusStates,
+        splitMcpCopies,
+        // MCP servers reports what you have: an installed copy of an endpoint
+        // stands for it there, before an account proxy you could add.
+        discovery && input.tab === 'app',
         splitSearchResults,
       )
     : undefined;
+  // A server behind its plugin's row still shows its failed harness installs
+  // there, with the server Try again stages, as when the two shared a row.
+  const integrationRows =
+    mergedRows && behindPlugin.length > 0
+      ? {
+          ...mergedRows,
+          rows: mergedRows.rows.map((row) => {
+            const servers = behindPluginOf(
+              mergedRows.membersOf.get(row.id) ?? [row],
+            ).flatMap((server) =>
+              server.harnessInstalls !== undefined &&
+              marketplaceEntryIsInstalled(server, input.installedStatusStates)
+                ? [server.harnessInstalls]
+                : [],
+            );
+            const harnessInstalls = mergeEntryHarnessInstalls([
+              ...(row.harnessInstalls !== undefined
+                ? [row.harnessInstalls]
+                : []),
+              ...servers,
+            ]);
+            return servers.length > 0 && harnessInstalls !== undefined
+              ? { ...row, harnessInstalls }
+              : row;
+          }),
+        }
+      : mergedRows;
   const skillAliases = new Map<string, UnifiedPluginEntry[]>();
   if (splitSearchResults) {
     const standaloneSkillIds = new Set(
@@ -735,18 +915,6 @@ export function buildCustomizeTabModel(
   const skillNamesOf = (entry: UnifiedPluginEntry): readonly string[] => [
     ...new Set(membersOf(entry).flatMap(copySkillNames)),
   ];
-  const typedMatchTier = (entry: UnifiedPluginEntry): number => {
-    const suffix =
-      entry.kind === 'plugin'
-        ? 'plugin'
-        : entry.kind === 'app'
-          ? 'mcp'
-          : undefined;
-    if (!suffix || !query.toLowerCase().endsWith(` ${suffix}`)) return 7;
-    const name = query.slice(0, -(suffix.length + 1));
-    const tier = customizeMatchTier(entry, name);
-    return tier <= 2 ? tier : 7;
-  };
   // New Customize keeps a plugin's skills inside the plugin (CAN-6812): no
   // bundled skill gets its own row, the plugin row stands for them and a
   // search reaches the plugin through them.
@@ -828,7 +996,8 @@ export function buildCustomizeTabModel(
       entry,
       isBundledSkill(entry) ? undefined : input.installedStatusStates,
     );
-    const copies = membersOf(entry);
+    const members = membersOf(entry);
+    const copies = [...members, ...behindPluginOf(members)];
     if (copies.length < 2)
       return customizeDiscoveryEntryMatches(
         entry,
@@ -884,9 +1053,18 @@ export function buildCustomizeTabModel(
     if (!searchActive) return null;
     const copies = rows.flatMap((row) => membersOf(row));
     const matched = new Set(
-      marketplaceResultEntries(searchUnifiedEntries(copies, query, null))
+      marketplaceResultEntries(
+        searchUnifiedEntries([...copies, ...behindPlugin], query, null),
+      )
         .map((entry) => entry.id)
         .concat(input.searchMatchedEntryIds ?? []),
+    );
+    const ownersMatchedBehindPlugin = new Set(
+      behindPlugin.flatMap((entry) =>
+        matched.has(entry.id) && entry.bundledBy !== undefined
+          ? [entry.bundledBy.entryId]
+          : [],
+      ),
     );
     return new Set(
       rows.flatMap((row) =>
@@ -894,7 +1072,8 @@ export function buildCustomizeTabModel(
         membersOf(row).some(
           (copy) =>
             matched.has(copy.id) ||
-            (splitSearchResults && typedMatchTier(copy) < 7),
+            (splitSearchResults && typedMatchTier(copy) < 7) ||
+            (copy.kind === 'plugin' && ownersMatchedBehindPlugin.has(copy.id)),
         ) ||
         skillMatchOf(row) !== undefined ||
         serverMatchOf(row)
@@ -904,8 +1083,10 @@ export function buildCustomizeTabModel(
     );
   };
   const matches = matchIds(tabEntries);
+  // A grouped view keeps a matched listing's siblings with it; All search
+  // offers each listing as its own row, so each must match on its own.
   const matchedGroups = new Set(
-    matches === null
+    matches === null || splitSearchResults
       ? []
       : tabEntries.flatMap((entry) =>
           entry.marketplaceGroup && matches.has(entry.id)
@@ -974,17 +1155,17 @@ export function buildCustomizeTabModel(
     discovery && input.tab === 'workflow' && input.pipelineFilters !== undefined
       ? input.pipelineFilters
       : undefined;
-  const groupedInstalled = groupMarketplaceListings(
-    allInstalled
-      .filter(matchesStatus)
-      .filter(
-        (entry) =>
-          installedWorkflowFilters === undefined ||
-          entry.kind !== 'pipeline' ||
-          pipelineMatchesFilters(entry, installedWorkflowFilters),
-      ),
-    entries,
-  );
+  const eligibleInstalled = allInstalled
+    .filter(matchesStatus)
+    .filter(
+      (entry) =>
+        installedWorkflowFilters === undefined ||
+        entry.kind !== 'pipeline' ||
+        pipelineMatchesFilters(entry, installedWorkflowFilters),
+    );
+  const groupedInstalled = splitSearchResults
+    ? eligibleInstalled
+    : groupMarketplaceListings(eligibleInstalled, entries);
   // New Customize lists what needs the person first (CAN-6810): an update,
   // a sign-in or a failing connection, the same rows Attention finds. The
   // rest keep today's order. Membership never changes.
@@ -1149,7 +1330,9 @@ export function buildCustomizeTabModel(
     const groups = discovery ? undefined : allGroups;
     const browseOrder = allGroups
       ? unique(allGroups.flatMap((group) => group.entries))
-      : groupMarketplaceListings(browse);
+      : splitSearchResults
+        ? browse
+        : groupMarketplaceListings(browse);
     const browseEntries =
       discovery && searchActive && !splitSearchResults
         ? rankCustomizeByRelevance(browseOrder, query, skillNamesOf)
@@ -1206,6 +1389,23 @@ export function buildCustomizeTabModel(
       });
     if (installedSection && installedSection.inventoryState !== 'ready')
       sections.push({ ...installedSection, entries: [], count: 0 });
+  }
+  // The company mark is also an editorial priority. Keep existing section
+  // membership and relative ranking within the marked and unmarked groups.
+  if (discovery) {
+    const companyMarked = (entry: UnifiedPluginEntry): boolean =>
+      entry.ref.type === 'curated-mcp' &&
+      entry.curatedManagedConnection === true;
+    sections.forEach((item, index) => {
+      const preferred = item.entries.filter(companyMarked);
+      if (preferred.length === 0) return;
+      sections[index] = {
+        ...item,
+        entries: preferred.concat(
+          item.entries.filter((entry) => !companyMarked(entry)),
+        ),
+      };
+    });
   }
   const skillMatches = new Map<string, CustomizeSkillMatch>();
   for (const row of sections.flatMap((section) => section.entries)) {

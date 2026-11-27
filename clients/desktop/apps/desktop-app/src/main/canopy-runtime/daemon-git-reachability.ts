@@ -1,10 +1,13 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { CanopyClientError } from '@canopy/core-client';
 import { CanopyOperationError } from '@canopy/core-runtime';
 import type { BackgroundServiceUnreachableReason } from '@canopy/desktop-shared/lib/background-service-status';
-import type {
-  DaemonGitQueryClient,
-  DaemonGitRoute,
-  DaemonGitRouteOptions,
+import {
+  CHANGED_FILES,
+  untilAborted,
+  type DaemonGitQueryClient,
+  type DaemonGitRoute,
+  type DaemonGitRouteOptions,
 } from './daemon-git-route';
 import { daemonUnreachableReason } from './electron-daemon-connection';
 import type { DaemonRouteReason } from './daemon-route-telemetry';
@@ -19,6 +22,11 @@ import type { DaemonRouteReason } from './daemon-route-telemetry';
  * connection inputs and watches them per request, so it knows whether the
  * request was selected, whether contact failed before the daemon answered,
  * and whether a result arrived, without reading the route's errors.
+ *
+ * Two exceptions read the daemon's own refusal of a changed-files diff: an
+ * older daemon build that cannot serve its revision, and a missing object
+ * the daemon will not fetch, which main lists once in process as Git there
+ * fetches it (CAN-4729).
  */
 
 export interface DaemonGitReachability {
@@ -40,6 +48,8 @@ export interface ReachableDaemonGitRouteOptions {
   readonly reachability: DaemonGitReachability;
   readonly createRoute: (inputs: DaemonGitRouteInputs) => DaemonGitRoute;
   readonly record: (reason: DaemonRouteReason<'git_reads'>) => void;
+  /** This app's build, compared with the attached daemon's `buildVersion`; unknown never skews. */
+  readonly appVersion: string | undefined;
 }
 
 interface Attempt {
@@ -54,6 +64,12 @@ interface Attempt {
   answered: boolean;
   result: boolean;
   fellBack: boolean;
+  /** The daemon instance that cannot serve this build's diff revision. */
+  skewed: string | null;
+  /** The daemon would not fetch an object this diff needs. */
+  objectMissing: boolean;
+  /** A daemon read ended with no exit code: its Git host's request deadline. */
+  readTimedOut: boolean;
 }
 
 class DaemonGitBypass extends Error {
@@ -82,6 +98,57 @@ function endedByCaller(error: unknown): boolean {
   );
 }
 
+/** One daemon instance: a restarted daemon has a new epoch. */
+function instanceOf(client: DaemonGitQueryClient): string | null {
+  return client.identity
+    ? `${client.identity.runtimeId}\0${client.identity.daemonEpoch}`
+    : null;
+}
+
+function payloadOf(
+  error: unknown,
+): { readonly kind: string; readonly code?: string } | null {
+  return error instanceof CanopyClientError ||
+    error instanceof CanopyOperationError
+    ? error.payload
+    : null;
+}
+
+function codeOf(error: unknown): string | undefined {
+  return payloadOf(error)?.code;
+}
+
+/**
+ * An older build rejects revision 3 at schema validation (`invalid_argument`)
+ * or as unserved (`capability_unavailable`); the same build never does.
+ */
+function refusesThisRevision(
+  client: DaemonGitQueryClient,
+  error: unknown,
+  appVersion: string | undefined,
+): boolean {
+  const kind = payloadOf(error)?.kind;
+  return (
+    (kind === 'invalid_argument' || kind === 'capability_unavailable') &&
+    appVersion !== undefined &&
+    client.identity !== undefined &&
+    // shortcut: builds with the same CANOPY_VERSION (dev builds) still match; compare a build id once CANOPY_BUILD_ID is set and carried in the handshake
+    client.identity.buildVersion !== appVersion
+  );
+}
+
+/** A revision-3 answer holding a read that ended with no exit code. */
+function hasUnfinishedRead(result: unknown): boolean {
+  const reads: unknown = Reflect.get(Object(result), 'reads');
+  return ['nameStatus', 'numstat', 'untracked', 'unmerged'].some((key) => {
+    const read: unknown = Reflect.get(Object(reads), key);
+    return (
+      Reflect.get(Object(read), 'ok') === false &&
+      Reflect.get(Object(read), 'exitCode') === null
+    );
+  });
+}
+
 function fallbackRecord(
   reason: BackgroundServiceUnreachableReason,
 ): DaemonRouteReason<'git_reads'> {
@@ -91,8 +158,10 @@ function fallbackRecord(
 export function createReachableDaemonGitRoute(
   options: ReachableDaemonGitRouteOptions,
 ): DaemonGitRoute {
-  const { inputs, reachability, record } = options;
+  const { inputs, reachability, record, appVersion } = options;
   const attempts = new AsyncLocalStorage<Attempt>();
+  // An older daemon build refusing revision 3 lists diffs in process until it restarts (electron-daemon-access.ts:480).
+  const skewedInstances = new Set<string>();
 
   /** The latch is read once, at a request's first daemon step. */
   const select = (attempt: Attempt): void => {
@@ -144,13 +213,37 @@ export function createReachableDaemonGitRoute(
           return {
             client: {
               signal: client.signal,
+              ...(client.identity && { identity: client.identity }),
               query: async (name, params, queryOptions) => {
+                const instance =
+                  name === 'worker.git.diff.get' ? instanceOf(client) : null;
+                if (instance !== null && skewedInstances.has(instance)) {
+                  attempt.skewed = instance;
+                  throw new DaemonGitBypass();
+                }
                 try {
                   const result = await client.query(name, params, queryOptions);
+                  if (
+                    name === 'worker.git.diff.get' &&
+                    hasUnfinishedRead(result)
+                  ) {
+                    attempt.readTimedOut = true;
+                    throw new DaemonGitBypass();
+                  }
                   attempt.result = true;
                   return result;
                 } catch (error) {
                   if (!client.signal.aborted) attempt.answered = true;
+                  if (
+                    instance !== null &&
+                    refusesThisRevision(client, error, appVersion)
+                  )
+                    attempt.skewed = instance;
+                  if (
+                    name === 'worker.git.diff.get' &&
+                    codeOf(error) === 'worker.git.diff.objectMissing'
+                  )
+                    attempt.objectMissing = true;
                   throw error;
                 }
               },
@@ -174,6 +267,8 @@ export function createReachableDaemonGitRoute(
   const guarded = <T>(
     read: (routedDirect: () => Promise<T>) => Promise<T>,
     direct: () => Promise<T>,
+    // The in-process read after the daemon was tried.
+    fallback: () => Promise<T> = direct,
   ): Promise<T> => {
     const attempt: Attempt = {
       selected: false,
@@ -184,13 +279,17 @@ export function createReachableDaemonGitRoute(
       answered: false,
       result: false,
       fellBack: false,
+      skewed: null,
+      objectMissing: false,
+      readTimedOut: false,
     };
     // A route that reads in-process itself after trying the daemon (a
     // pre-contact budget, CAN-6803) counts as not reached here, once.
     const routedDirect = (): Promise<T> => {
-      if (attempt.contacting && !attempt.result && !attempt.fellBack)
-        fallBack(attempt, attempt.notReached ?? 'connect_timeout');
-      return direct();
+      if (!attempt.contacting || attempt.result || attempt.fellBack)
+        return direct();
+      fallBack(attempt, attempt.notReached ?? 'connect_timeout');
+      return fallback();
     };
     return attempts.run(attempt, async () => {
       try {
@@ -202,7 +301,23 @@ export function createReachableDaemonGitRoute(
         if (!attempt.selected || attempt.fellBack) throw error;
         if (attempt.bypassed) {
           record('latched');
-          return direct();
+          return fallback();
+        }
+        if (attempt.skewed !== null) {
+          skewedInstances.add(attempt.skewed);
+          attempt.fellBack = true;
+          record('version_skew');
+          return fallback();
+        }
+        if (attempt.objectMissing) {
+          attempt.fellBack = true;
+          record('object_missing');
+          return fallback();
+        }
+        if (attempt.readTimedOut) {
+          attempt.fellBack = true;
+          record('read_timed_out');
+          return fallback();
         }
         const reason = notReachedReason(attempt);
         // A setup stage's own timeout is tagged unreachable; the request's
@@ -215,7 +330,7 @@ export function createReachableDaemonGitRoute(
           throw error;
         }
         fallBack(attempt, reason);
-        return direct();
+        return fallback();
       }
     });
   };
@@ -233,6 +348,28 @@ export function createReachableDaemonGitRoute(
           route.worktreeHealth(params, context, request, routedDirect, settle),
         direct,
       ),
+    changeSet: (params, repoPath, context, request, direct) => {
+      const owner = request.owner ?? route.ownerFor(request.sender);
+      // After a refusal the in-process read is bounded by navigation, not the
+      // deadline, as the unrouted read is: a slow large repository still lists.
+      const ended = AbortSignal.any([
+        owner,
+        ...(context.signal ? [context.signal] : []),
+      ]);
+      return guarded(
+        (routedDirect) =>
+          route.changeSet(
+            params,
+            repoPath,
+            context,
+            { ...request, owner },
+            routedDirect,
+          ),
+        direct,
+        () => untilAborted(direct(), ended, CHANGED_FILES),
+      );
+    },
+    ownerFor: (sender) => route.ownerFor(sender),
     dispose: () => route.dispose(),
   };
 }

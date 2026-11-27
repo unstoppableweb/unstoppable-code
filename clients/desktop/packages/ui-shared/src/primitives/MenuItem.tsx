@@ -20,7 +20,7 @@ import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
  * intents, matching the app's other operational indicators, and keep the
  * default hover surface.
  */
-export type DropdownMenuItemTone =
+export type MenuItemTone =
   | 'default'
   /** Supporting ink, for disclosure rows such as a picker's Legacy models. */
   | 'tertiary'
@@ -37,7 +37,7 @@ export type DropdownMenuItemTone =
  * App Advisor and Claude Workers rows this way. The row keeps its default ink
  * and hover surface; only the resting background is tinted.
  */
-export type DropdownMenuItemStatus = 'active' | 'unread';
+export type MenuItemStatus = 'active' | 'unread';
 
 /**
  * Attention ink for a row whose subject needs the user: the account menu's
@@ -48,7 +48,7 @@ export type DropdownMenuItemStatus = 'active' | 'unread';
  * sorts before `fg-primary` in the stylesheet, so an appended class never
  * painted.
  */
-export type DropdownMenuItemAlert = 'warning' | 'critical';
+export type MenuItemAlert = 'warning' | 'critical';
 
 /**
  * Inset between the surface edge and its contents. `menu` is the 4px row
@@ -59,7 +59,7 @@ export type DropdownMenuItemAlert = 'warning' | 'critical';
  * with copy, switches, and fields, and `none` a popover body that lays out
  * its own sections to the surface's edges (a sticky header, a rule).
  */
-export type DropdownMenuSurfacePadding =
+export type MenuSurfacePadding =
   | 'menu'
   | 'controls'
   | 'readout'
@@ -70,9 +70,9 @@ export type DropdownMenuSurfacePadding =
  * `picker` is the flagship picker anatomy (`.canopy-picker-menu`): the
  * surface's width follows its longest option between the shared 160px/trigger
  * minimum and the 320px/viewport cap, it lays out as a clipping flex column, and its
- * vertical inset moves to the list content. `FloatingPickerMenu` sets it.
+ * vertical inset moves to the list content. `Picker` sets it.
  */
-export type DropdownMenuSurfaceShell =
+export type MenuSurfaceShell =
   | 'menu'
   | 'content-menu'
   | 'picker'
@@ -89,7 +89,7 @@ export type DropdownMenuSurfaceShell =
    */
   | 'bare';
 
-const SURFACE_SHELL_CLASS_NAMES: Record<DropdownMenuSurfaceShell, string> = {
+const SURFACE_SHELL_CLASS_NAMES: Record<MenuSurfaceShell, string> = {
   menu: '',
   'content-menu': ' canopy-floating-menu-content',
   picker: ' canopy-picker-menu',
@@ -101,17 +101,17 @@ const SURFACE_SHELL_CLASS_NAMES: Record<DropdownMenuSurfaceShell, string> = {
   bare: '',
 };
 
-export interface DropdownMenuSurfaceProps extends HTMLAttributes<HTMLDivElement> {
-  padding?: DropdownMenuSurfacePadding;
-  shell?: DropdownMenuSurfaceShell;
+export interface MenuSurfaceProps extends HTMLAttributes<HTMLDivElement> {
+  padding?: MenuSurfacePadding;
+  shell?: MenuSurfaceShell;
 }
 
-export interface DropdownMenuItemProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+export interface MenuItemProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   /** Use native button semantics when the control is outside a menu. */
   readonly asButton?: boolean;
   /** Touch-sized overflow rows in the chat composer toolbar. */
   readonly presentation?: 'standard' | 'composer-overflow';
-  tone?: DropdownMenuItemTone;
+  tone?: MenuItemTone;
   selected?: boolean;
   /** The row's submenu is open; it keeps a hover surface while it is. */
   expanded?: boolean;
@@ -129,11 +129,11 @@ export interface DropdownMenuItemProps extends ButtonHTMLAttributes<HTMLButtonEl
    * unchanged.
    */
   touchTarget?: boolean | 'coarse';
-  status?: DropdownMenuItemStatus;
-  alert?: DropdownMenuItemAlert;
+  status?: MenuItemStatus;
+  alert?: MenuItemAlert;
 }
 
-const ITEM_TONE_CLASS_NAMES: Record<DropdownMenuItemTone, string> = {
+const ITEM_TONE_CLASS_NAMES: Record<MenuItemTone, string> = {
   default: 'fg-primary enabled:hover:bg-subtle',
   tertiary: 'fg-tertiary enabled:hover:bg-subtle',
   accent:
@@ -147,24 +147,23 @@ const ITEM_TONE_CLASS_NAMES: Record<DropdownMenuItemTone, string> = {
   'status-failed': `${OPERATIONAL_STATUS_COLORS.failed.foreground} enabled:hover:bg-subtle`,
 };
 
-const ITEM_STATUS_CLASS_NAMES: Record<DropdownMenuItemStatus, string> = {
+const ITEM_STATUS_CLASS_NAMES: Record<MenuItemStatus, string> = {
   active: OPERATIONAL_STATUS_COLORS.active.backgroundSubtle,
   unread: OPERATIONAL_STATUS_COLORS.unread.backgroundSubtle,
 };
 
-const ITEM_ALERT_INK_CLASS_NAMES: Record<DropdownMenuItemAlert, string> = {
+const ITEM_ALERT_INK_CLASS_NAMES: Record<MenuItemAlert, string> = {
   warning: 'fg-warning',
   critical: 'fg-destructive',
 };
 
-const SURFACE_PADDING_CLASS_NAMES: Record<DropdownMenuSurfacePadding, string> =
-  {
-    menu: 'p-1',
-    controls: 'p-2',
-    readout: 'p-3',
-    content: 'p-4',
-    none: 'p-0',
-  };
+const SURFACE_PADDING_CLASS_NAMES: Record<MenuSurfacePadding, string> = {
+  menu: 'p-1',
+  controls: 'p-2',
+  readout: 'p-3',
+  content: 'p-4',
+  none: 'p-0',
+};
 
 /**
  * Canonical dropdown surface shared by desktop and web.
@@ -173,28 +172,33 @@ const SURFACE_PADDING_CLASS_NAMES: Record<DropdownMenuSurfacePadding, string> =
  * corners. Callers may set positioning, width, and max-height; visual surface
  * geometry belongs here so every menu responds to design-system changes.
  */
-export const DropdownMenuSurface = forwardRef<
-  HTMLDivElement,
-  DropdownMenuSurfaceProps
->(function DropdownMenuSurface(
-  { className = '', padding = 'menu', shell = 'menu', role = 'menu', ...props },
-  ref,
-): JSX.Element {
-  return (
-    <div
-      ref={ref}
-      role={role}
-      // A surface can hold focus itself (menus and dialogs fall back to it);
-      // as a container it draws no outline, which would otherwise be the
-      // browser's default ring in the system accent colour. Its rows and
-      // controls keep their own focus rings.
-      className={`${shell === 'bare' ? '' : 'rounded-lg bg-quaternary shadow-xl '}outline-none ${SURFACE_PADDING_CLASS_NAMES[padding]}${SURFACE_SHELL_CLASS_NAMES[shell]} ${className}`}
-      {...props}
-    />
-  );
-});
+export const MenuSurface = forwardRef<HTMLDivElement, MenuSurfaceProps>(
+  function MenuSurface(
+    {
+      className = '',
+      padding = 'menu',
+      shell = 'menu',
+      role = 'menu',
+      ...props
+    },
+    ref,
+  ): JSX.Element {
+    return (
+      <div
+        ref={ref}
+        role={role}
+        // A surface can hold focus itself (menus and dialogs fall back to it);
+        // as a container it draws no outline, which would otherwise be the
+        // browser's default ring in the system accent colour. Its rows and
+        // controls keep their own focus rings.
+        className={`${shell === 'bare' ? '' : 'rounded-lg bg-quaternary shadow-xl '}outline-none ${SURFACE_PADDING_CLASS_NAMES[padding]}${SURFACE_SHELL_CLASS_NAMES[shell]} ${className}`}
+        {...props}
+      />
+    );
+  },
+);
 
-DropdownMenuSurface.displayName = 'DropdownMenuSurface';
+MenuSurface.displayName = 'MenuSurface';
 
 /**
  * How a menu draws its rows, set once by the menu. `body` text with icons in
@@ -203,7 +207,7 @@ DropdownMenuSurface.displayName = 'DropdownMenuSurface';
  * the labels lead and the glyphs recede. A row whose ink carries meaning
  * (destructive, an alert) or that is disabled keeps its own icon ink.
  */
-export interface DropdownMenuRowStyle {
+export interface MenuRowStyle {
   readonly textStyle: 'body' | 'small';
   readonly iconTone: 'inherit' | 'tertiary';
   /**
@@ -214,113 +218,112 @@ export interface DropdownMenuRowStyle {
   readonly corners?: 'menu' | 'row';
 }
 
-export const DEFAULT_MENU_ROW_STYLE: DropdownMenuRowStyle = {
+export const DEFAULT_MENU_ROW_STYLE: MenuRowStyle = {
   textStyle: 'body',
   iconTone: 'inherit',
 };
 
 /** Small text and tertiary icons: the sidebar's row menus (early access). */
-export const QUIET_MENU_ROW_STYLE: DropdownMenuRowStyle = {
+export const QUIET_MENU_ROW_STYLE: MenuRowStyle = {
   textStyle: 'small',
   iconTone: 'tertiary',
 };
 
-const DropdownMenuRowStyleContext = createContext<DropdownMenuRowStyle>(
-  DEFAULT_MENU_ROW_STYLE,
-);
+const MenuRowStyleContext = createContext<MenuRowStyle>(DEFAULT_MENU_ROW_STYLE);
 
 /** The row style of the nearest menu; a menu's plain labels follow it. */
-export function useDropdownMenuRowStyle(): DropdownMenuRowStyle {
-  return useContext(DropdownMenuRowStyleContext);
+export function useMenuRowStyle(): MenuRowStyle {
+  return useContext(MenuRowStyleContext);
 }
 
 /** True inside a plain row, whose icon may take the menu's quieter tone. */
 const PlainRowContext = createContext(false);
 
-export function DropdownMenuRowStyleProvider({
+export function MenuRowStyleProvider({
   value,
   children,
 }: {
-  readonly value: DropdownMenuRowStyle;
+  readonly value: MenuRowStyle;
   readonly children: ReactNode;
 }): JSX.Element {
   return (
-    <DropdownMenuRowStyleContext.Provider value={value}>
+    <MenuRowStyleContext.Provider value={value}>
       {children}
-    </DropdownMenuRowStyleContext.Provider>
+    </MenuRowStyleContext.Provider>
   );
 }
 
 /** Canonical action row for a dropdown menu. */
-export const DropdownMenuItem = forwardRef<
-  HTMLButtonElement,
-  DropdownMenuItemProps
->(function DropdownMenuItem(
-  {
-    className = '',
-    tone = 'default',
-    selected = false,
-    expanded = false,
-    multiline = false,
-    touchTarget = false,
-    status,
-    alert,
-    type = 'button',
-    asButton = false,
-    presentation = 'standard',
-    role = asButton ? undefined : 'menuitem',
-    children,
-    ...props
+export const MenuItem = forwardRef<HTMLButtonElement, MenuItemProps>(
+  function MenuItem(
+    {
+      className = '',
+      tone = 'default',
+      selected = false,
+      expanded = false,
+      multiline = false,
+      touchTarget = false,
+      status,
+      alert,
+      type = 'button',
+      asButton = false,
+      presentation = 'standard',
+      role = asButton ? undefined : 'menuitem',
+      children,
+      ...props
+    },
+    ref,
+  ): JSX.Element {
+    const rowStyle = useContext(MenuRowStyleContext);
+    const plainRow =
+      alert === undefined &&
+      !selected &&
+      props.disabled !== true &&
+      (tone === 'default' || tone === 'tertiary');
+    const textClassName = rowStyle.textStyle === 'small' ? 'text-xs' : 'text-s';
+    const cornersClassName =
+      rowStyle.corners === 'row' ? 'rounded-row' : 'rounded-md';
+    const geometryClassName = multiline
+      ? // Two-line rows get 8px above and below, like the menu's 32px rows
+        // give a single line (8px over a 16px icon).
+        `flex w-full items-center gap-2 ${cornersClassName} px-2 py-2`
+      : `flex h-8 w-full items-center gap-2 ${cornersClassName} px-2`;
+    // Selected outranks the tone; an alert keeps the selected surface but takes
+    // over the ink.
+    const surfaceClassName = alert
+      ? `${ITEM_ALERT_INK_CLASS_NAMES[alert]} ${
+          selected
+            ? 'bg-muted enabled:hover:bg-muted'
+            : 'enabled:hover:bg-subtle'
+        }`
+      : selected
+        ? 'bg-muted fg-primary enabled:hover:bg-muted'
+        : `${ITEM_TONE_CLASS_NAMES[tone]}${expanded ? ' bg-subtle' : ''}`;
+    const presentationClassName =
+      presentation === 'composer-overflow'
+        ? `flex min-h-11 w-full items-center gap-2.5 px-3 rounded-md text-left text-s transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${selected ? 'fg-primary' : 'fg-secondary'}`
+        : `canopy-dropdown-menu-item outline-none ${geometryClassName} text-left ${textClassName} font-normal transition-colors focus-visible:bg-subtle disabled:cursor-not-allowed disabled:fg-disabled disabled:opacity-100 disabled:hover:bg-transparent ${surfaceClassName} ${status ? ITEM_STATUS_CLASS_NAMES[status] : ''} ${touchTarget === true ? 'min-h-11' : 'pointer-coarse:min-h-11'}`;
+    return (
+      <button
+        ref={ref}
+        type={type}
+        role={role}
+        // Keyboard focus paints the row like hover (`focus-visible:bg-subtle`)
+        // rather than drawing the accent ring around it.
+        className={`${presentationClassName} ${className}`}
+        {...props}
+      >
+        <PlainRowContext.Provider value={plainRow}>
+          {children}
+        </PlainRowContext.Provider>
+      </button>
+    );
   },
-  ref,
-): JSX.Element {
-  const rowStyle = useContext(DropdownMenuRowStyleContext);
-  const plainRow =
-    alert === undefined &&
-    !selected &&
-    props.disabled !== true &&
-    (tone === 'default' || tone === 'tertiary');
-  const textClassName = rowStyle.textStyle === 'small' ? 'text-xs' : 'text-s';
-  const cornersClassName =
-    rowStyle.corners === 'row' ? 'rounded-row' : 'rounded-md';
-  const geometryClassName = multiline
-    ? // Two-line rows get 8px above and below, like the menu's 32px rows
-      // give a single line (8px over a 16px icon).
-      `flex w-full items-center gap-2 ${cornersClassName} px-2 py-2`
-    : `flex h-8 w-full items-center gap-2 ${cornersClassName} px-2`;
-  // Selected outranks the tone; an alert keeps the selected surface but takes
-  // over the ink.
-  const surfaceClassName = alert
-    ? `${ITEM_ALERT_INK_CLASS_NAMES[alert]} ${
-        selected ? 'bg-muted enabled:hover:bg-muted' : 'enabled:hover:bg-subtle'
-      }`
-    : selected
-      ? 'bg-muted fg-primary enabled:hover:bg-muted'
-      : `${ITEM_TONE_CLASS_NAMES[tone]}${expanded ? ' bg-subtle' : ''}`;
-  const presentationClassName =
-    presentation === 'composer-overflow'
-      ? `flex min-h-11 w-full items-center gap-2.5 px-3 rounded-md text-left text-s transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${selected ? 'fg-primary' : 'fg-secondary'}`
-      : `canopy-dropdown-menu-item outline-none ${geometryClassName} text-left ${textClassName} font-normal transition-colors focus-visible:bg-subtle disabled:cursor-not-allowed disabled:fg-disabled disabled:opacity-100 disabled:hover:bg-transparent ${surfaceClassName} ${status ? ITEM_STATUS_CLASS_NAMES[status] : ''} ${touchTarget === true ? 'min-h-11' : 'pointer-coarse:min-h-11'}`;
-  return (
-    <button
-      ref={ref}
-      type={type}
-      role={role}
-      // Keyboard focus paints the row like hover (`focus-visible:bg-subtle`)
-      // rather than drawing the accent ring around it.
-      className={`${presentationClassName} ${className}`}
-      {...props}
-    >
-      <PlainRowContext.Provider value={plainRow}>
-        {children}
-      </PlainRowContext.Provider>
-    </button>
-  );
-});
+);
 
-DropdownMenuItem.displayName = 'DropdownMenuItem';
+MenuItem.displayName = 'MenuItem';
 
-type DropdownMenuControlProps = Extract<
+type MenuControlProps = Extract<
   ControlButtonProps,
   {
     presentation:
@@ -338,27 +341,26 @@ type DropdownMenuControlProps = Extract<
 };
 
 /** Menu item with widget-specific geometry, including non-row radio cards. */
-export const DropdownMenuControl = forwardRef<
-  HTMLButtonElement,
-  DropdownMenuControlProps
->(function DropdownMenuControl({ choice, ...props }, ref): JSX.Element {
-  return (
-    <ControlButton
-      {...props}
-      ref={ref}
-      role={
-        choice
-          ? choice.type === 'radio'
-            ? 'menuitemradio'
-            : 'menuitemcheckbox'
-          : 'menuitem'
-      }
-      aria-checked={choice?.checked}
-    />
-  );
-});
+export const MenuControl = forwardRef<HTMLButtonElement, MenuControlProps>(
+  function MenuControl({ choice, ...props }, ref): JSX.Element {
+    return (
+      <ControlButton
+        {...props}
+        ref={ref}
+        role={
+          choice
+            ? choice.type === 'radio'
+              ? 'menuitemradio'
+              : 'menuitemcheckbox'
+            : 'menuitem'
+        }
+        aria-checked={choice?.checked}
+      />
+    );
+  },
+);
 
-export interface DropdownMenuLinkItemProps extends AnchorHTMLAttributes<HTMLAnchorElement> {
+export interface MenuLinkItemProps extends AnchorHTMLAttributes<HTMLAnchorElement> {
   readonly href: string;
   readonly touchTarget?: boolean;
 }
@@ -367,38 +369,37 @@ export interface DropdownMenuLinkItemProps extends AnchorHTMLAttributes<HTMLAnch
  * A menu row that navigates: a real anchor, so opening it in a new tab and
  * copying its address work, in the action row's geometry, ink and icon column.
  */
-export const DropdownMenuLinkItem = forwardRef<
-  HTMLAnchorElement,
-  DropdownMenuLinkItemProps
->(function DropdownMenuLinkItem(
-  {
-    className = '',
-    role = 'menuitem',
-    children,
-    touchTarget = false,
-    ...props
+export const MenuLinkItem = forwardRef<HTMLAnchorElement, MenuLinkItemProps>(
+  function MenuLinkItem(
+    {
+      className = '',
+      role = 'menuitem',
+      children,
+      touchTarget = false,
+      ...props
+    },
+    ref,
+  ): JSX.Element {
+    const rowStyle = useContext(MenuRowStyleContext);
+    const textClassName = rowStyle.textStyle === 'small' ? 'text-xs' : 'text-s';
+    const cornersClassName =
+      rowStyle.corners === 'row' ? 'rounded-row' : 'rounded-md';
+    return (
+      <a
+        ref={ref}
+        role={role}
+        className={`canopy-dropdown-menu-item outline-none flex h-8 w-full items-center gap-2 ${cornersClassName} px-2 text-left ${textClassName} font-normal fg-primary transition-colors hover:bg-subtle focus-visible:bg-subtle ${touchTarget ? 'min-h-11' : 'pointer-coarse:min-h-11'} ${className}`}
+        {...props}
+      >
+        <PlainRowContext.Provider value={true}>
+          {children}
+        </PlainRowContext.Provider>
+      </a>
+    );
   },
-  ref,
-): JSX.Element {
-  const rowStyle = useContext(DropdownMenuRowStyleContext);
-  const textClassName = rowStyle.textStyle === 'small' ? 'text-xs' : 'text-s';
-  const cornersClassName =
-    rowStyle.corners === 'row' ? 'rounded-row' : 'rounded-md';
-  return (
-    <a
-      ref={ref}
-      role={role}
-      className={`canopy-dropdown-menu-item outline-none flex h-8 w-full items-center gap-2 ${cornersClassName} px-2 text-left ${textClassName} font-normal fg-primary transition-colors hover:bg-subtle focus-visible:bg-subtle ${touchTarget ? 'min-h-11' : 'pointer-coarse:min-h-11'} ${className}`}
-      {...props}
-    >
-      <PlainRowContext.Provider value={true}>
-        {children}
-      </PlainRowContext.Provider>
-    </a>
-  );
-});
+);
 
-DropdownMenuLinkItem.displayName = 'DropdownMenuLinkItem';
+MenuLinkItem.displayName = 'MenuLinkItem';
 
 /**
  * A row that reports a state instead of acting: the account menu's
@@ -408,14 +409,14 @@ DropdownMenuLinkItem.displayName = 'DropdownMenuLinkItem';
  * surface or focus ring. A trailing status dot goes in the same 16px frame
  * the Usage row's alert dot uses.
  */
-export const DropdownMenuStatusRow = forwardRef<
+export const MenuStatusRow = forwardRef<
   HTMLDivElement,
   HTMLAttributes<HTMLDivElement>
->(function DropdownMenuStatusRow(
+>(function MenuStatusRow(
   { className = '', role = 'status', children, ...props },
   ref,
 ): JSX.Element {
-  const rowStyle = useContext(DropdownMenuRowStyleContext);
+  const rowStyle = useContext(MenuRowStyleContext);
   const textClassName = rowStyle.textStyle === 'small' ? 'text-xs' : 'text-s';
   return (
     <div
@@ -431,7 +432,7 @@ export const DropdownMenuStatusRow = forwardRef<
   );
 });
 
-DropdownMenuStatusRow.displayName = 'DropdownMenuStatusRow';
+MenuStatusRow.displayName = 'MenuStatusRow';
 
 /**
  * `inherit` takes the row's ink; `secondary` quiets a catalog glyph (the
@@ -440,7 +441,7 @@ DropdownMenuStatusRow.displayName = 'DropdownMenuStatusRow';
  * takes an intent: the approval picker's shields step from `success` through
  * `info` to `destructive` as a mode's reach grows.
  */
-export type DropdownMenuItemIconTone =
+export type MenuItemIconTone =
   | 'inherit'
   | 'secondary'
   | 'tertiary'
@@ -449,7 +450,7 @@ export type DropdownMenuItemIconTone =
   | 'info'
   | 'destructive';
 
-const ITEM_ICON_TONE_CLASS_NAMES: Record<DropdownMenuItemIconTone, string> = {
+const ITEM_ICON_TONE_CLASS_NAMES: Record<MenuItemIconTone, string> = {
   inherit: '',
   secondary: 'fg-secondary',
   tertiary: 'fg-tertiary',
@@ -459,8 +460,8 @@ const ITEM_ICON_TONE_CLASS_NAMES: Record<DropdownMenuItemIconTone, string> = {
   destructive: 'fg-destructive',
 };
 
-export interface DropdownMenuItemIconProps extends HTMLAttributes<HTMLSpanElement> {
-  tone?: DropdownMenuItemIconTone;
+export interface MenuItemIconProps extends HTMLAttributes<HTMLSpanElement> {
+  tone?: MenuItemIconTone;
 }
 
 /**
@@ -469,15 +470,15 @@ export interface DropdownMenuItemIconProps extends HTMLAttributes<HTMLSpanElemen
  * menu's icons share one optical size and stroke, whatever size a caller asks
  * for.
  */
-export function DropdownMenuItemIconSlot({
+function MenuItemIconSlot({
   className = '',
   tone: toneProp,
   ...props
-}: DropdownMenuItemIconProps): JSX.Element {
-  const rowStyle = useContext(DropdownMenuRowStyleContext);
+}: MenuItemIconProps): JSX.Element {
+  const rowStyle = useContext(MenuRowStyleContext);
   const plainRow = useContext(PlainRowContext);
   // An explicit tone wins; otherwise a plain row takes the menu's icon tone.
-  const tone: DropdownMenuItemIconTone =
+  const tone: MenuItemIconTone =
     toneProp ??
     (plainRow && rowStyle.iconTone === 'tertiary' ? 'tertiary' : 'inherit');
   return (
@@ -489,18 +490,15 @@ export function DropdownMenuItemIconSlot({
   );
 }
 
-export type DropdownMenuItemTrailingTone = 'tertiary' | 'destructive';
+export type MenuItemTrailingTone = 'tertiary' | 'destructive';
 
-const ITEM_TRAILING_TONE_CLASS_NAMES: Record<
-  DropdownMenuItemTrailingTone,
-  string
-> = {
+const ITEM_TRAILING_TONE_CLASS_NAMES: Record<MenuItemTrailingTone, string> = {
   tertiary: 'fg-tertiary',
   destructive: 'fg-destructive',
 };
 
-export interface DropdownMenuItemTrailingProps extends HTMLAttributes<HTMLSpanElement> {
-  tone?: DropdownMenuItemTrailingTone;
+export interface MenuItemTrailingProps extends HTMLAttributes<HTMLSpanElement> {
+  tone?: MenuItemTrailingTone;
 }
 
 /**
@@ -508,11 +506,11 @@ export interface DropdownMenuItemTrailingProps extends HTMLAttributes<HTMLSpanEl
  * size of its own, so it always reads at the row label's size; only its ink
  * is quieter, or carries an alert.
  */
-export function DropdownMenuItemTrailing({
+export function MenuItemTrailing({
   className = '',
   tone = 'tertiary',
   ...props
-}: DropdownMenuItemTrailingProps): JSX.Element {
+}: MenuItemTrailingProps): JSX.Element {
   return (
     <span
       className={`ml-auto shrink-0 tabular-nums ${ITEM_TRAILING_TONE_CLASS_NAMES[tone]} ${className}`}
@@ -521,7 +519,7 @@ export function DropdownMenuItemTrailing({
   );
 }
 
-export interface DropdownMenuLabelProps extends HTMLAttributes<HTMLDivElement> {
+export interface MenuLabelProps extends HTMLAttributes<HTMLDivElement> {
   /** Set a command, path, or other code-like value in the mono face. */
   mono?: boolean;
   /**
@@ -531,13 +529,13 @@ export interface DropdownMenuLabelProps extends HTMLAttributes<HTMLDivElement> {
   spacing?: 'default' | 'relaxed';
 }
 
-export function DropdownMenuLabel({
+export function MenuLabel({
   className = '',
   mono = false,
   spacing = 'default',
   ...props
-}: DropdownMenuLabelProps): JSX.Element {
-  const rowStyle = useContext(DropdownMenuRowStyleContext);
+}: MenuLabelProps): JSX.Element {
+  const rowStyle = useContext(MenuRowStyleContext);
   // A quiet menu's section labels step back with its icons; an identity
   // block (`relaxed`) keeps its ink.
   const inkClassName =
@@ -556,7 +554,7 @@ export function DropdownMenuLabel({
  * A group divider, inset to the rows' 8px padding so it starts at the icon
  * column and ends at the row's trailing edge (a submenu chevron).
  */
-export function DropdownMenuDivider({
+export function MenuDivider({
   className = '',
   ...props
 }: HTMLAttributes<HTMLDivElement>): JSX.Element {
@@ -567,4 +565,4 @@ export function DropdownMenuDivider({
   );
 }
 
-export { DropdownMenuItemIconSlot as DropdownMenuItemIcon };
+export { MenuItemIconSlot as MenuItemIcon };

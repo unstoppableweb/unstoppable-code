@@ -10,8 +10,8 @@ import {
   ActionMenuRowStyle,
   Button,
   ErrorBanner,
-  FLOATING_MENU_GAP,
-  FloatingMenu,
+  MENU_GAP,
+  Menu,
   InlineMeasuredSkeleton,
   MemoryTranscriptEntry,
   Notice,
@@ -131,12 +131,12 @@ function DownloadMenu({
         Download
         <ChevronDown size={14} aria-hidden="true" />
       </Button>
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={setOpen}
         anchorRef={anchorRef}
         placement="bottom-right"
-        gap={FLOATING_MENU_GAP}
+        gap={MENU_GAP}
         interaction="menu"
         aria-label="Download format"
         className="w-44"
@@ -151,7 +151,7 @@ function DownloadMenu({
             }}
           />
         </ActionMenuRowStyle>
-      </FloatingMenu>
+      </Menu>
     </>
   );
 }

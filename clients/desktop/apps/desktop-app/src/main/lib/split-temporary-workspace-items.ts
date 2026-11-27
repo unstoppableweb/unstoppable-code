@@ -30,6 +30,7 @@ import {
 } from '@canopy/execution-engine/node/pipelines/executor/execution-state';
 import { createElectronExecutionRuntime } from '../pipelines/execution-runtime';
 import { relocateExecutionCheckout } from '../pipelines/execution-checkout-location';
+import { notifyDurablePausedPipelinesChanged } from '../pipelines/paused-pipeline-cache-signal';
 import { readChatTabsFile, readChatTabsFileForIndex } from './chat-tabs-reader';
 import { writeChatTabsFile } from './chat-tabs';
 import {
@@ -1373,11 +1374,19 @@ export async function deleteSplitPipelineExecutions(
   executions: ExecutionSummary[],
 ): Promise<void> {
   const executionsDir = createElectronExecutionRuntime().executionsDir;
-  await settleAll(
-    executions.map((execution) =>
-      deleteExecutionArtifacts(execution.id, executionsDir),
-    ),
-  );
+  try {
+    await settleAll(
+      executions.map((execution) =>
+        deleteExecutionArtifacts(execution.id, executionsDir),
+      ),
+    );
+  } finally {
+    if (executions.length > 0) {
+      notifyDurablePausedPipelinesChanged(
+        executions.map((execution) => execution.id),
+      );
+    }
+  }
 }
 
 /**
@@ -1442,6 +1451,9 @@ export async function migrateSplitPipelineExecutions(params: {
     }
     throw error;
   }
+  if (snapshots.size > 0) {
+    notifyDurablePausedPipelinesChanged(Array.from(snapshots.keys()));
+  }
   return snapshots;
 }
 
@@ -1449,8 +1461,14 @@ export async function restoreSplitExecutionSnapshots(
   snapshots: Map<string, ExecutionState>,
 ): Promise<void> {
   const executionsDir = createElectronExecutionRuntime().executionsDir;
-  for (const state of Array.from(snapshots.values())) {
-    await saveExecutionState(state, executionsDir);
+  try {
+    for (const state of Array.from(snapshots.values())) {
+      await saveExecutionState(state, executionsDir);
+    }
+  } finally {
+    if (snapshots.size > 0) {
+      notifyDurablePausedPipelinesChanged(Array.from(snapshots.keys()));
+    }
   }
 }
 

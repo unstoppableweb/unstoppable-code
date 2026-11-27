@@ -554,7 +554,6 @@ const RESERVED_GIT_READS: ReadonlyArray<
   ['git.remote.get', 'CAN-4729'],
   ['git.executable.get', 'CAN-4729'],
   ['git.status.get', 'CAN-4103'],
-  ['git.diff.get', 'CAN-4103'],
 ];
 
 describe('Reserved read routes require prerequisites as well as qualification', () => {

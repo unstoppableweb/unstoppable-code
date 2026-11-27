@@ -15,8 +15,11 @@ import type {
   ChatInterestChatRef,
   ChatInterestDeclaration,
 } from '@canopy/desktop-shared/types';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
+import { declarePairedComputerChatInterest } from '@/stores/chat/paired-computer';
 import { followWebCoreLiveChats } from '@/stores/chat/web-core';
 import { useChatStore } from '@/stores/chatStore';
 import { useCurrentUiStateStore } from '@/stores/currentUiStateStore';
@@ -104,42 +107,63 @@ function withoutObservabilityEntries(
 
 /**
  * Splits a declaration by authority: web core chats follow their live reply
- * through the web core backend, and only local chats are declared to main,
- * which must never see a web core id (CAN-6175 D1).
+ * through the web core backend, paired-computer chats declare interest over
+ * `window.api.pairedComputers`, and only local chats reach local main.
  */
-function localChatInterest(
-  declaration: ChatInterestDeclaration,
-): ChatInterestDeclaration {
+function splitChatInterest(declaration: ChatInterestDeclaration): {
+  readonly local: ChatInterestDeclaration;
+  readonly paired: ChatInterestDeclaration;
+} {
+  const isWebCore = (ref: ChatInterestChatRef): boolean =>
+    isWebCoreScope(ref.projectId);
+  const isPaired = (ref: ChatInterestChatRef): boolean =>
+    isPairedComputerId(ref.projectId);
   const isLocal = (ref: ChatInterestChatRef): boolean =>
-    !isWebCoreScope(ref.projectId);
-  followWebCoreLiveChats(declaration.focused.filter((ref) => !isLocal(ref)));
+    !isWebCore(ref) && !isPaired(ref);
+  followWebCoreLiveChats(declaration.focused.filter(isWebCore));
   return {
-    ...declaration,
-    focused: declaration.focused.filter(isLocal),
-    warm: declaration.warm.filter(isLocal),
-    ...(declaration.focusedRuns === undefined
-      ? {}
-      : { focusedRuns: declaration.focusedRuns.filter(isLocal) }),
+    local: {
+      ...declaration,
+      focused: declaration.focused.filter(isLocal),
+      warm: declaration.warm.filter(isLocal),
+      ...(declaration.focusedRuns === undefined
+        ? {}
+        : { focusedRuns: declaration.focusedRuns.filter(isLocal) }),
+    },
+    paired: {
+      focused: declaration.focused.filter(isPaired),
+      warm: declaration.warm.filter(isPaired),
+    },
   };
 }
 
 async function sendChatInterest(
   interest: ChatInterestDeclaration,
 ): Promise<void> {
-  const declaration = localChatInterest(interest);
+  const { local, paired } = splitChatInterest(interest);
+  // Dispatch paired-computer interest independently without blocking local
+  // main's acknowledgment so a stalled paired peer cannot block local
+  // transcript catch-up.
+  void declarePairedComputerChatInterest(paired).catch(
+    (error: unknown): void => {
+      reportClientAppError(error);
+    },
+  );
   // Older preloads have no `setInterest`; such a window never declares.
   const chatApi = window.api?.chat;
-  if (typeof chatApi?.setInterest !== 'function') return;
+  if (typeof chatApi?.setInterest !== 'function') {
+    return;
+  }
   if (!observabilityEntriesSupported) {
-    await chatApi.setInterest(withoutObservabilityEntries(declaration));
+    await chatApi.setInterest(withoutObservabilityEntries(local));
     return;
   }
   try {
-    await chatApi.setInterest(declaration);
+    await chatApi.setInterest(local);
   } catch (error) {
-    if (declaration.observabilityEntries === undefined) throw error;
+    if (local.observabilityEntries === undefined) throw error;
     // An older host's exact-key check rejects the field: keep chat interest.
-    await chatApi.setInterest(withoutObservabilityEntries(declaration));
+    await chatApi.setInterest(withoutObservabilityEntries(local));
     observabilityEntriesSupported = false;
   }
 }

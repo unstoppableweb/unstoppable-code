@@ -126,19 +126,50 @@ export function buildProviderConnectorRows(
         : [row.displayName],
     ),
   );
-  for (const result of results) {
+  // Keyed by name so a connector both providers report becomes one row naming
+  // both, rather than a row claiming whichever provider answered first.
+  const appended = new Map<string, ProviderConnectorRow>();
+  for (const provider of PROVIDER_ORDER) {
+    const result = byProvider.get(provider);
+    if (result === undefined) continue;
     for (const connector of result.connectors) {
       if (advertised.has(connector.displayName)) continue;
-      advertised.add(connector.displayName);
-      rows.push({
+      const entry = resolveProviderEntry(
+        provider,
+        result,
+        connector.displayName,
+      );
+      const existing = appended.get(connector.displayName);
+      if (existing) {
+        if (!existing.providers.some((p) => p.provider === provider))
+          existing.providers.push(entry);
+        continue;
+      }
+      const row: ProviderConnectorRow = {
         displayName: connector.displayName,
-        providers: [
-          resolveProviderEntry(result.provider, result, connector.displayName),
-        ],
-      });
+        providers: [entry],
+      };
+      appended.set(connector.displayName, row);
+      rows.push(row);
     }
   }
   return rows;
+}
+
+/**
+ * The catalog entry describing a connector row: by key when the catalog maps
+ * the connector, else the entry with exactly the same name. A connector the
+ * catalog does not map (Slack on a Claude account, while the catalog's Slack
+ * is a standalone server) is still the same service, so it borrows the
+ * entry's brand and description; it never joins the entry's card.
+ */
+export function providerConnectorCatalogEntry(
+  row: Pick<ProviderConnectorRow, 'displayName' | 'curatedKey'>,
+  entries: readonly CuratedMcpServerEntry[],
+): CuratedMcpServerEntry | undefined {
+  return row.curatedKey
+    ? entries.find((entry) => entry.key === row.curatedKey)
+    : entries.find((entry) => entry.name === row.displayName);
 }
 
 function resolveProviderEntry(

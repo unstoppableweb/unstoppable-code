@@ -24,12 +24,12 @@ import {
   DialogModal,
   EmptyStateRow,
   ErrorBanner,
-  FloatingPickerMenu,
+  Picker,
   Notice,
-  PickList,
-  PickerMenuOptionContent,
-  PickerMenuOptionDescription,
-  PickerMenuOptionLabel,
+  PickerSearchList,
+  PickerOptionContent,
+  PickerOptionDescription,
+  PickerOptionLabel,
   Skeleton,
 } from '@canopy/ui-shared/components';
 import {
@@ -583,7 +583,7 @@ function AddConnectorRow({
       >
         Add connector
       </Button>
-      <FloatingPickerMenu
+      <Picker
         open={open}
         onOpenChange={setOpen}
         anchorRef={anchorRef}
@@ -591,7 +591,7 @@ function AddConnectorRow({
         role="dialog"
         aria-label="Add connector"
       >
-        <PickList
+        <PickerSearchList
           items={offered}
           getKey={(item) => item.ref.id}
           getLabel={(item) => item.name}
@@ -607,20 +607,18 @@ function AddConnectorRow({
           renderItem={(item) => {
             const status = sharedConnectionStatus(item.status)?.label;
             return (
-              <PickerMenuOptionContent>
-                <PickerMenuOptionLabel>
+              <PickerOptionContent>
+                <PickerOptionLabel>
                   <span className={REPLAY_MASK_CLASS}>{item.name}</span>
-                </PickerMenuOptionLabel>
+                </PickerOptionLabel>
                 {status !== undefined ? (
-                  <PickerMenuOptionDescription>
-                    {status}
-                  </PickerMenuOptionDescription>
+                  <PickerOptionDescription>{status}</PickerOptionDescription>
                 ) : null}
-              </PickerMenuOptionContent>
+              </PickerOptionContent>
             );
           }}
         />
-      </FloatingPickerMenu>
+      </Picker>
     </div>
   );
 }

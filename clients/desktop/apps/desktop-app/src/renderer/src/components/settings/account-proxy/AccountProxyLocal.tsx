@@ -2,10 +2,10 @@ import { type JSX, type ReactNode, useId, useRef, useState } from 'react';
 import {
   ActionMenuRowStyle,
   Button,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  FLOATING_MENU_GAP,
-  FloatingMenu,
+  MenuItem,
+  MenuItemIcon,
+  MENU_GAP,
+  Menu,
   ModelProviderIcon,
   ProgressBar,
   ToggleSwitch,
@@ -529,19 +529,19 @@ export function AccountProxyAddAccount({
             >
               Add account
             </Button>
-            <FloatingMenu
+            <Menu
               open={open}
               onOpenChange={setOpen}
               anchorRef={buttonRef}
               placement="bottom-right"
-              gap={FLOATING_MENU_GAP}
+              gap={MENU_GAP}
               aria-label={ADD_ACCOUNT_MENU_LABEL}
               data-testid="account-proxy-add-account-menu"
               className="w-56"
             >
               <ActionMenuRowStyle>
                 {SIGN_IN_PROVIDERS.map((provider) => (
-                  <DropdownMenuItem
+                  <MenuItem
                     key={provider}
                     data-testid={`account-proxy-add-account-${provider}`}
                     onClick={(): void => {
@@ -556,14 +556,14 @@ export function AccountProxyAddAccount({
                       );
                     }}
                   >
-                    <DropdownMenuItemIcon>
+                    <MenuItemIcon>
                       <ModelProviderIcon provider={provider} size="md" />
-                    </DropdownMenuItemIcon>
+                    </MenuItemIcon>
                     {accountProxyProviderLabel(provider)}
-                  </DropdownMenuItem>
+                  </MenuItem>
                 ))}
               </ActionMenuRowStyle>
-            </FloatingMenu>
+            </Menu>
           </>
         }
       />

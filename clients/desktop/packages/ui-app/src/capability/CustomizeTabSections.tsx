@@ -325,6 +325,7 @@ const SETTLE_DEADLINE_MS = 15_000;
 const MCP_ROW_ACTION_FAILED = "Couldn't finish that. Try again.";
 
 export interface CustomizeTabSectionsProps {
+  readonly brandName?: string;
   readonly tab: MarketplaceCatalogTabId;
   readonly entries: readonly UnifiedPluginEntry[];
   readonly query: string;
@@ -790,6 +791,7 @@ function CustomizeTabSectionsBody(
 ): JSX.Element {
   const {
     tab,
+    brandName,
     entries,
     query,
     searchMatchedEntryIds,
@@ -2775,6 +2777,7 @@ function CustomizeTabSectionsBody(
       const row = (unshareItem?: CustomizeRowMenuItem): ReactNode => (
         <CustomizeInstalledRow
           entry={entry}
+          brandName={brandName}
           sectionId={section.id}
           primaryTestId={
             section.id === 'browse' ? `plugins-entry-${entry.id}` : undefined
@@ -2880,11 +2883,14 @@ function CustomizeTabSectionsBody(
             dimmingState.item.status === 'disabled'
           }
           skillMatch={model.skillMatches.get(entry.id)}
+          // The curated catalog's editorial pick (CAN-7856); platform
+          // sign-in (`accountProxyMcp`) no longer stands in for it.
           recommended={
             discoveryEnabled &&
             tab === 'all' &&
             searchActive &&
-            entry.accountProxyMcp
+            entry.curatedRecommended === true &&
+            entry.ref.type === 'curated-mcp'
           }
           discovery={discoveryEnabled}
           onRetryHarnessInstall={onRetryHarnessInstall}
@@ -2947,6 +2953,7 @@ function CustomizeTabSectionsBody(
       busyIds,
       updateOne,
       McpServerLogoComponent,
+      brandName,
       onUpdateEntry,
       renderUpdateAction,
       renderSharedActions,
@@ -3155,11 +3162,9 @@ function CustomizeTabSectionsBody(
           {remainingBrowseActions}
           <SearchEmptyState
             testId="customize-sections-empty"
-            title={
-              tab === 'all'
-                ? 'Nothing has been shared with you yet.'
-                : 'Nothing on this tab has been shared with you.'
-            }
+            // New Customize's All leaves out workflows, so a share may exist
+            // that no tab here lists: never claim nothing was shared at all.
+            title="Nothing on this tab has been shared with you."
             actionLabel="Show everything"
             onAction={(): void => setSharedWithMeActive(false)}
             actionTestId="customize-sections-clear-shared"

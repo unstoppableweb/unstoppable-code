@@ -27,15 +27,16 @@ import { isW5CaptureLimitRefusal } from './record-port/batching-reader';
  * W10's core read model (CAN-7153). The dispatcher's workspace reads consult
  * its projection (CAN-7155 PR 3, Seam A); direct readers follow in PR 4.
  *
- * Capture evidence carries no log identity. A capture shows a new log at
- * once only when its commit id or abandoned-commit count is below what one
- * requested earlier saw; neither falls within one log. Otherwise every broad
- * refill rebuilds into a fresh projection and swaps it in once complete: a
- * new log at any commit id is replaced by the next broad refill (the bridge
- * plans one on every snapshot, epoch change included), and log-wide state
- * (abandonment, unresolved counts) always comes from the current log. Until
- * it completes, the serving token is revoked. Revisit when the capture
- * evidence carries a log identity.
+ * Any capture shows a new log at once (CAN-7247): its evidence names another
+ * log, or its commit id or abandoned-commit count is below what one requested
+ * earlier saw (neither falls within one log; a copy of the file keeps its
+ * id). The projection is then replaced and the serving token revoked until a
+ * broad refill completes. Every broad refill also rebuilds into a fresh
+ * projection and swaps it in once complete, so log-wide state (abandonment,
+ * unresolved counts) always comes from the current log. A W5e plan names no
+ * log, so one whose commit id the projection holds skips its capture and
+ * the next broad refill (planned on every snapshot and epoch change) shows
+ * the new log. Revisit if W5e events carry the log id.
  */
 
 /** What one W5e event names; core-client's invalidation plan has this shape. */
@@ -240,6 +241,8 @@ export function createW5CommittedReadCache(options: {
   // reaches it as it reaches the served one, so the swap loses none.
   let building: W5CommittedProjection | undefined;
   let warm = false;
+  // The log the served projection's captures named.
+  let logId: string | undefined;
   // The highest commit id this log reached; commit ids never fall in one log.
   let highWater = 0;
   // The most abandoned commits a capture showed; only abandonment deletes
@@ -340,14 +343,19 @@ export function createW5CommittedReadCache(options: {
       ({ target }) => target === projection || target === building,
     );
     if (!open.length) return result;
-    if (commitId < floor || abandonedCount < abandonedFloor) {
-      // Below a position or an abandonment this log already reached: a new
-      // log epoch. A broad refill in flight was filling from the old log and
-      // starts over.
+    if (
+      (logId !== undefined && result.log.logId !== logId) ||
+      commitId < floor ||
+      abandonedCount < abandonedFloor
+    ) {
+      // Another log, or one copied back below a position or an abandonment
+      // this log already reached: a new log epoch. A broad refill in flight
+      // was filling from the old log and starts over.
       projection = createW5CommittedProjection();
       revoke();
       building = undefined;
       warm = false;
+      logId = result.log.logId;
       highWater = commitId;
       abandonedHigh = abandonedCount;
       oversized.clear();
@@ -356,6 +364,7 @@ export function createW5CommittedReadCache(options: {
       install(projection, result, projection.ticket());
       return result;
     }
+    logId = result.log.logId;
     highWater = Math.max(highWater, commitId);
     abandonedHigh = Math.max(abandonedHigh, abandonedCount);
     for (const { target, ticket } of open) install(target, result, ticket);

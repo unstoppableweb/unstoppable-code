@@ -19,7 +19,7 @@ export interface SearchPaletteLayoutProps<T extends string> {
   /** The palette's `SearchField` (`size="lg"`), drawn above a hairline. */
   readonly field: ReactNode;
   /**
-   * The results: `PickListResults`, which scrolls in its own overlay scroll
+   * The results: `PickerSearchResults`, which scrolls in its own overlay scroll
    * area, or the empty state, with any notice above them.
    */
   readonly children: ReactNode;
@@ -77,7 +77,7 @@ export function SearchPaletteLayout<T extends string>({
 /**
  * Text at the end of a palette row: where an item lives (a branch, a chat),
  * or a command's shortcut. Pass it in the row's trailing part (the picker
- * row's `PickerMenuOptionTrailing`), which sets the quiet type; this only
+ * row's `PickerOptionTrailing`), which sets the quiet type; this only
  * keeps a long name from pushing the title aside.
  */
 export function SearchPaletteRowContext({

@@ -1,6 +1,10 @@
 import { classifyError } from '@canopy/protocol/app-errors/classification';
 import type { SecretRequestSettleResponse } from '@canopy/desktop-shared/types';
 import {
+  noteRelayEgressOrigin,
+  type RelayEgressCaller,
+} from '../local-only/relay-egress-origin';
+import {
   recordRemoteControlTelemetry,
   startRemotePairingTelemetry,
 } from '../lib/desktop-telemetry';
@@ -239,6 +243,7 @@ async function loadRenderer(
 
 async function fetchRelayToken(
   deviceId: string,
+  caller: RelayEgressCaller = 'relay-client',
 ): Promise<ReturnType<typeof DeviceRelayTokenResponseSchema.parse>> {
   const response = await requestCanopyCloudJson<unknown>(
     DEVICE_RELAY_TOKEN_PATH,
@@ -250,7 +255,12 @@ async function fetchRelayToken(
       ),
     },
   );
-  return DeviceRelayTokenResponseSchema.parse(response);
+  const parsed = DeviceRelayTokenResponseSchema.parse(response);
+  // Self-host builds: check the relay's scheme and let the egress guard
+  // reach the relay origin this server handed out. A no-op in other builds;
+  // a rejected address throws before the token is used.
+  noteRelayEgressOrigin(parsed.relayUrl, caller);
+  return parsed;
 }
 
 /**
@@ -907,7 +917,7 @@ function slackConnectDeps(service: RemoteControlService): SlackConnectDeps {
     relayDeviceId: (): Promise<string> => service.thisRelayDeviceId(),
     installId: getInstallId,
     rememberRelayInstall: async (deviceId: string): Promise<void> => {
-      await fetchRelayToken(deviceId);
+      await fetchRelayToken(deviceId, 'install');
     },
     postJson: async (path, body, options): Promise<unknown> => {
       const { postCanopyCloudJson } = await import('./slack-connect');

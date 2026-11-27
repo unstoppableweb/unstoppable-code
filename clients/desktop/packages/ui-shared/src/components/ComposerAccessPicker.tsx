@@ -1,16 +1,13 @@
 'use client';
 import { useEffect, useRef, useState, type JSX, type RefObject } from 'react';
 import {
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  type DropdownMenuItemIconTone,
-} from '../primitives/DropdownMenu';
-import {
-  FloatingMenu,
-  COMPOSER_ROW_MENU_GAP,
-} from '../primitives/FloatingMenu';
+  MenuItem,
+  MenuItemIcon,
+  type MenuItemIconTone,
+} from '../primitives/MenuItem';
+import { Menu, COMPOSER_ROW_MENU_GAP } from '../primitives/Menu';
 import { FoldReveal } from './FoldReveal';
-import { PickerTrigger, PickerTriggerChevron } from '../primitives/PickerMenu';
+import { PickerTrigger, PickerTriggerChevron } from '../primitives/PickerParts';
 import { Inline } from '../primitives/Stack';
 import { Tooltip } from '../primitives/Tooltip';
 import { CheckIcon, type AppIcon } from '../icons/AppIcons';
@@ -20,7 +17,7 @@ export interface ComposerAccessOption<Value extends string> {
   label: string;
   description: string;
   icon: AppIcon;
-  tone: DropdownMenuItemIconTone;
+  tone: MenuItemIconTone;
   className?: string;
 }
 
@@ -187,7 +184,7 @@ export function ComposerAccessPicker<Value extends string>({
         </Tooltip>
       )}
 
-      <FloatingMenu
+      <Menu
         id={MENU_ID}
         open={open}
         onOpenChange={setOpen}
@@ -211,7 +208,7 @@ export function ComposerAccessPicker<Value extends string>({
           const OptionIcon = entry.icon;
           const selected = option === mode;
           return (
-            <DropdownMenuItem
+            <MenuItem
               key={option}
               role="menuitemradio"
               data-testid={`approval-mode-option-${option}`}
@@ -232,12 +229,12 @@ export function ComposerAccessPicker<Value extends string>({
                   The label keeps its text size's own 20px line (a 16px line
                   clipped its descenders against the subtitle). */}
               <Inline gap="item" as="span" className="min-w-0 flex-1">
-                <DropdownMenuItemIcon tone={entry.tone}>
+                <MenuItemIcon tone={entry.tone}>
                   <OptionIcon
                     data-testid={`approval-mode-option-icon-${option}`}
                     size="sm"
                   />
-                </DropdownMenuItemIcon>
+                </MenuItemIcon>
                 <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <span className="truncate">{entry.label}</span>
                   <span
@@ -257,10 +254,10 @@ export function ComposerAccessPicker<Value extends string>({
                   <CheckIcon size="sm" />
                 </span>
               )}
-            </DropdownMenuItem>
+            </MenuItem>
           );
         })}
-      </FloatingMenu>
+      </Menu>
     </div>
   );
 }

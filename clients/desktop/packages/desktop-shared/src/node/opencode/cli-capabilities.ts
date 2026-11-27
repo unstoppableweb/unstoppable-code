@@ -92,6 +92,11 @@ async function memberManifest(root: string): Promise<PluginManifest | null> {
   return null;
 }
 
+/** Where a profile's selected skills and commands are staged for the model. */
+export function selectedCapabilityRoot(profile: string): string {
+  return join(profile, 'selected-capabilities');
+}
+
 /** Portable selections and brokered tools for a desktop-closed workflow. */
 export async function prepareCliOpenCodeCapabilities(
   request: OpenCodePromptRunnerRequest,
@@ -236,7 +241,7 @@ export async function prepareCliOpenCodeCapabilities(
         markdown: renderCursorCommandMarkdown({ ...command, id }),
       });
   }
-  const capabilityRoot = join(profile, 'selected-capabilities');
+  const capabilityRoot = selectedCapabilityRoot(profile);
   const prepared = await materializeSelectedCapabilityRoot(
     capabilityRoot,
     projection,

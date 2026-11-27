@@ -10,15 +10,9 @@ import {
   type PointerEvent,
   type ReactNode,
 } from 'react';
-import {
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-} from '../primitives/DropdownMenu';
+import { MenuItem, MenuItemIcon } from '../primitives/MenuItem';
 import { ActionMenuRowStyle } from '../primitives/ActionMenuItems';
-import {
-  FloatingMenu,
-  FloatingMenuPointAnchor,
-} from '../primitives/FloatingMenu';
+import { Menu, MenuPointAnchor } from '../primitives/Menu';
 import {
   CHAT_UNIT_LABEL,
   CHAT_UNIT_LABEL_PLURAL,
@@ -1042,14 +1036,14 @@ export function WorkspaceSectionHeader({
         hasContextMenu &&
         rootRef.current?.ownerDocument.body !== undefined && (
           <>
-            <FloatingMenuPointAnchor
+            <MenuPointAnchor
               ref={contextMenuAnchorRef}
               x={contextMenu.x}
               y={contextMenu.y}
               ownerDocument={rootRef.current.ownerDocument}
               data-testid={`${contextMenuTestId}-anchor`}
             />
-            <FloatingMenu
+            <Menu
               open
               onOpenChange={(open): void => {
                 if (!open) setContextMenu(null);
@@ -1064,7 +1058,7 @@ export function WorkspaceSectionHeader({
             >
               <ActionMenuRowStyle>
                 {contextMenuActions?.map((action) => (
-                  <DropdownMenuItem
+                  <MenuItem
                     key={action.id}
                     data-testid={action.testId}
                     onClick={(): void => {
@@ -1072,15 +1066,13 @@ export function WorkspaceSectionHeader({
                       action.onSelect();
                     }}
                   >
-                    {action.icon && (
-                      <DropdownMenuItemIcon>{action.icon}</DropdownMenuItemIcon>
-                    )}
+                    {action.icon && <MenuItemIcon>{action.icon}</MenuItemIcon>}
                     <span className="truncate">{action.label}</span>
-                  </DropdownMenuItem>
+                  </MenuItem>
                 ))}
                 {renderContextMenuItems?.((): void => setContextMenu(null))}
               </ActionMenuRowStyle>
-            </FloatingMenu>
+            </Menu>
           </>
         )}
     </ListRowFrame>

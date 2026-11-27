@@ -5,10 +5,10 @@ import type { SharedContainerLinkAudience } from '@canopy/protocol/shared-contai
 import {
   ActionMenuRowStyle,
   Divider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
+  MenuItem,
+  MenuItemIcon,
   ErrorBanner,
-  FloatingMenu,
+  Menu,
   Heading,
   PickerTrigger,
   PickerTriggerChevron,
@@ -211,7 +211,7 @@ export function LinkSharingSection({
                     <MoreHorizontalIcon size="sm" />
                   </Button>
                 </Tooltip>
-                <FloatingMenu
+                <Menu
                   open={moreOpen}
                   onOpenChange={setMoreOpen}
                   anchorRef={moreRef}
@@ -220,18 +220,18 @@ export function LinkSharingSection({
                   data-testid={`${TEST_ID}-more-menu`}
                 >
                   <ActionMenuRowStyle>
-                    <DropdownMenuItem
+                    <MenuItem
                       tone="destructive"
                       onClick={requestReset}
                       data-testid={`${TEST_ID}-reset`}
                     >
-                      <DropdownMenuItemIcon>
+                      <MenuItemIcon>
                         <RefreshIcon />
-                      </DropdownMenuItemIcon>
+                      </MenuItemIcon>
                       {RESET_LINK_LABEL}
-                    </DropdownMenuItem>
+                    </MenuItem>
                   </ActionMenuRowStyle>
-                </FloatingMenu>
+                </Menu>
               </>
             )}
           </div>
@@ -274,7 +274,7 @@ export function LinkSharingSection({
             </p>
           </div>
         </div>
-        <FloatingMenu
+        <Menu
           open={menuOpen}
           onOpenChange={setMenuOpen}
           anchorRef={triggerRef}
@@ -285,7 +285,7 @@ export function LinkSharingSection({
           data-testid={`${TEST_ID}-options`}
         >
           {options.map((option) => (
-            <DropdownMenuItem
+            <MenuItem
               key={option.value}
               role="option"
               multiline
@@ -295,16 +295,16 @@ export function LinkSharingSection({
               onClick={() => choose(option.value)}
               data-testid={`${TEST_ID}-option-${choiceTestId(option.value)}`}
             >
-              <DropdownMenuItemIcon>{option.icon}</DropdownMenuItemIcon>
+              <MenuItemIcon>{option.icon}</MenuItemIcon>
               <span className="min-w-0">
                 <span className="block truncate">{option.label}</span>
                 <span className="block truncate text-xs fg-secondary">
                   {option.description}
                 </span>
               </span>
-            </DropdownMenuItem>
+            </MenuItem>
           ))}
-        </FloatingMenu>
+        </Menu>
         {hint && (
           <p className="text-xs fg-secondary" data-testid={`${TEST_ID}-hint`}>
             {hint}

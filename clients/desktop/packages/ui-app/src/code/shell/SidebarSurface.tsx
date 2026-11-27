@@ -89,10 +89,10 @@ import {
   RailSectionHeader,
   SidebarSelectionHeaderActions,
   SidebarSelectionToolbar,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuLinkItem,
-  DropdownMenuDivider,
+  MenuItem,
+  MenuItemIcon,
+  MenuLinkItem,
+  MenuDivider,
   SearchField,
   SIDEBAR_LIST_ICON_CLASSNAME,
   SIDEBAR_NAV_ICON_CLASSNAME,
@@ -100,7 +100,7 @@ import {
   sidebarNavItemClassName,
   SidebarNavRow,
   Tooltip,
-  useDropdownMenuRowStyle,
+  useMenuRowStyle,
   useIsMobile,
 } from '@canopy/ui-shared/components';
 import {
@@ -1852,10 +1852,10 @@ function SidebarNavItemRow({
 
 /**
  * A More destination that is a real anchor, so it keeps browser link
- * affordances (middle-click, new tab). `FloatingMenu` drives every
+ * affordances (middle-click, new tab). `Menu` drives every
  * `[role="menuitem"]` element — roving arrow-key focus, Enter/Space
  * activation, and close-on-select — so the anchor only needs the role and the
- * canonical `DropdownMenuItem` presentation in the menu's row style (its
+ * canonical `MenuItem` presentation in the menu's row style (its
  * enabled default tone; anchors have no `:enabled` pseudo-class).
  */
 function MoreMenuAnchorRow({
@@ -1873,22 +1873,22 @@ function MoreMenuAnchorRow({
   readonly touch: boolean;
   readonly onClick: (event: ReactMouseEvent<HTMLAnchorElement>) => void;
 }): JSX.Element {
-  const rowStyle = useDropdownMenuRowStyle();
+  const rowStyle = useMenuRowStyle();
   return (
-    <DropdownMenuLinkItem
+    <MenuLinkItem
       role="menuitem"
       data-testid={testId}
       href={href}
       onClick={onClick}
       touchTarget={touch}
     >
-      <DropdownMenuItemIcon
+      <MenuItemIcon
         tone={rowStyle.iconTone === 'tertiary' ? 'tertiary' : undefined}
       >
         {icon}
-      </DropdownMenuItemIcon>
+      </MenuItemIcon>
       {label}
-    </DropdownMenuLinkItem>
+    </MenuLinkItem>
   );
 }
 
@@ -1909,7 +1909,7 @@ function MoreMenu({
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   // The 44px floor for touch on the anchor variant; the button variant takes
-  // it through `DropdownMenuItem`'s `touchTarget`. `h-8` stays: it does not
+  // it through `MenuItem`'s `touchTarget`. `h-8` stays: it does not
   // override a CSS minimum height, so the row grows with its content centered.
   return (
     <SidebarMoreControl
@@ -1946,13 +1946,13 @@ function MoreMenu({
               onClick={(event): void => {
                 action.onSelect?.();
                 routeAnchorClick(event, href, onNavigateHref);
-                // FloatingMenu's close-on-select skips defaultPrevented
+                // Menu's close-on-select skips defaultPrevented
                 // clicks, and a host router that intercepts the anchor
                 // prevents its default — close here so the menu never
                 // lingers over a client-side navigation, and return focus
                 // to the trigger ourselves (the unmounting anchor would
                 // otherwise drop focus to <body>). Ordinary clicks keep the
-                // single focus from FloatingMenu's own close-and-focus.
+                // single focus from Menu's own close-and-focus.
                 setOpen(false);
                 if (event.defaultPrevented) {
                   triggerRef.current?.focus({ preventScroll: true });
@@ -1962,16 +1962,16 @@ function MoreMenu({
           );
         }
         return (
-          <DropdownMenuItem
+          <MenuItem
             key={key}
             role="menuitem"
             data-testid={`remote-control-more-item-${key}`}
             onClick={(): void => action.onSelect?.()}
             touchTarget={touch}
           >
-            <DropdownMenuItemIcon>{item.icon}</DropdownMenuItemIcon>
+            <MenuItemIcon>{item.icon}</MenuItemIcon>
             {item.label}
-          </DropdownMenuItem>
+          </MenuItem>
         );
       })}
     </SidebarMoreControl>
@@ -4716,20 +4716,18 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
           : (close): ReactNode => (
               <>
                 {props.renderWorkspacesSectionMenuItems?.(close)}
-                {props.renderWorkspacesSectionMenuItems && (
-                  <DropdownMenuDivider />
-                )}
-                <DropdownMenuItem
+                {props.renderWorkspacesSectionMenuItems && <MenuDivider />}
+                <MenuItem
                   onClick={() => {
                     close();
                     startSelection('projects');
                   }}
                 >
-                  <DropdownMenuItemIcon>
+                  <MenuItemIcon>
                     <ListChecks />
-                  </DropdownMenuItemIcon>
+                  </MenuItemIcon>
                   Select
-                </DropdownMenuItem>
+                </MenuItem>
               </>
             )
       }

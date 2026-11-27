@@ -72,12 +72,18 @@ function isOfficialCopy(alternative: UnifiedEntryAlternative): boolean {
 /**
  * The rows for one plugin: its own harness rows, with a harness it can't
  * serve taken by a matching copy that can (an installed one first, then one
- * the item's one Add brings along), and a harness it serves but isn't
- * installed for taken by a matching copy that is installed.
+ * the item's one Add brings along), and, once this copy is added, a harness
+ * it serves but isn't installed for taken by a matching copy that is
+ * installed.
+ *
+ * `added` is false for a listing not added yet (Sergii's QA B): its Add
+ * installs this listing, so another copy being installed never makes its
+ * own harness read Installed.
  */
 export function customizeHarnessRows(
   own: readonly UnifiedEntryHarnessRow[],
   alternatives: readonly UnifiedEntryAlternative[] = [],
+  added = true,
 ): CustomizeHarnessRow[] {
   // Only a verified copy of the same integration (a provider's official
   // listing or the same author, `addedWithItem`) serves a harness; a plugin
@@ -89,7 +95,7 @@ export function customizeHarnessRows(
     // This copy serves the harness: its own row, unless it isn't installed
     // and a matching copy that is installed already serves it.
     const installedCopy =
-      row.installation === 'Not installed'
+      added && row.installation === 'Not installed'
         ? copies.find(
             (alternative) =>
               alternative.harnessRows?.find(
@@ -170,9 +176,11 @@ export function customizeHarnessRows(
 
 /** A tile's rows: the entry's own harness rows and its copies elsewhere. */
 export function customizeEntryHarnessRows(
-  entry: Pick<UnifiedPluginEntry, 'harnessRows' | 'alsoAvailableFrom'>,
+  entry: Pick<UnifiedPluginEntry, 'harnessRows' | 'alsoAvailableFrom'> &
+    Partial<Pick<UnifiedPluginEntry, 'state'>>,
+  added = entry.state !== 'available',
 ): CustomizeHarnessRow[] | undefined {
   return entry.harnessRows
-    ? customizeHarnessRows(entry.harnessRows, entry.alsoAvailableFrom)
+    ? customizeHarnessRows(entry.harnessRows, entry.alsoAvailableFrom, added)
     : undefined;
 }

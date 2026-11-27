@@ -324,6 +324,15 @@ export function customizeCatalogContents(
     for (const name of preview.skills) addNamed('Skill', name);
     for (const name of preview.commands) addNamed('Command', name);
     for (const name of preview.agents) addNamed('Agent', name);
+    for (const name of preview.apps ?? []) addNamed('App', name);
+    // A root app config names its apps only once added; one generic row.
+    if (preview.rootApp)
+      rows.set('app:config', {
+        key: 'app:config',
+        type: 'App',
+        name: 'Apps',
+        description: '.app.json',
+      });
     if (preview.hooks && !scannedHooks)
       rows.set('hook:Hooks', {
         key: 'hook:Hooks',
@@ -331,6 +340,34 @@ export function customizeCatalogContents(
         name: 'Hooks',
         replayBlockName: true,
       });
+    // A preview names Mods and LSP servers only; a scan's row for the same
+    // name says more, so the preview adds only names no scan lists.
+    const scannedMods = new Set(
+      scans.flatMap(({ details }) =>
+        (details.mods ?? []).map(({ module }) => module),
+      ),
+    );
+    const scannedLsp = new Set(
+      scans.flatMap(({ details }) =>
+        details.lspServers.map(({ name }) => name),
+      ),
+    );
+    for (const name of preview.mods ?? [])
+      if (!scannedMods.has(name))
+        rows.set(`mod:name:${name}`, {
+          key: `mod:name:${name}`,
+          type: 'Mod',
+          name,
+          replayBlockName: true,
+        });
+    for (const name of preview.lspServers ?? [])
+      if (!scannedLsp.has(name))
+        rows.set(`lsp:name:${name}`, {
+          key: `lsp:name:${name}`,
+          type: 'LSP server',
+          name,
+          replayBlockName: true,
+        });
   }
   mergeCatalogMcpRows(rows, scans, preview);
   return [...rows.values()].map((row) => {

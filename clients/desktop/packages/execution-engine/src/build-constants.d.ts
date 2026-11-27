@@ -66,6 +66,13 @@ declare const __CANOPY_E2E__: boolean;
 declare const __CANOPY_LOCAL_ONLY__: boolean;
 
 /**
+ * The self-host build profile (`CANOPY_SELF_HOST=true`). `false`, or not
+ * defined at all, in every other bundle. Read it only through
+ * `isSelfHostBuild()` with the `typeof` guard; see docs/local-only-build.md.
+ */
+declare const __CANOPY_SELF_HOST__: boolean;
+
+/**
  * Build policy for Ollama, enabled by default and overridable with
  * CANOPY_OLLAMA_ENABLED. The shared capability helper combines it with the
  * runtime platform identifier: process.platform in main/preload and

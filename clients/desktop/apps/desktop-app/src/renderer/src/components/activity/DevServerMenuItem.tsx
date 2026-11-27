@@ -1,5 +1,5 @@
 import type { JSX, ReactNode } from 'react';
-import { DropdownMenuItem, DropdownMenuItemIcon } from '@canopy/ui-shared';
+import { MenuItem, MenuItemIcon } from '@canopy/ui-shared';
 import type { DevServerHit } from '@/lib/scriptDevServerDetection';
 import {
   getDevServerMenuItemText,
@@ -33,17 +33,17 @@ export function DevServerMenuItem({
       surfaceClassName="w-max max-w-96"
       surfacePadding="compact"
     >
-      <DropdownMenuItem
+      <MenuItem
         onClick={(): void => {
           openDevServerHit(hit, context);
           onSelect();
         }}
       >
-        <DropdownMenuItemIcon>{icon}</DropdownMenuItemIcon>
+        <MenuItemIcon>{icon}</MenuItemIcon>
         <span className="min-w-0 truncate">
           {getDevServerMenuItemText(hit)}
         </span>
-      </DropdownMenuItem>
+      </MenuItem>
     </HoverCard>
   );
 }

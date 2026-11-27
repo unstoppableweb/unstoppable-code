@@ -7,15 +7,15 @@ import { type CostScopeStore } from '@canopy/app-state/cost';
 import type { CostScopeRef } from '@canopy/protocol/cost-view';
 import {
   Surface,
-  FloatingPickerMenu,
+  Picker,
   HeaderActionButton,
   Notice,
   OverlayScrollArea,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-  PickerMenuSection,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
+  PickerSection,
   SegmentedControl,
 } from '@canopy/ui-shared/components';
 import {
@@ -101,7 +101,7 @@ function CostSortMenu({
         {SORT_LABELS[sort]}
         <ChevronDownMediumIcon size={16} aria-hidden="true" />
       </HeaderActionButton>
-      <FloatingPickerMenu
+      <Picker
         id={menuId}
         data-testid="cost-sort-menu"
         open={open}
@@ -112,7 +112,7 @@ function CostSortMenu({
         initialFocusRef={firstOptionRef}
         heightLimit={180}
       >
-        <PickerMenuOption
+        <PickerOption
           ref={firstOptionRef}
           role="menuitemradio"
           aria-checked={sort === 'cost'}
@@ -120,25 +120,25 @@ function CostSortMenu({
           data-testid="cost-sort-option-cost"
           onClick={() => onSortChange('cost')}
         >
-          <PickerMenuOptionCheck selected={sort === 'cost'} />
-          <PickerMenuOptionContent>
-            <PickerMenuOptionLabel>Highest cost</PickerMenuOptionLabel>
-          </PickerMenuOptionContent>
-        </PickerMenuOption>
-        <PickerMenuOption
+          <PickerOptionCheck selected={sort === 'cost'} />
+          <PickerOptionContent>
+            <PickerOptionLabel>Highest cost</PickerOptionLabel>
+          </PickerOptionContent>
+        </PickerOption>
+        <PickerOption
           role="menuitemradio"
           aria-checked={sort === 'recent'}
           selected={sort === 'recent'}
           data-testid="cost-sort-option-recent"
           onClick={() => onSortChange('recent')}
         >
-          <PickerMenuOptionCheck selected={sort === 'recent'} />
-          <PickerMenuOptionContent>
-            <PickerMenuOptionLabel>Most recent</PickerMenuOptionLabel>
-          </PickerMenuOptionContent>
-        </PickerMenuOption>
-        <PickerMenuSection>
-          <PickerMenuOption
+          <PickerOptionCheck selected={sort === 'recent'} />
+          <PickerOptionContent>
+            <PickerOptionLabel>Most recent</PickerOptionLabel>
+          </PickerOptionContent>
+        </PickerOption>
+        <PickerSection>
+          <PickerOption
             role="menuitemcheckbox"
             aria-checked={showArchived}
             selected={showArchived}
@@ -148,13 +148,13 @@ function CostSortMenu({
               onShowArchivedChange(!showArchived);
             }}
           >
-            <PickerMenuOptionCheck selected={showArchived} reserveSpace />
-            <PickerMenuOptionContent>
-              <PickerMenuOptionLabel>Show archived</PickerMenuOptionLabel>
-            </PickerMenuOptionContent>
-          </PickerMenuOption>
-        </PickerMenuSection>
-      </FloatingPickerMenu>
+            <PickerOptionCheck selected={showArchived} reserveSpace />
+            <PickerOptionContent>
+              <PickerOptionLabel>Show archived</PickerOptionLabel>
+            </PickerOptionContent>
+          </PickerOption>
+        </PickerSection>
+      </Picker>
     </div>
   );
 }

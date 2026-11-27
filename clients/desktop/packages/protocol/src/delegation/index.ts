@@ -340,6 +340,10 @@ export interface PersistedAgentRouteSnapshot {
 /** A host's report of a child's route, for display (CAN-6787). */
 export interface AgentDelegationReportedRoute {
   readonly harnessId?: string;
+  /** The model the child runs on, as the host identifies it. */
+  readonly runtimeModelId?: string;
+  /** That model's display name; set whenever `runtimeModelId` is. */
+  readonly runtimeModelLabel?: string;
 }
 
 /** Cumulative totals for this child run, never deltas to add repeatedly. */

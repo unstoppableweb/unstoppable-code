@@ -35,6 +35,12 @@ import {
   resolveChatTabsFilePath,
 } from '../lib/resolve-worktree';
 import { fsyncDirectory } from '../lib/fsync-directory';
+import {
+  quarantineLegacyScope,
+  quarantinedSource,
+  unrecoverableLegacyScope,
+  type LegacyUnrecoverable,
+} from '../lib/legacy-chat-quarantine';
 import { isErrnoException } from '../lib/type-guards';
 import type { ChatScopeKey } from './chat-state-contracts';
 import {
@@ -48,17 +54,35 @@ import type { ChatStateV2Repository } from './chat-state-v2-repository';
 
 /** What the repository did with one sweep admission. */
 export type ChatFormat4SweepAttempt =
-  | { readonly outcome: 'promoted' }
+  /** `quarantined` when unreadable legacy snapshots were set aside first. */
+  | { readonly outcome: 'promoted'; readonly quarantined?: true }
   | { readonly outcome: 'already_format4' }
   /** Loaded, loading, draining or leased by someone else: nothing was read. */
   | { readonly outcome: 'held' }
   /** The format 4 stop switch is off: the scope may have reached format 3. */
   | { readonly outcome: 'withheld' }
-  | { readonly outcome: 'failed'; readonly reason: ChatFormat4Reason };
+  | {
+      readonly outcome: 'failed';
+      readonly reason: ChatFormat4Reason;
+      /** The fingerprint of legacy snapshots no reader can recover. */
+      readonly unrecoverable?: string;
+    };
+
+/** What the sweep asks of one scope beyond a plain promotion. */
+export interface ChatFormat4SweepOffer {
+  /**
+   * Set aside the scope's unrecoverable legacy snapshots first, but only if
+   * they still have this fingerprint, recorded in an earlier launch.
+   */
+  readonly quarantine?: string;
+}
 
 export interface ChatFormat4SweepTarget {
   /** Never waits behind another holder; promotes, then unloads at once. */
-  sweepFormat4(scope: ChatScopeKey): Promise<ChatFormat4SweepAttempt>;
+  sweepFormat4(
+    scope: ChatScopeKey,
+    offer?: ChatFormat4SweepOffer,
+  ): Promise<ChatFormat4SweepAttempt>;
   /** The format 4 stop switch, asked before every scope. */
   promotionAllowed(): boolean;
   /**
@@ -194,11 +218,15 @@ function jsonIds(names: readonly string[]): string[] {
     .map((name) => basename(name, '.json'));
 }
 
-/** Scope ids from legacy file names, `<id><suffix>` or its `.bak` backup. */
+/**
+ * Scope ids from legacy file names: `<id><suffix>`, its `.bak` backup, or
+ * either one set aside as `.unrecoverable-<n>` (CAN-7851).
+ */
 function legacyIds(names: readonly string[], suffix: string): string[] {
   const ids = new Set<string>();
   for (const name of names) {
-    const file = name.endsWith('.bak') ? name.slice(0, -'.bak'.length) : name;
+    const kept = quarantinedSource(name) ?? name;
+    const file = kept.endsWith('.bak') ? kept.slice(0, -'.bak'.length) : kept;
     if (file.endsWith(suffix) && file.length > suffix.length)
       ids.add(file.slice(0, -suffix.length));
   }
@@ -393,12 +421,14 @@ export async function listChatFormat4SweepCandidates(
  * so the sweep offers them and counts them until they promote, as do the
  * scope's archives or journal alone. Only a primary file that parses as
  * JSON but isn't a chats file, with nothing else beside it, is skipped.
- * A file the sweep can't read counts too: only a missing one doesn't.
+ * A file the sweep can't read counts too: only a missing one doesn't. So does
+ * a file set aside as unrecoverable, until the scope reaches format 4.
  */
 async function legacyScopeFiles(paths: readonly string[]): Promise<boolean> {
   const [path, ...others] = paths;
   if (path === undefined) return false;
   if (await present(`${path}.bak`)) return true;
+  for (const file of paths) if (await hasQuarantined(file)) return true;
   for (const other of others)
     if ((await present(other)) || (await present(`${other}.bak`))) return true;
   let text: string;
@@ -413,6 +443,21 @@ async function legacyScopeFiles(paths: readonly string[]): Promise<boolean> {
   } catch {
     return true;
   }
+}
+
+/** Whether a legacy file, or its backup, was set aside as unrecoverable. */
+async function hasQuarantined(path: string): Promise<boolean> {
+  let names: string[];
+  try {
+    names = await readdir(dirname(path));
+  } catch (error) {
+    return !missing(error);
+  }
+  const own = basename(path);
+  return names.some((name) => {
+    const source = quarantinedSource(name);
+    return source === own || source === `${own}.bak`;
+  });
 }
 
 function missing(error: unknown): boolean {
@@ -477,6 +522,11 @@ interface ScopeBackoff {
   failedSessions: number;
   /** The first launch it may be offered again. */
   retryAtLaunch: number;
+  /**
+   * Legacy snapshots no reader could recover: their fingerprint, and the
+   * first launch it was seen in (CAN-7851).
+   */
+  unrecoverable?: { fingerprint: string; launch: number };
 }
 
 interface SweepState {
@@ -499,7 +549,7 @@ function parseSweepState(raw: unknown): SweepState {
   if (isRecord(raw.scopes))
     for (const [key, value] of Object.entries(raw.scopes)) {
       if (!/^[0-9a-f]{16}$/.test(key) || !isRecord(value)) continue;
-      const { failedSessions, retryAtLaunch } = value;
+      const { failedSessions, retryAtLaunch, unrecoverable } = value;
       if (
         typeof failedSessions === 'number' &&
         Number.isInteger(failedSessions) &&
@@ -507,7 +557,22 @@ function parseSweepState(raw: unknown): SweepState {
         typeof retryAtLaunch === 'number' &&
         Number.isInteger(retryAtLaunch)
       )
-        scopes[key] = { failedSessions, retryAtLaunch };
+        scopes[key] = {
+          failedSessions,
+          retryAtLaunch,
+          ...(isRecord(unrecoverable) &&
+          typeof unrecoverable.fingerprint === 'string' &&
+          /^[0-9a-f]{64}$/.test(unrecoverable.fingerprint) &&
+          typeof unrecoverable.launch === 'number' &&
+          Number.isInteger(unrecoverable.launch)
+            ? {
+                unrecoverable: {
+                  fingerprint: unrecoverable.fingerprint,
+                  launch: unrecoverable.launch,
+                },
+              }
+            : {}),
+        };
     }
   return { version: 1, launch, scopes };
 }
@@ -714,6 +779,20 @@ export class ChatFormat4Sweep {
     return entry;
   }
 
+  /**
+   * Asks for a quarantine only when the same unrecoverable snapshots were
+   * seen in an earlier launch, so a file still being written is never set
+   * aside (CAN-7851).
+   */
+  private offerFor(
+    candidate: ChatFormat4SweepCandidate,
+  ): ChatFormat4SweepOffer {
+    const seen = this.state.scopes[candidate.key]?.unrecoverable;
+    return seen && seen.launch < this.state.launch
+      ? { quarantine: seen.fingerprint }
+      : {};
+  }
+
   /** Whether a scope may be offered now, this session and this launch. */
   private offerable(candidate: ChatFormat4SweepCandidate): boolean {
     const backoff = this.state.scopes[candidate.key];
@@ -735,6 +814,7 @@ export class ChatFormat4Sweep {
   private async recordFailure(
     candidate: ChatFormat4SweepCandidate,
     reason: ChatFormat4Reason,
+    unrecoverable?: string,
   ): Promise<void> {
     const entry = this.sessionScope(candidate.key);
     entry.attempts += 1;
@@ -750,9 +830,20 @@ export class ChatFormat4Sweep {
       CHAT_FORMAT4_SWEEP_LAUNCH_BACKOFF[
         Math.min(failedSessions, CHAT_FORMAT4_SWEEP_LAUNCH_BACKOFF.length) - 1
       ] ?? 1;
+    // The first launch a fingerprint was seen in is kept while it holds, so
+    // a later launch can tell the file stayed the same across sessions. A
+    // failure with no fingerprint keeps the earlier one: the quarantine
+    // checks it again against the files before it sets anything aside.
+    const seen =
+      unrecoverable === undefined
+        ? previous?.unrecoverable
+        : previous?.unrecoverable?.fingerprint === unrecoverable
+          ? previous.unrecoverable
+          : { fingerprint: unrecoverable, launch: this.state.launch };
     this.state.scopes[candidate.key] = {
       failedSessions,
       retryAtLaunch: this.state.launch + 1 + wait,
+      ...(seen ? { unrecoverable: seen } : {}),
     };
     await this.saveState();
     this.report({ event: 'sweep_scope_backed_off', reason });
@@ -817,7 +908,10 @@ export class ChatFormat4Sweep {
       const startedAt = this.clock.now();
       let attempt: ChatFormat4SweepAttempt;
       try {
-        attempt = await target.sweepFormat4(candidate.scope);
+        attempt = await target.sweepFormat4(
+          candidate.scope,
+          this.offerFor(candidate),
+        );
       } catch {
         attempt = { outcome: 'failed', reason: 'other' };
       }
@@ -827,6 +921,8 @@ export class ChatFormat4Sweep {
         case 'already_format4':
           promoted += attempt.outcome === 'promoted' ? 1 : 0;
           left -= 1;
+          if (attempt.outcome === 'promoted' && attempt.quarantined)
+            this.report({ event: 'sweep_scope_quarantined' });
           await this.recordSuccess(candidate.key);
           break;
         case 'held': {
@@ -844,7 +940,11 @@ export class ChatFormat4Sweep {
           this.pause('switch_off');
           return { status: 'withheld', promoted, remaining: left };
         case 'failed':
-          await this.recordFailure(candidate, attempt.reason);
+          await this.recordFailure(
+            candidate,
+            attempt.reason,
+            attempt.unrecoverable,
+          );
           break;
       }
       if (attempt.outcome === 'held') continue;
@@ -958,15 +1058,39 @@ export function repositoryChatFormat4SweepTarget(
 ): ChatFormat4SweepTarget {
   return {
     promotionAllowed,
-    async sweepFormat4(scope): Promise<ChatFormat4SweepAttempt> {
+    async sweepFormat4(scope, offer = {}): Promise<ChatFormat4SweepAttempt> {
       // Checked again under the scope's lease, just before its load, so a
       // namespace that stopped qualifying meanwhile still holds the scope.
       const admit = (): boolean => chatFormat4ScopeAdmitted(scope, admission);
       if (!admit()) return { outcome: 'held' };
-      const attempt = await repository.sweepFormat4(scope, { admit });
-      return attempt.outcome === 'failed'
-        ? { outcome: 'failed', reason: rootFailureReason(attempt.cause) }
-        : attempt;
+      const { quarantine } = offer;
+      const legacy: { verdict?: LegacyUnrecoverable } = {};
+      const attempt = await repository.sweepFormat4(scope, {
+        admit,
+        afterFailedLegacyLoad: async (paths): Promise<string | undefined> => {
+          legacy.verdict = await unrecoverableLegacyScope(paths);
+          return legacy.verdict?.kind === 'set_aside'
+            ? legacy.verdict.fingerprint
+            : undefined;
+        },
+        ...(quarantine === undefined
+          ? {}
+          : {
+              beforeLegacyLoad: (paths): Promise<boolean> =>
+                quarantineLegacyScope(paths, quarantine),
+            }),
+      });
+      if (attempt.outcome !== 'failed') return attempt;
+      if (attempt.unrecoverable !== undefined)
+        return {
+          outcome: 'failed',
+          reason: 'unrecoverable',
+          unrecoverable: attempt.unrecoverable,
+        };
+      // Setting the files aside wouldn't help: the journal still needs them.
+      return legacy.verdict?.kind === 'journal'
+        ? { outcome: 'failed', reason: 'unrecoverable_journal' }
+        : { outcome: 'failed', reason: rootFailureReason(attempt.cause) };
     },
   };
 }

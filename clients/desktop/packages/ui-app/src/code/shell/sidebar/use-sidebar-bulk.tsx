@@ -854,6 +854,8 @@ export function useSidebarBulk(input: {
       return resultItems.map(
         (item): SidebarBatchRemovalDialogRow => ({
           key: `${item.batchId}:${item.target.key}`,
+          targetKey: item.target.key,
+          removalMode: item.mode,
           projectName: item.target.projectName,
           label: item.target.label,
           branchName: item.target.branchName,

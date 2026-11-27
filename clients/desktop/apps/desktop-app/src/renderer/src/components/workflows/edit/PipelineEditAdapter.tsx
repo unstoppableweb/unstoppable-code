@@ -1,9 +1,13 @@
 import { ControlButton } from '@canopy/ui-shared/components';
-import { tryParseAndValidateYaml } from '@/lib/pipeline-yaml';
 import { Surface } from '@canopy/ui-shared/components';
 import { hasOnlyLocalPipelineTriggers } from '@canopy/protocol/pipelines';
 import {
+  projectWorkflowStack,
+  workflowStackEditableKeys,
+} from '@canopy/pipeline-interop/workflow-designer';
+import {
   useCallback,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -75,7 +79,7 @@ import { replaceSavedDraft } from './replaceSavedDraft';
 import { useWorkflowEditGuard } from './useWorkflowEditGuard';
 import { useWorkflowSchedules } from './useWorkflowSchedules';
 import { useWorkflowSendAs } from './useWorkflowSendAs';
-import { SEND_AGENT_MESSAGE_USES } from '@/lib/pipelineStepSendAs';
+import { tryParseAndValidateYaml } from '@/lib/pipeline-yaml';
 import { usePipelineAssistantDraft } from '@/components/pipeline/pipelineAssistantDraft';
 import { WorkflowEditNotFound } from './WorkflowEditNotFound';
 
@@ -314,6 +318,22 @@ export function PipelineEditAdapter({
     (): void => setDeleteRequest((count) => count + 1),
     [],
   );
+  const rawDraft = session.isRawYamlDirty ? session.rawYamlText : null;
+  const deferredRawDraft = useDeferredValue(rawDraft);
+  const parsedRawDraft = useMemo(
+    () =>
+      deferredRawDraft === null
+        ? null
+        : tryParseAndValidateYaml(deferredRawDraft),
+    [deferredRawDraft],
+  );
+  const pipelineForSave =
+    rawDraft === null
+      ? session.pipeline
+      : parsedRawDraft?.success
+        ? parsedRawDraft.pipeline
+        : null;
+
   // CAN-5782: a workflow page's schedules, edited on its Trigger tab.
   const listedInfo = session.pipelineInfo
     ? pipelines.pipelines.find(
@@ -328,6 +348,7 @@ export function PipelineEditAdapter({
     name: session.name,
     pipelineDirty: session.isDirty,
     pipeline: session.pipeline,
+    sendAsPipeline: pipelineForSave ?? session.pipeline,
     automations,
     pipelines,
     ...(session.canDuplicate ? { onDuplicateWorkflow: session.duplicate } : {}),
@@ -339,12 +360,11 @@ export function PipelineEditAdapter({
       : {}),
   });
 
-  // CAN-7186: "Send as" on the send steps, read over the first schedule's
-  // run values as edited, which Save stores. A schedule that keeps its own
-  // preferences for a collection runs with those instead.
+  // CAN-7186: check the definition and first schedule's run inputs as
+  // edited. A schedule can still keep its own collection preferences.
   const sendAs = useWorkflowSendAs({
     editor: session.editor,
-    pipeline: session.pipeline,
+    pipeline: pipelineForSave,
     info: session.pipelineInfo,
     ...(schedules.editedFirstScheduleInputs
       ? { inputValues: schedules.editedFirstScheduleInputs }
@@ -363,8 +383,9 @@ export function PipelineEditAdapter({
     latestSendAsTargetKey.current = sendAsTargetKey;
   }, [sendAsTargetKey]);
   const sendAsUnchosen = sendAs.unchosenSteps;
-  const sendAsChecking = sendAs.checking;
-  const sendAsBlocked = sendAsUnchosen.length > 0 || sendAsChecking;
+  const { resolutionFailed: sendAsResolutionFailed, retryResolution } = sendAs;
+  const sendAsChecking =
+    sendAs.checking || (rawDraft !== null && deferredRawDraft !== rawDraft);
 
   // CAN-5782: a save that writes an agent-granted workflow's pipeline voids
   // its grant, so it asks first. Schedule-only saves don't write it.
@@ -394,11 +415,15 @@ export function PipelineEditAdapter({
     saveAll: saveSchedules,
     pendingScheduleInputs,
   } = schedules;
-  const { setPendingScheduleInputs } = session.editor;
   const { save: saveSendAs } = sendAs;
-  const { getSavedPipeline } = session.editor;
+  const {
+    getSavedPipeline,
+    setActivePanel,
+    setPendingScheduleInputs,
+    setSelection,
+  } = session.editor;
   const sessionInfo = session.pipelineInfo;
-  const { isRawMode, rawYamlText, setMainView } = session;
+  const { isRawMode, setMainView } = session;
   // `schedules: false` is the pipeline.save command's save (CAN-7186): the
   // definition and its "Send as" choices, never schedule edits, which an
   // agent may change only through the automation update policy.
@@ -407,27 +432,45 @@ export function PipelineEditAdapter({
       schedules: withSchedules = true,
     }: { schedules?: boolean } = {}): Promise<UnsavedChangesSaveResult> => {
       setSaveFailure(null);
-      let pendingSent = false;
-      // Raw text is read only when saved, so a send step typed there is
-      // applied first and checked for "Send as" before the next Save.
-      if (isRawMode && rawYamlText.includes(SEND_AGENT_MESSAGE_USES)) {
-        setMainView('designer');
+      if (sendAsChecking) {
         const message =
-          'Check “Send as” on the send steps, then save this workflow.';
+          'Checking which accounts the send steps use. Try saving again in a moment.';
         setSaveFailure(message);
         return { ok: false, message };
       }
-      // A run nobody watches never picks an account, so Save waits for one,
-      // and for the check of what the send steps use to finish. Raw text with
-      // no send step left is saved as written: the check read the definition
-      // before the text, which may have removed the step it waits on.
-      if (sendAsBlocked && !isRawMode) {
-        const message = sendAsChecking
-          ? 'Checking which accounts the send steps use. Try saving again in a moment.'
-          : sendAsBlockedMessage(sendAsUnchosen);
+      if (rawDraft !== null && parsedRawDraft?.success === false) {
+        setSection('definition');
+        // The view switch validates the text and shows the YAML error in place.
+        setMainView('designer');
+        return { ok: false, message: parsedRawDraft.error };
+      }
+      if (sendAsResolutionFailed) {
+        retryResolution();
+        const message =
+          "Couldn't check which accounts the send steps use. Check the workflow definition and try saving again.";
         setSaveFailure(message);
         return { ok: false, message };
       }
+      const firstUnchosen = sendAsUnchosen[0];
+      if (firstUnchosen) {
+        if (isRawMode && pipelineForSave) {
+          const { jobId, stepIndex } = firstUnchosen;
+          const editable = workflowStackEditableKeys(
+            projectWorkflowStack(pipelineForSave),
+          );
+          setSection('definition');
+          // List can edit steps the Designer shows read-only, such as a matrix job.
+          setMainView(
+            editable.has(`step:${jobId}:${stepIndex}`) ? 'designer' : 'list',
+          );
+          setActivePanel('steps');
+          setSelection({ type: 'step', jobId, stepIndex });
+        }
+        const message = SEND_AS_REQUIRED;
+        setSaveFailure(message);
+        return { ok: false, message };
+      }
+      let pendingSent = false;
       if (sessionDirty) {
         if (agentGranted) {
           const choice = await askGrant();
@@ -436,14 +479,8 @@ export function PipelineEditAdapter({
         }
         // CAN-5782: the schedule check reads the schedules' edited inputs,
         // which this Save writes right after the pipeline.
-        // Judged against the definition this save sends: the Raw YAML
-        // text when that's the view, as the session parses it.
-        const parsedRaw = isRawMode
-          ? tryParseAndValidateYaml(rawYamlText)
-          : undefined;
-        const candidate = parsedRaw?.success ? parsedRaw.pipeline : null;
         const pending = withSchedules
-          ? await pendingScheduleInputs(candidate)
+          ? await pendingScheduleInputs(pipelineForSave)
           : null;
         pendingSent = pending !== null && Object.keys(pending).length > 0;
         setPendingScheduleInputs(pending);
@@ -512,14 +549,19 @@ export function PipelineEditAdapter({
       setPendingScheduleInputs,
       saveSchedules,
       isRawMode,
-      rawYamlText,
+      parsedRawDraft,
+      pipelineForSave,
+      rawDraft,
+      retryResolution,
       saveSendAs,
-      sendAsBlocked,
       sendAsChecking,
+      sendAsResolutionFailed,
       sendAsTargetKey,
       sendAsUnchosen,
       sessionDirty,
+      setActivePanel,
       setMainView,
+      setSelection,
       sessionDuplicate,
       sessionInfo,
       sessionSave,
@@ -780,7 +822,8 @@ export function PipelineEditAdapter({
     draft,
     // A schedule-only change saves without the pipeline's own checks.
     canSubmit:
-      (!sendAsBlocked || session.isRawMode) &&
+      !sendAsChecking &&
+      (sendAsUnchosen.length === 0 || session.isRawMode) &&
       (session.canSave ||
         (!session.isDirty && (schedules.dirty || sendAs.dirty))),
     userOwned: session.isUserOwned,
@@ -1131,9 +1174,9 @@ export function PipelineEditAdapter({
             >
               {saveFailure}
             </Notice>
-          ) : sendAsUnchosen.length > 0 ? (
+          ) : !sendAsChecking && sendAsUnchosen.length > 0 ? (
             <Notice data-testid="workflow-send-as-needed">
-              {sendAsBlockedMessage(sendAsUnchosen)}
+              {SEND_AS_REQUIRED}
             </Notice>
           ) : undefined
         }
@@ -1187,8 +1230,6 @@ export function PipelineEditAdapter({
   );
 }
 
-/** Why Save waits: the send steps that still need a "Send as" account. */
-function sendAsBlockedMessage(steps: readonly string[]): string {
-  const named = steps.map((step) => `“${step}”`).join(', ');
-  return `Choose which account ${named} sends as in its step settings to save this workflow.`;
-}
+// This notice also appears in Raw YAML, where step names are private draft text.
+const SEND_AS_REQUIRED =
+  'Choose a “Send as” account in the settings for each send step that needs one.';

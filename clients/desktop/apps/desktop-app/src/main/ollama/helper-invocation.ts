@@ -28,6 +28,9 @@ import {
   resolveInvocationWorkOwner,
 } from '../agents/work-owner';
 import { randomUUID } from 'node:crypto';
+import type * as NoBillingSourceRefusal from '../agents/no-billing-source-refusal';
+
+type NoBillingSourceRefusalModule = typeof NoBillingSourceRefusal;
 
 /**
  * Resolved invocation for an in-process background helper task (worktree /
@@ -77,11 +80,27 @@ export interface HelperInvocation {
   dispose: () => void;
 }
 
+/**
+ * Loaded once, lazily: the module reaches the session manager through the auth
+ * state, which would close an import cycle at startup.
+ */
+let noBillingSourceRefusal: Promise<NoBillingSourceRefusalModule> | undefined;
+function loadNoBillingSourceRefusal(): Promise<NoBillingSourceRefusalModule> {
+  noBillingSourceRefusal ??= import('../agents/no-billing-source-refusal');
+  return noBillingSourceRefusal;
+}
+
 /** Options for {@link resolveHelperInvocation}. */
 export interface ResolveHelperInvocationOptions {
   signal?: AbortSignal;
   /** Refuse gateway substitution when a helper's selected route is a data boundary. */
   preserveModelSelection?: boolean;
+  /**
+   * `false` keeps a helper with no way to pay on its own model (refused)
+   * instead of moving it to the user's Personal AI gateway. Memory work sets
+   * it: memory is never sent to a model the user didn't choose for it.
+   */
+  personalGatewaySwap?: boolean;
   /** Optional native billing choice captured by the owning chat. */
   subscriptionBillingOverride?: boolean;
   /**
@@ -183,9 +202,21 @@ export async function resolveHelperInvocation(
   // branch after it see the model that will actually run. See
   // {@link resolveHelperModelForEnforcedGateway} for why a helper substitutes
   // where an org model policy refuses.
-  const model = options.preserveModelSelection
+  // Then a helper with no way to pay for its model moves to the user's own
+  // AI gateway rather than being refused.
+  const enforcedModel = options.preserveModelSelection
     ? requestedModel
     : await resolveHelperModelForEnforcedGateway(requestedModel, owner);
+  const model =
+    options.preserveModelSelection || options.personalGatewaySwap === false
+      ? enforcedModel
+      : await (
+          await loadNoBillingSourceRefusal()
+        ).resolveHelperModelForPersonalGateway(
+          enforcedModel,
+          owner,
+          options.workspaceId,
+        );
   const buildRoutingOptions =
     async (): Promise<ResolveAiCreditsRoutingOverrideOptions> => {
       const workOwner = await workOwnerPromise;

@@ -13,10 +13,10 @@ import type {
   DraggableSyntheticListeners,
 } from '@dnd-kit/core';
 import {
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  FloatingMenu,
-  FloatingMenuPointAnchor,
+  MenuItem,
+  MenuItemIcon,
+  Menu,
+  MenuPointAnchor,
   WorkspaceIconDisclosureSwap,
   WorkspaceSectionHeader,
 } from '@canopy/ui-shared/components';
@@ -274,13 +274,13 @@ export const ProjectHeader = memo(function ProjectHeader({
       />
       {contextMenu && headerRef.current?.ownerDocument.body && (
         <>
-          <FloatingMenuPointAnchor
+          <MenuPointAnchor
             ref={contextMenuAnchorRef}
             x={contextMenu.x}
             y={contextMenu.y}
             ownerDocument={headerRef.current.ownerDocument}
           />
-          <FloatingMenu
+          <Menu
             open
             onOpenChange={(open): void => {
               if (!open) closeContextMenu();
@@ -304,7 +304,7 @@ export const ProjectHeader = memo(function ProjectHeader({
                 void setWorkspacePinned(projectId, pinned);
               }}
             />
-            <DropdownMenuItem
+            <MenuItem
               data-testid="workspace-new-task-menu-item"
               disabled={createWorktreeDisabled}
               title={createWorktreeDisabled ? 'Add repos first' : undefined}
@@ -316,26 +316,26 @@ export const ProjectHeader = memo(function ProjectHeader({
                 handleCreateWorktree();
               }}
             >
-              <DropdownMenuItemIcon>
+              <MenuItemIcon>
                 <AssignmentAddIcon />
-              </DropdownMenuItemIcon>
+              </MenuItemIcon>
               <span className="truncate">New task</span>
-            </DropdownMenuItem>
+            </MenuItem>
             {onOpenSettings !== undefined && (
-              <DropdownMenuItem
+              <MenuItem
                 data-testid="workspace-settings-menu-item"
                 onClick={(): void => {
                   closeContextMenu();
                   handleOpenSettings();
                 }}
               >
-                <DropdownMenuItemIcon>
+                <MenuItemIcon>
                   <SettingsIcon />
-                </DropdownMenuItemIcon>
+                </MenuItemIcon>
                 <span className="truncate">Project settings</span>
-              </DropdownMenuItem>
+              </MenuItem>
             )}
-            <DropdownMenuItem
+            <MenuItem
               data-testid="workspace-import-session-menu-item"
               onClick={(): void => {
                 useCloudConnectGateStore.getState().requestConnect({}, () => {
@@ -343,11 +343,11 @@ export const ProjectHeader = memo(function ProjectHeader({
                 });
               }}
             >
-              <DropdownMenuItemIcon>
+              <MenuItemIcon>
                 <DownloadIcon />
-              </DropdownMenuItemIcon>
+              </MenuItemIcon>
               <span className="truncate">Import session…</span>
-            </DropdownMenuItem>
+            </MenuItem>
             <SidebarSortMenuItems
               mode={workspaceItemSortMode}
               testIdPrefix="workspace-item-sort"
@@ -357,7 +357,7 @@ export const ProjectHeader = memo(function ProjectHeader({
                 void setWorkspaceItemSortMode(projectId, mode);
               }}
             />
-          </FloatingMenu>
+          </Menu>
         </>
       )}
     </div>

@@ -39,6 +39,7 @@ import {
 import { UsageLimitResumeModal } from '@/components/usage-limit/UsageLimitResumeModal';
 import { useAutoArchiveNotifications } from '@/hooks/useAutoArchiveNotifications';
 import { useBillingLaneRuntimeSync } from '@/hooks/useBillingLaneRuntimeSync';
+import { useDesktopBillingReadinessSync } from '@/hooks/useDesktopBillingReadiness';
 import { useChatEventSubscriptions } from '@/hooks/useChatEventSubscriptions';
 import { usePipelineRunsBridge } from '@/hooks/usePipelineRunsBridge';
 import { appAdvisorWindowSenderOpener } from '@/lib/agent-sent-sender-opener';
@@ -196,6 +197,7 @@ export function AppAdvisorWindowApp(): JSX.Element {
   // App Advisor is Personal work, so its credits read never follows the main
   // window's organization context (CAN-3463).
   useBillingLaneRuntimeSync(APP_ADVISOR_AI_CREDITS_SCOPE);
+  useDesktopBillingReadinessSync();
 
   // Hydrate every App Advisor Work Entry in this authoritative renderer, not
   // only the most recently selected entry initialized by the scoped workspace.

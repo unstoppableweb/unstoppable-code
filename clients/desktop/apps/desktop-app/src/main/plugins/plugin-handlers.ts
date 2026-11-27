@@ -1010,6 +1010,7 @@ export function registerPluginHandlers(): void {
       _event,
       marketplaceId: unknown,
       pluginName: unknown,
+      options?: unknown,
     ): Promise<IPCResult<PluginManifestPreviewResult>> => {
       if (!isCatalogName(marketplaceId) || !isCatalogName(pluginName))
         return {
@@ -1020,7 +1021,13 @@ export function registerPluginHandlers(): void {
         await import('./plugin-manifest-preview');
       return {
         success: true,
-        data: await previewPluginManifest(marketplaceId, pluginName),
+        data: await previewPluginManifest(marketplaceId, pluginName, {
+          // Only an explicit `{ retry: true }` reads a failed preview again.
+          retry:
+            typeof options === 'object' &&
+            options !== null &&
+            Reflect.get(options, 'retry') === true,
+        }),
       };
     },
   );

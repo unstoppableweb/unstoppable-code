@@ -1,12 +1,12 @@
 import { useState, type JSX, type RefObject } from 'react';
 import type { BranchEntry } from '@canopy/desktop-shared/types';
 import {
-  PickList,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-  PickerMenuOptionLeading,
-  PickerMenuOptionTrailing,
+  PickerSearchList,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
+  PickerOptionLeading,
+  PickerOptionTrailing,
 } from '@canopy/ui-shared/components';
 import { BranchIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
@@ -31,7 +31,7 @@ export function BaseBranchOptions({
 }): JSX.Element {
   const [query, setQuery] = useState('');
   return (
-    <PickList
+    <PickerSearchList
       items={filterBranchesBySearch(branches, query)}
       query={query}
       onQueryChange={setQuery}
@@ -53,18 +53,16 @@ export function BaseBranchOptions({
         const provenanceBadge = getBranchProvenanceBadge(branch);
         return (
           <>
-            <PickerMenuOptionLeading>
+            <PickerOptionLeading>
               <BranchIcon size="md" />
-            </PickerMenuOptionLeading>
-            <PickerMenuOptionContent>
-              <PickerMenuOptionLabel>{branch.name}</PickerMenuOptionLabel>
-            </PickerMenuOptionContent>
+            </PickerOptionLeading>
+            <PickerOptionContent>
+              <PickerOptionLabel>{branch.name}</PickerOptionLabel>
+            </PickerOptionContent>
             {provenanceBadge && (
-              <PickerMenuOptionTrailing>
-                {provenanceBadge}
-              </PickerMenuOptionTrailing>
+              <PickerOptionTrailing>{provenanceBadge}</PickerOptionTrailing>
             )}
-            <PickerMenuOptionCheck selected={state.selected} />
+            <PickerOptionCheck selected={state.selected} />
           </>
         );
       }}

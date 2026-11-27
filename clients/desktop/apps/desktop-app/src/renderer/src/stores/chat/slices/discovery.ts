@@ -48,6 +48,7 @@ import {
   isCapabilityUnavailable,
   reportUnlessUnavailable,
 } from '../backend';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isWebCoreScope } from '@/lib/chat-authority';
 
 export const createDiscoverySlice: StateCreator<
@@ -257,7 +258,8 @@ export const createDiscoverySlice: StateCreator<
     if (!sel) return;
     // A cloud chat runs the model, thinking level and plugins its web core
     // holds; this computer's defaults never stand in for them (CAN-6365).
-    if (isWebCoreScope(sel.projectId)) return;
+    if (isWebCoreScope(sel.projectId) || isPairedComputerId(sel.projectId))
+      return;
 
     const key = worktreeKey(sel);
     const wc = get().worktreeChats[key];

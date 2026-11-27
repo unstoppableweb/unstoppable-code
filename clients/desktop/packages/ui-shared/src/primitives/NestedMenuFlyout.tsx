@@ -14,12 +14,12 @@ import {
 } from 'react';
 import { ChevronRightMediumIcon } from '../icons/AppIcons';
 import {
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuItemTrailing,
-  type DropdownMenuItemIconTone,
-} from './DropdownMenu';
-import { FLOATING_MENU_VIEWPORT_PADDING, FloatingMenu } from './FloatingMenu';
+  MenuItem,
+  MenuItemIcon,
+  MenuItemTrailing,
+  type MenuItemIconTone,
+} from './MenuItem';
+import { MENU_VIEWPORT_PADDING, Menu } from './Menu';
 
 const DEFAULT_MENU_WIDTH_PX = 224;
 const ANCHOR_INSET_PX = 0;
@@ -78,8 +78,8 @@ export interface NestedMenuFlyoutProps {
    * holds. Not drawn in `disclosure`, whose chevron leads.
    */
   readonly trailing?: ReactNode;
-  /** Ink of the leading slot; see {@link DropdownMenuItemIconTone}. */
-  readonly leadingTone?: DropdownMenuItemIconTone;
+  /** Ink of the leading slot; see {@link MenuItemIconTone}. */
+  readonly leadingTone?: MenuItemIconTone;
   /**
    * `parent` matches the width of the menu the flyout opens from (the
    * model picker's 16rem), so a label truncates no differently in the
@@ -205,7 +205,7 @@ export function NestedMenuFlyout({
       row.right +
         ANCHOR_INSET_PX +
         (menuRef.current?.offsetWidth ?? menuWidthPx) <=
-        view.innerWidth - FLOATING_MENU_VIEWPORT_PADDING
+        view.innerWidth - MENU_VIEWPORT_PADDING
         ? 'right'
         : 'left',
     );
@@ -213,7 +213,7 @@ export function NestedMenuFlyout({
 
   return (
     <>
-      <DropdownMenuItem
+      <MenuItem
         ref={(node): void => {
           triggerRef.current = node;
           if (typeof forwardedTriggerRef === 'function')
@@ -253,9 +253,7 @@ export function NestedMenuFlyout({
         }}
       >
         {!disclosure || keepLeadingSlot || leading ? (
-          <DropdownMenuItemIcon tone={leadingTone}>
-            {leading}
-          </DropdownMenuItemIcon>
+          <MenuItemIcon tone={leadingTone}>{leading}</MenuItemIcon>
         ) : null}
         {disclosure ? (
           <ChevronRightMediumIcon
@@ -271,7 +269,7 @@ export function NestedMenuFlyout({
           ) : null}
         </span>
         {!disclosure && trailing !== undefined ? (
-          <DropdownMenuItemTrailing>{trailing}</DropdownMenuItemTrailing>
+          <MenuItemTrailing>{trailing}</MenuItemTrailing>
         ) : null}
         {disclosure ? null : (
           <ChevronRightMediumIcon
@@ -290,9 +288,9 @@ export function NestedMenuFlyout({
           aria-hidden="true"
           className="pointer-events-none absolute left-0 -top-1 h-0 w-0"
         />
-      </DropdownMenuItem>
+      </MenuItem>
       {open ? (
-        <FloatingMenu
+        <Menu
           ref={menuRef}
           open
           nested
@@ -327,7 +325,7 @@ export function NestedMenuFlyout({
           }
         >
           {children}
-        </FloatingMenu>
+        </Menu>
       ) : null}
     </>
   );

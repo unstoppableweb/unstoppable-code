@@ -21,7 +21,7 @@ import {
   useFormFieldLabelledBy,
 } from './form-field-context';
 import { FieldPickerChevron, FieldPickerTrigger } from './Field';
-import { FLOATING_MENU_GAP } from './FloatingMenu';
+import { MENU_GAP } from './Menu';
 import { Popover } from './Popover';
 
 const DAYS_PER_WEEK = 7;
@@ -379,7 +379,7 @@ export const DateField = forwardRef<HTMLButtonElement, DateFieldProps>(
           onOpenChange={setOpen}
           anchorRef={triggerRef}
           ownerDocument={ownerDocument}
-          gap={FLOATING_MENU_GAP}
+          gap={MENU_GAP}
           width="content"
           initialFocusRef={focusedDayRef}
           id={calendarId}

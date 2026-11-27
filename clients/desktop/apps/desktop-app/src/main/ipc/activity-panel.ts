@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { runWithGitRequestContext } from '@canopy/desktop-shared/node/git-request-context';
 import { withGitObservation } from '../lib/git-observation';
+import { CanopyOperationError } from '@canopy/core-runtime';
 import { classifyError } from '@canopy/protocol/app-errors/classification';
 import { withWorktreeGitRead } from '../lib/worktree-read-availability';
 import {
@@ -94,7 +95,9 @@ import type { WorkerGitDispatcher } from '../canopy-runtime/worker-git-adapter';
 import {
   listCommittedChangedFiles,
   listUncommittedChangedFiles,
+  type GitReadRouteRequest,
 } from '../canopy-runtime/worker-git-dispatch';
+import type { DaemonGitRoute } from '../canopy-runtime/daemon-git-route';
 import type { DesktopIpcCallerResolver } from './file-tree';
 
 const SAFE_TASK_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -422,11 +425,22 @@ async function waitForFetchHeadStart(fetch: Promise<void>): Promise<void> {
   ]).finally(() => clearTimeout(timer));
 }
 
+/** A cancelled request stays cancelled; any other read failure lists nothing. */
+function listNothingUnlessCancelled(error: unknown): ChangedFileInfo[] {
+  if (
+    error instanceof CanopyOperationError &&
+    error.payload.kind === 'cancelled'
+  )
+    throw error;
+  return [];
+}
+
 async function getWorkspaceChangedFiles(
   dispatcher: WorkerGitDispatcher,
   caller: CanopyCallerDescriptor,
   workspaceId: string,
   worktreeId: string,
+  routing: GitReadRouteRequest | undefined,
 ): Promise<ActivityChangedFilesResponse> {
   const worktreePath = resolveWorktreeCwd(workspaceId, worktreeId);
   const repoEntries = await listWorkspaceWorktreeRepoEntries(
@@ -457,15 +471,19 @@ async function getWorkspaceChangedFiles(
           repoPath: entry.repoPath,
         };
         const [uncommitted, committed] = await Promise.all([
-          listUncommittedChangedFiles(dispatcher, caller, target).catch(
-            () => [],
-          ),
+          listUncommittedChangedFiles(
+            dispatcher,
+            caller,
+            target,
+            routing,
+          ).catch(listNothingUnlessCancelled),
           listCommittedChangedFiles(
             dispatcher,
             caller,
             target,
             effectiveBaseBranch.branch ?? undefined,
-          ).catch(() => []),
+            routing,
+          ).catch(listNothingUnlessCancelled),
         ]);
         const enrich = (file: ChangedFileInfo): ChangedFileInfo => ({
           ...file,
@@ -535,6 +553,8 @@ export function registerActivityPanelHandlers(
   runtime: {
     dispatcher: WorkerGitDispatcher & WorkerGitLocalMutationDispatcher;
     resolveCaller: DesktopIpcCallerResolver;
+    /** Changed files through the daemon where it is selected (CAN-4729). */
+    daemonGitRoute?: () => DaemonGitRoute;
   },
 ): void {
   unsubscribeLiveBackgroundTasks?.();
@@ -557,6 +577,14 @@ export function registerActivityPanelHandlers(
     validateId(request.worktreeId, 'worktreeId');
     if (request.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID)
       return getViewerChangedFiles(request.worktreeId);
+    const route = runtime.daemonGitRoute?.();
+    // The owner is taken before discovery's awaits, so a navigation during
+    // them cancels this request instead of passing it to the next document.
+    const routing = route && {
+      route,
+      sender: event.sender,
+      owner: route.ownerFor(event.sender),
+    };
     // Tags every Git launch of this read, including the background
     // revalidation it starts, for diagnostic attribution (CAN-4397).
     return runWithGitRequestContext(
@@ -574,6 +602,7 @@ export function registerActivityPanelHandlers(
                   runtime.resolveCaller(event),
                   request.projectId,
                   request.worktreeId,
+                  routing,
                 );
               }
 
@@ -602,13 +631,19 @@ export function registerActivityPanelHandlers(
                 repoPath: worktreePath,
               };
               const [uncommitted, committed] = await Promise.all([
-                listUncommittedChangedFiles(runtime.dispatcher, caller, target),
+                listUncommittedChangedFiles(
+                  runtime.dispatcher,
+                  caller,
+                  target,
+                  routing,
+                ),
                 listCommittedChangedFiles(
                   runtime.dispatcher,
                   caller,
                   target,
                   effectiveBaseBranch.branch ?? undefined,
-                ).catch(() => []),
+                  routing,
+                ).catch(listNothingUnlessCancelled),
               ]);
 
               return { uncommitted, committed };

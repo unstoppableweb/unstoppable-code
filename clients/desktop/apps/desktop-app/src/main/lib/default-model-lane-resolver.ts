@@ -1,8 +1,10 @@
 import {
   CREDITS_LANE_DEFAULT_CANDIDATES,
   isCodexModelAvailableToAccount,
+  personalGatewayEquivalentModel,
   repairLaneDefaults,
   resolveDefaultModelLane,
+  selectableOllamaModels,
   type BillingLane,
   type DefaultModelLaneResolution,
   type EnforcedOrgGatewayLane,
@@ -76,6 +78,7 @@ import {
   getModelGatewayRequirementForOwner,
 } from './model-gateway-state';
 import { previewAccountProxySessionRoute } from '../account-proxy/routing';
+import { getOllamaService } from '../ollama';
 import { updatePreferencesFile } from './preferences-store';
 import {
   peekCodexAccountModelIds,
@@ -494,10 +497,30 @@ export async function resolveDefaultModelLaneForPreferences(
       ? { models: personalGatewayModels }
       : undefined;
 
+  // Ollama-only default (billing setup gate, 2026-11-25): from the service's
+  // cache only, so dispatch never waits on a local probe. A cold cache is
+  // `undefined` and the resolver behaves as before; a chat that already names
+  // an Ollama model is dispatched as-is and never reaches this default.
+  const installedOllama = getOllamaService().peekInstalledModels();
+  const readyOllamaModels =
+    installedOllama === undefined
+      ? undefined
+      : selectableOllamaModels(
+          installedOllama,
+          (model) => resolveKnownModel(model) !== undefined,
+        );
+  const ollamaReady =
+    readyOllamaModels === undefined ? undefined : readyOllamaModels.length > 0;
+  // Judged by policy below like every other candidate, so an org that blocks
+  // local models keeps Ollama out of the default.
+  const firstReadyOllama = input.ollamaPinned
+    ? undefined
+    : readyOllamaModels?.[0];
   const candidateModels = new Set<ChatModel>([
     input.defaults.claude.model,
     input.defaults.codex.model,
     ...(input.defaults.ollama ? [input.defaults.ollama.model] : []),
+    ...(firstReadyOllama ? [firstReadyOllama] : []),
     ...(input.defaults.aiCredits ? [input.defaults.aiCredits.model] : []),
     ...(input.creditsCandidates ?? CREDITS_LANE_DEFAULT_CANDIDATES),
     // Judged by policy like every other candidate, so a Personal default is
@@ -765,6 +788,19 @@ export async function resolveDefaultModelLaneForPreferences(
   // `claudeProxyReady` and `userSuppliedCredential` exclusions.
   const claudeNativeAuthInconclusive =
     claudeNativeAuth === undefined && peekClaudeAuthInconclusiveWithoutSignIn();
+  // `defaults.ollama` can be `null` (never configured) or name a model that is
+  // no longer installed. Supply the first qualifying model in the shared order
+  // for this resolution only; the saved default is never rewritten, so a later
+  // Claude sign-in restores the Claude default.
+  const configuredOllama = repairedDefaults.ollama;
+  const ollamaCandidate =
+    firstReadyOllama !== undefined &&
+    !(configuredOllama && readyOllamaModels?.includes(configuredOllama.model))
+      ? {
+          model: firstReadyOllama,
+          thinkingLevel: clampThinkingLevelForModel('high', firstReadyOllama),
+        }
+      : configuredOllama;
   const resolution = resolveDefaultModelLane({
     availability: {
       claudeNativeAuth,
@@ -788,13 +824,14 @@ export async function resolveDefaultModelLaneForPreferences(
             ? creditsContext.creditsEligible
             : undefined,
     },
-    defaults: repairedDefaults,
+    defaults: { ...repairedDefaults, ollama: ollamaCandidate },
     preferredProvider: input.preferredProvider,
     lastResolvedLane: input.lastResolvedLane,
     isModelAllowed: (model) => policyByModel.get(model),
     isModelInRegistry: (model) => resolveKnownModel(model) !== undefined,
     gatewayRoutesHydrated: hasHydratedGatewayCatalog(),
     ollamaPinned: input.ollamaPinned,
+    ...(ollamaReady !== undefined ? { ollamaReady } : {}),
     codexAccountModels,
     ...(orgGateway ? { orgGateway } : {}),
     ...(personalGateway ? { personalGateway } : {}),
@@ -1112,7 +1149,17 @@ export async function resolveAppAdvisorDefaultModel(
   preferences: PreferencesData,
 ): Promise<ChatModel> {
   const configured = preferences.appAdvisorModel ?? DEFAULT_APP_ADVISOR_MODEL;
-  if (configured !== DEFAULT_APP_ADVISOR_MODEL) return configured;
+  // An explicit choice only changes when a Personal gateway could carry it,
+  // so everyone else skips the lane resolution, as before.
+  if (
+    configured !== DEFAULT_APP_ADVISOR_MODEL &&
+    listPersonalGatewayDefaultModels(
+      getCurrentModelGatewayIndex(),
+      AI_GATEWAY_MODELS,
+    ).length === 0
+  ) {
+    return configured;
+  }
   const resolution = await resolveLaneAwareDefaultSelection(
     preferences,
     'chat',
@@ -1121,7 +1168,25 @@ export async function resolveAppAdvisorDefaultModel(
     undefined,
     false,
   );
-  return resolution.outcome === 'resolved' &&
+  if (resolution.outcome !== 'resolved') return configured;
+  // On the user's own AI gateway standing in for credits, any configured
+  // model moves to the gateway's route for the same model, as the composer's
+  // App Advisor tabs do. A hosted route there bills credits the account
+  // doesn't have, so the untouched seed can't stay on one.
+  const personalGateway = resolution.personalGateway;
+  // Only models the next send would accept: allowed by policy and runnable.
+  const gatewayRoute = personalGateway
+    ? personalGatewayEquivalentModel(configured, {
+        models: personalGateway.models.filter(
+          (model) =>
+            !isModelBlockedByCurrentPolicy(model) &&
+            isModelRunnableOnLane('ai-credits', model),
+        ),
+      })
+    : undefined;
+  if (gatewayRoute) return gatewayRoute;
+  if (configured !== DEFAULT_APP_ADVISOR_MODEL) return configured;
+  return personalGateway !== undefined ||
     !isModelRunnableOnLane(resolution.lane, configured)
     ? resolution.selection.model
     : configured;

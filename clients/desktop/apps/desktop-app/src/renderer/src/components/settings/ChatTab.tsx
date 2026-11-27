@@ -1,6 +1,6 @@
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
-import { type JSX, useEffect, useState } from 'react';
+import { type JSX, useEffect, useState, useSyncExternalStore } from 'react';
 import type {
   AgentProviderType,
   CanopyApi,
@@ -34,6 +34,18 @@ import { useProviderAvailability } from '@/hooks/useProviderAvailability';
 import { useAiCreditsAvailability } from '@/hooks/useAiCreditsAvailability';
 import { isOllamaSupportedOnPlatform } from '@canopy/desktop-shared/platform-capabilities';
 import { useChatStore } from '@/stores/chatStore';
+import {
+  isPersonalGatewayStandingIn,
+  personalGatewayRouteFor,
+} from '@/stores/chat/defaults';
+import {
+  getRendererBillingLaneFactsVersion,
+  subscribeRendererBillingLaneFacts,
+} from '@/stores/billingLaneRuntime';
+import {
+  getRendererModelFactsVersion,
+  subscribeRendererModelFacts,
+} from '@/stores/modelPolicyRuntime';
 import { useActivityStore } from '@/stores/activityStore';
 import { brandText } from '@/lib/brand';
 import { subscribePreferencesUpdated } from '@/lib/preferences-events';
@@ -119,6 +131,30 @@ function ProviderDefaultsGroup({
   // Claude slot made the AI Credits row report "Checking…" whenever an
   // unrelated Claude auth probe was in flight or had blipped.
   const credits = useAiCreditsAvailability();
+  // The gateway route below reads module-level catalog and lane facts React
+  // can't see; these versions re-render the rows when they settle.
+  useSyncExternalStore(
+    subscribeRendererBillingLaneFacts,
+    getRendererBillingLaneFactsVersion,
+    getRendererBillingLaneFactsVersion,
+  );
+  useSyncExternalStore(
+    subscribeRendererModelFacts,
+    getRendererModelFactsVersion,
+    getRendererModelFactsVersion,
+  );
+
+  /**
+   * The user's own AI gateway, standing in for AI Credits, runs this row's
+   * model under its own id. A signed-out Claude or Codex default then still
+   * works, and new chats start on the gateway's copy of it.
+   */
+  function gatewayRoute(
+    row: 'claude' | 'codex',
+  ): ReturnType<typeof personalGatewayRouteFor> {
+    const model = byProvider[row]?.model;
+    return model ? personalGatewayRouteFor(model) : undefined;
+  }
 
   function laneReason(row: DefaultsRowKey): string | undefined {
     if (row === 'ollama') return undefined;
@@ -131,7 +167,14 @@ function ProviderDefaultsGroup({
     }
     const provider = availability[row];
     if (provider.loading) return 'Checking…';
-    return provider.nativeAuth ? 'Signed in' : 'Not signed in';
+    if (provider.nativeAuth) return 'Signed in';
+    const route = gatewayRoute(row);
+    if (route) {
+      return route.gatewayName
+        ? `Uses ${route.gatewayName}`
+        : 'Uses your AI gateway';
+    }
+    return 'Not signed in';
   }
 
   function laneDimmed(row: DefaultsRowKey): boolean {
@@ -141,7 +184,11 @@ function ProviderDefaultsGroup({
       // inconclusive read.
       return !credits.loading && !credits.inconclusive && !credits.eligible;
     }
-    return !availability[row].loading && !availability[row].nativeAuth;
+    return (
+      !availability[row].loading &&
+      !availability[row].nativeAuth &&
+      gatewayRoute(row) === undefined
+    );
   }
 
   function writeProviderSelection(
@@ -191,7 +238,11 @@ function ProviderDefaultsGroup({
                     : resolvedLane === 'codex-native'
                       ? 'Codex subscription'
                       : resolvedLane === 'ai-credits'
-                        ? 'AI Credits'
+                        ? // The lane record can't tell credits from the
+                          // gateway standing in for them; today's state can.
+                          isPersonalGatewayStandingIn()
+                          ? 'AI gateway'
+                          : 'AI Credits'
                         : 'Ollama'
                 }`
               : 'Last resolved: not recorded yet'}

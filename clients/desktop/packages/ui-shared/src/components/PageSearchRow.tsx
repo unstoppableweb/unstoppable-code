@@ -11,16 +11,16 @@ import {
 } from 'react';
 import { CheckIcon, ListFilterIcon } from '../icons/AppIcons';
 import {
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuLabel,
-  DropdownMenuRowStyleProvider,
+  MenuDivider,
+  MenuItem,
+  MenuItemIcon,
+  MenuLabel,
+  MenuRowStyleProvider,
   QUIET_MENU_ROW_STYLE,
-} from '../primitives/DropdownMenu';
-import { FloatingMenu } from '../primitives/FloatingMenu';
+} from '../primitives/MenuItem';
+import { Menu } from '../primitives/Menu';
 import { NestedMenuFlyout } from '../primitives/NestedMenuFlyout';
-import { PickerTrigger, PickerTriggerChevron } from '../primitives/PickerMenu';
+import { PickerTrigger, PickerTriggerChevron } from '../primitives/PickerParts';
 import { SearchField, type SearchFieldProps } from '../primitives/SearchField';
 
 /**
@@ -213,34 +213,32 @@ function FilterRows<T extends string>({
   return (
     <>
       {anyLabel === undefined ? null : (
-        <DropdownMenuItem
+        <MenuItem
           role="menuitemradio"
           aria-checked={!active}
           data-testid={`${testId}-any`}
           onClick={onClear}
         >
-          <DropdownMenuItemIcon>
+          <MenuItemIcon>
             {active ? null : <CheckIcon size="sm" aria-hidden="true" />}
-          </DropdownMenuItemIcon>
+          </MenuItemIcon>
           <span className="truncate">{anyLabel}</span>
-        </DropdownMenuItem>
+        </MenuItem>
       )}
       {options.map((option, index) => {
         const checked = selected.includes(option.value);
         return (
-          <DropdownMenuItem
+          <MenuItem
             key={option.value}
             role={multiple ? 'menuitemcheckbox' : 'menuitemradio'}
             aria-checked={checked}
             data-testid={`${testId}-option-${valueClassName ? String(index) : option.value}`}
             onClick={(): void => onToggle(option.value)}
           >
-            <DropdownMenuItemIcon>
+            <MenuItemIcon>
               {checked ? <CheckIcon size="sm" aria-hidden="true" /> : null}
-            </DropdownMenuItemIcon>
-            {option.icon ? (
-              <DropdownMenuItemIcon>{option.icon}</DropdownMenuItemIcon>
-            ) : null}
+            </MenuItemIcon>
+            {option.icon ? <MenuItemIcon>{option.icon}</MenuItemIcon> : null}
             <span className={`min-w-0 flex-1 truncate ${valueClassName}`}>
               {option.label}
             </span>
@@ -249,7 +247,7 @@ function FilterRows<T extends string>({
                 {option.count}
               </span>
             ) : null}
-          </DropdownMenuItem>
+          </MenuItem>
         );
       })}
     </>
@@ -330,7 +328,7 @@ export function FilterDropdown<T extends string>({
         data-testid={testId}
         onClick={(): void => setOpen((current) => !current)}
       />
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={setOpen}
         anchorRef={anchorRef}
@@ -339,8 +337,8 @@ export function FilterDropdown<T extends string>({
         className="min-w-52"
         data-testid={`${testId}-menu`}
       >
-        <DropdownMenuRowStyleProvider value={QUIET_MENU_ROW_STYLE}>
-          <DropdownMenuLabel>{title}</DropdownMenuLabel>
+        <MenuRowStyleProvider value={QUIET_MENU_ROW_STYLE}>
+          <MenuLabel>{title}</MenuLabel>
           <FilterRows
             anyLabel={anyLabel}
             options={options}
@@ -351,8 +349,8 @@ export function FilterDropdown<T extends string>({
             testId={testId}
             replayPrivacy={replayPrivacy}
           />
-        </DropdownMenuRowStyleProvider>
-      </FloatingMenu>
+        </MenuRowStyleProvider>
+      </Menu>
     </>
   );
 }
@@ -508,7 +506,7 @@ export function FilterMenuButton({
           : { 'aria-label': accessibleName })}
         onClick={(): void => setOpen((current) => !current)}
       />
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={setOpen}
         anchorRef={anchorRef}
@@ -517,7 +515,7 @@ export function FilterMenuButton({
         className="min-w-56"
         data-testid={`${testId}-menu`}
       >
-        <DropdownMenuRowStyleProvider value={QUIET_MENU_ROW_STYLE}>
+        <MenuRowStyleProvider value={QUIET_MENU_ROW_STYLE}>
           {groups.map((group) => (
             <NestedMenuFlyout
               key={group.key}
@@ -533,8 +531,8 @@ export function FilterMenuButton({
           ))}
           {activeCount > 0 ? (
             <>
-              <DropdownMenuDivider />
-              <DropdownMenuItem
+              <MenuDivider />
+              <MenuItem
                 data-testid={`${testId}-clear`}
                 onClick={(): void => {
                   onClearAll();
@@ -544,13 +542,13 @@ export function FilterMenuButton({
                   anchorRef.current?.focus();
                 }}
               >
-                <DropdownMenuItemIcon />
+                <MenuItemIcon />
                 <span className="truncate">Clear filters</span>
-              </DropdownMenuItem>
+              </MenuItem>
             </>
           ) : null}
-        </DropdownMenuRowStyleProvider>
-      </FloatingMenu>
+        </MenuRowStyleProvider>
+      </Menu>
     </>
   );
 }
@@ -583,7 +581,7 @@ export function SortDropdown<T extends string>({
         data-testid={testId}
         onClick={(): void => setOpen((currentOpen) => !currentOpen)}
       />
-      <FloatingMenu
+      <Menu
         open={open}
         onOpenChange={setOpen}
         anchorRef={anchorRef}
@@ -591,27 +589,27 @@ export function SortDropdown<T extends string>({
         className="min-w-48"
         data-testid={`${testId}-menu`}
       >
-        <DropdownMenuRowStyleProvider value={QUIET_MENU_ROW_STYLE}>
-          <DropdownMenuLabel>Sort by</DropdownMenuLabel>
+        <MenuRowStyleProvider value={QUIET_MENU_ROW_STYLE}>
+          <MenuLabel>Sort by</MenuLabel>
           {options.map((option) => {
             const checked = option.value === value;
             return (
-              <DropdownMenuItem
+              <MenuItem
                 key={option.value}
                 role="menuitemradio"
                 aria-checked={checked}
                 data-testid={`${testId}-option-${option.value}`}
                 onClick={(): void => onChange(option.value)}
               >
-                <DropdownMenuItemIcon>
+                <MenuItemIcon>
                   {checked ? <CheckIcon size="sm" aria-hidden="true" /> : null}
-                </DropdownMenuItemIcon>
+                </MenuItemIcon>
                 <span className="truncate">{option.label}</span>
-              </DropdownMenuItem>
+              </MenuItem>
             );
           })}
-        </DropdownMenuRowStyleProvider>
-      </FloatingMenu>
+        </MenuRowStyleProvider>
+      </Menu>
     </>
   );
 }

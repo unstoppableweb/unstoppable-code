@@ -11,7 +11,7 @@ import {
   ActionMenuRowStyle,
   type ActionMenuItem,
 } from '../../primitives/ActionMenuItems';
-import { FloatingMenu } from '../../primitives/FloatingMenu';
+import { Menu } from '../../primitives/Menu';
 import {
   ChevronDownMediumIcon,
   ChevronLeftMediumIcon,
@@ -332,7 +332,7 @@ function PanelChromeComponent({
   ];
 
   const menuBody = (
-    <FloatingMenu
+    <Menu
       id={menuId}
       open={menuOpen}
       onOpenChange={setMenuOpen}
@@ -349,12 +349,12 @@ function PanelChromeComponent({
             if (item.disabled || !item.onSelect) return;
             item.onSelect();
             setMenuOpen(false);
-            // Hand focus back to the trigger, as a FloatingMenu pick does.
+            // Hand focus back to the trigger, as a Menu pick does.
             triggerRef.current?.focus({ preventScroll: true });
           }}
         />
       </ActionMenuRowStyle>
-    </FloatingMenu>
+    </Menu>
   );
 
   return (

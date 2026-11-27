@@ -4,11 +4,11 @@ import { useId, useRef, useState, type JSX, type ReactNode } from 'react';
 import {
   ActivityItemDensityContext,
   DEFAULT_MENU_ROW_STYLE,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuRowStyleProvider,
-  FloatingMenu,
-  type DropdownMenuRowStyle,
+  MenuItem,
+  MenuItemIcon,
+  MenuRowStyleProvider,
+  Menu,
+  type MenuRowStyle,
   HeaderActionDefaultToneContext,
   EmptyStateRow,
 } from '@canopy/ui-shared/components';
@@ -64,7 +64,7 @@ export interface ActivityCardViewProps {
  * sidebar rows' corner radius, so they match the rows beside the card. Its
  * icons set their own (tertiary) ink, so the icon tone here never applies.
  */
-const CARD_ROW_STYLE: DropdownMenuRowStyle = {
+const CARD_ROW_STYLE: MenuRowStyle = {
   textStyle: 'small',
   iconTone: 'inherit',
   corners: 'row',
@@ -81,13 +81,13 @@ export function ActivityCardStyle({
   readonly children: ReactNode;
 }): JSX.Element {
   return (
-    <DropdownMenuRowStyleProvider value={CARD_ROW_STYLE}>
+    <MenuRowStyleProvider value={CARD_ROW_STYLE}>
       <ActivityItemDensityContext.Provider value="compact">
         <HeaderActionDefaultToneContext.Provider value="neutral">
           {children}
         </HeaderActionDefaultToneContext.Provider>
       </ActivityItemDensityContext.Provider>
-    </DropdownMenuRowStyleProvider>
+    </MenuRowStyleProvider>
   );
 }
 
@@ -112,7 +112,7 @@ function SectionRow({
   return (
     <div data-testid={`activity-card-section-${row.key}`}>
       <div className="flex items-center gap-0.5">
-        <DropdownMenuItem
+        <MenuItem
           asButton
           selected={expanded}
           aria-expanded={opensInPanel ? undefined : expanded}
@@ -121,9 +121,7 @@ function SectionRow({
           onClick={onActivate}
           className="min-w-0 flex-1"
         >
-          <DropdownMenuItemIcon tone="tertiary">
-            {row.icon}
-          </DropdownMenuItemIcon>
+          <MenuItemIcon tone="tertiary">{row.icon}</MenuItemIcon>
           {/* The state (`2`, `9h ago`) sits at the row's right end. */}
           <span className="flex min-w-0 flex-1 items-center gap-1.5">
             <span className="min-w-0 flex-1 truncate">{row.title}</span>
@@ -136,7 +134,7 @@ function SectionRow({
               </span>
             ) : null}
           </span>
-        </DropdownMenuItem>
+        </MenuItem>
         {expanded && row.headerAction ? (
           <div className="flex shrink-0 items-center">{row.headerAction}</div>
         ) : null}
@@ -174,7 +172,7 @@ function AddMenu({
   const menuId = useId();
   return (
     <>
-      <DropdownMenuItem
+      <MenuItem
         ref={triggerRef}
         asButton
         aria-haspopup="menu"
@@ -183,12 +181,12 @@ function AddMenu({
         data-testid="activity-card-add"
         onClick={(): void => setOpen((current) => !current)}
       >
-        <DropdownMenuItemIcon tone="tertiary">
+        <MenuItemIcon tone="tertiary">
           <PlusMediumIcon aria-hidden="true" />
-        </DropdownMenuItemIcon>
+        </MenuItemIcon>
         <span className="min-w-0 flex-1 truncate">Add</span>
-      </DropdownMenuItem>
-      <FloatingMenu
+      </MenuItem>
+      <Menu
         id={menuId}
         open={open}
         onOpenChange={setOpen}
@@ -199,9 +197,9 @@ function AddMenu({
         className="w-56"
       >
         {/* The card's row style reaches through the portal; reset it. */}
-        <DropdownMenuRowStyleProvider value={DEFAULT_MENU_ROW_STYLE}>
+        <MenuRowStyleProvider value={DEFAULT_MENU_ROW_STYLE}>
           {rows.map((row) => (
-            <DropdownMenuItem
+            <MenuItem
               key={row.key}
               data-testid={`activity-card-row-${row.key}`}
               onClick={(): void => {
@@ -209,14 +207,12 @@ function AddMenu({
                 onChoose(row);
               }}
             >
-              <DropdownMenuItemIcon tone="tertiary">
-                {row.icon}
-              </DropdownMenuItemIcon>
+              <MenuItemIcon tone="tertiary">{row.icon}</MenuItemIcon>
               <span className="min-w-0 flex-1 truncate">{row.title}</span>
-            </DropdownMenuItem>
+            </MenuItem>
           ))}
-        </DropdownMenuRowStyleProvider>
-      </FloatingMenu>
+        </MenuRowStyleProvider>
+      </Menu>
     </>
   );
 }

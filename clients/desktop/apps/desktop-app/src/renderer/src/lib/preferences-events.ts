@@ -1,4 +1,7 @@
-import type { PreferencesData } from '@canopy/desktop-shared/types';
+import type {
+  PreferencesData,
+  PreferencesSaveResult,
+} from '@canopy/desktop-shared/types';
 
 /**
  * Browser-event channel name used to broadcast preference changes between
@@ -23,9 +26,18 @@ function isPreferencesData(value: unknown): value is PreferencesData {
  * Emit a normalized preferences object so listeners can update their local
  * state without a reload. The event detail must be the full
  * {@link PreferencesData} shape so subscribers can resolve any field.
+ * An unconfirmed save reply is not emitted: listeners take every field as
+ * saved, and only its client-local keys are (`PreferencesSaveResult`).
  */
-export function emitPreferencesUpdated(preferences: PreferencesData): void {
+export function emitPreferencesUpdated(
+  preferences: PreferencesData | PreferencesSaveResult,
+): void {
   if (typeof window === 'undefined') return;
+  if (
+    '__preferencesUnconfirmed' in preferences &&
+    preferences.__preferencesUnconfirmed === true
+  )
+    return;
   window.dispatchEvent(
     new CustomEvent<PreferencesData>(CANOPY_PREFERENCES_UPDATED_EVENT, {
       detail: preferences,

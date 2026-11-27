@@ -31,6 +31,9 @@ import { hasPendingApprovalForChat } from '@/stores/chat/pending-approvals';
 import { useShallow } from 'zustand/react/shallow';
 import { QueuedEditComposerSlot } from '@canopy/ui-app/chat-panel';
 import { ChatInput } from './ChatInput';
+import { DesktopBillingSetupGate } from '@/components/billing/DesktopBillingSetupGate';
+import { useDesktopBillingGate } from '@/hooks/useDesktopBillingReadiness';
+import { isWebCoreScope } from '@/lib/chat-authority';
 import { ChatStateRecoveryBanner } from './ChatStateRecoveryBanner';
 import { ComposerWorkDrawerProvider } from './composer-work-drawer-context';
 import { StaleTranscriptCatchUpControls } from './StaleTranscriptCatchUpControls';
@@ -70,7 +73,7 @@ const LazyChatMessageList = lazy(() =>
 interface ChatContentProps {
   transcript: ActiveTranscriptView | null;
   composerTab: ActiveComposerView | null;
-  onClearQueuedMessage: (index: number) => void;
+  onClearQueuedMessage?: (index: number) => void;
   onForceQueuedMessage?: (index: number) => void;
   onEditQueuedMessage?: (index: number, message?: QueuedChatMessage) => void;
   onCancelEditQueuedMessage?: () => void;
@@ -225,6 +228,7 @@ export function ChatContent({
   const searchHostRef = useRef<HTMLDivElement>(null);
   const messageContainerRef = useRef<HTMLDivElement>(null);
   const cancelShortcutFallbackRootRef = useRef<HTMLDivElement>(null);
+  const billingGateShown = useDesktopBillingGate().gate.shown;
   const searchExecutor = useMemo(
     (): SearchExecutor =>
       createDomSearchExecutor(() => messageContainerRef.current),
@@ -541,6 +545,24 @@ export function ChatContent({
   }, [searchShortcutActive, searchOpen]);
 
   if (!transcript || !showsTranscript) {
+    // Billing setup gate: while nothing can run a model, an empty chat shows
+    // the provider list instead of the composer. A chat whose first turn is
+    // already on its way (Remote Control, an automation, a send awaiting its
+    // acknowledgement) keeps its composer, and main's typed refusal explains
+    // what happened.
+    const firstTurnUnderway =
+      composerTab !== null &&
+      (composerTab.status === 'streaming' ||
+        composerTab.firstSendPreparing === true ||
+        composerTab.failedFirstSend !== undefined ||
+        transcript?.pendingTurnTimerId !== undefined ||
+        transcript?.startingTurnUserMessageId !== undefined);
+    // A cloud (web-core) chat is funded by the web account, which desktop
+    // readiness does not read; `ChatInput`'s send block skips it too.
+    const cloudChat =
+      feedbackProjectId !== undefined && isWebCoreScope(feedbackProjectId);
+    const billingGated =
+      billingGateShown && !hideComposer && !firstTurnUnderway && !cloudChat;
     return (
       <div ref={cancelShortcutFallbackRootRef} className="contents">
         <div
@@ -549,7 +571,25 @@ export function ChatContent({
           <div
             className={`flex min-h-0 flex-1 ${emptyStateCenter ? 'overflow-y-auto' : 'items-center justify-center'}`}
           >
-            {emptyStateCenter ? (
+            {billingGated ? (
+              <div className="mx-auto my-auto w-full max-w-[var(--chat-reading-width)] py-4">
+                <DesktopBillingSetupGate
+                  surface="chat"
+                  {...(feedbackProjectId !== undefined
+                    ? { projectId: feedbackProjectId }
+                    : {})}
+                  composerRef={cancelShortcutFallbackRootRef}
+                  onReturnFocus={(): void => {
+                    // The composer's editor is back; focus it as it was.
+                    cancelShortcutFallbackRootRef.current
+                      ?.querySelector<HTMLElement>(
+                        '[data-chat-composer-root] [contenteditable="true"]',
+                      )
+                      ?.focus();
+                  }}
+                />
+              </div>
+            ) : emptyStateCenter ? (
               <div
                 className={`${emptyStateCenterPlacement === 'center' ? 'my-auto' : 'mt-auto'} w-full py-4`}
               >
@@ -563,9 +603,11 @@ export function ChatContent({
           </div>
           {/* Suggestions anchor to the bottom of the empty transcript area,
               directly above the composer. */}
-          <div className="mx-auto w-full max-w-[var(--chat-reading-width)] chat-width-transition">
-            {emptyStateSuggestions}
-          </div>
+          {!billingGated && (
+            <div className="mx-auto w-full max-w-[var(--chat-reading-width)] chat-width-transition">
+              {emptyStateSuggestions}
+            </div>
+          )}
         </div>
         {recoveryScope && (
           <ChatStateRecoveryBanner
@@ -573,7 +615,7 @@ export function ChatContent({
             worktreeId={recoveryScope.worktreeId}
           />
         )}
-        {!hideComposer && (
+        {!hideComposer && !billingGated && (
           <ChatInput
             allowCursor={allowCursor}
             cancelShortcutTargetRootRef={cancelShortcutFallbackRootRef}

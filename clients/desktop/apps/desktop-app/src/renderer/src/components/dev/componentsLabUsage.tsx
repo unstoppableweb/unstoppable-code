@@ -1,6 +1,6 @@
 import { useState, type ComponentProps, type JSX } from 'react';
 import {
-  DropdownMenuSurface,
+  MenuSurface,
   Button,
   HostTooltipProvider,
   NoticeButton,
@@ -73,49 +73,37 @@ export function UsageActionsSection(): JSX.Element {
     <SpecimenPanel title="Usage popover actions">
       <SpecimenGrid min={280}>
         <SpecimenCell label="UsageSectionHeader, live (toggles the chevron)">
-          <DropdownMenuSurface
-            role="presentation"
-            padding="readout"
-            className="w-64"
-          >
+          <MenuSurface role="presentation" padding="readout" className="w-64">
             <UsageSectionHeader
               label="Context"
               expanded={open}
               onToggle={(): void => setOpen((v) => !v)}
             />
-          </DropdownMenuSurface>
+          </MenuSurface>
         </SpecimenCell>
         <SpecimenCell label="UsageSectionHeader, expanded, with a quiet action">
-          <DropdownMenuSurface
-            role="presentation"
-            padding="readout"
-            className="w-64"
-          >
+          <MenuSurface role="presentation" padding="readout" className="w-64">
             <UsageSectionHeader
               label="Accounts"
               expanded
               onToggle={noop}
               action={<UsageTextAction label="Manage" onClick={noop} />}
             />
-          </DropdownMenuSurface>
+          </MenuSurface>
         </SpecimenCell>
         <SpecimenCell label="UsageActionRow">
-          <DropdownMenuSurface
-            role="presentation"
-            padding="readout"
-            className="w-64"
-          >
+          <MenuSurface role="presentation" padding="readout" className="w-64">
             <UsageActionRow label="See detailed breakdown" onClick={noop} />
-          </DropdownMenuSurface>
+          </MenuSurface>
         </SpecimenCell>
         <SpecimenCell label="UsageActionRow, footer band">
-          <DropdownMenuSurface
+          <MenuSurface
             role="presentation"
             padding="none"
             className="w-64 overflow-hidden"
           >
             <UsageActionRow label="Manage usage" onClick={noop} band />
-          </DropdownMenuSurface>
+          </MenuSurface>
         </SpecimenCell>
         <SpecimenCell label="UsageTextAction">
           <UsageTextAction label="Manage" onClick={noop} />

@@ -180,6 +180,8 @@ export function delegatedAgentRouteMetadata(
   runtimeId?: string;
 } {
   const route = snapshot.routeSnapshot;
+  // A host with no route snapshot of its own may report the runtime model.
+  const reported = route ? undefined : snapshot.reportedRoute;
   // Without a route, a host's label for the requested model names it, with
   // its id beside it as a route's selected model shows.
   const requestedLabel = snapshot.requestedModelLabel;
@@ -200,8 +202,13 @@ export function delegatedAgentRouteMetadata(
     runtime:
       route?.runtimeModelLabel ??
       route?.runtimeModelId ??
+      reported?.runtimeModelLabel ??
       delegatedAgentUnroutedLabel(snapshot),
-    ...(route?.runtimeModelId ? { runtimeId: route.runtimeModelId } : {}),
+    ...(route?.runtimeModelId
+      ? { runtimeId: route.runtimeModelId }
+      : reported?.runtimeModelId
+        ? { runtimeId: reported.runtimeModelId }
+        : {}),
   };
 }
 

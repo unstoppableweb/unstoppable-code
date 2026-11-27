@@ -16,7 +16,11 @@ import {
   linuxSafeStorageHelperPlugin,
   withOneBytePlaceholder,
 } from '../../scripts/lib/desktop-main-entry.mjs';
-import { readLocalOnlyBuildEnv } from '../../scripts/lib/local-only-build-env.mjs';
+import {
+  readCloudBaseUrlForBundle,
+  readLocalOnlyBuildEnv,
+  readSelfHostBuildEnv,
+} from '../../scripts/lib/local-only-build-env.mjs';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { randomUUID } from 'node:crypto';
@@ -354,10 +358,26 @@ function formatCanopyCloudBaseUrlLog(value: string, source: string): string {
 // says, so a production local-only bundle does not even contain the keys.
 // scripts/lib/local-only-build-env.mjs is the one parser every bundler shares.
 const localOnlyBuild = readLocalOnlyBuildEnv(process.env);
+// The self-host profile keeps the cloud on, pointed at the self-hosted
+// server, and turns every third-party hosted service off like local-only.
+// The parser rejects both profiles together.
+const selfHostBuild = readSelfHostBuildEnv(process.env);
+const hostedServicesOff = localOnlyBuild || selfHostBuild;
 
 function readCanopyCloudBaseUrlForBuild(mode: string): string {
   if (localOnlyBuild) {
     return '';
+  }
+  if (selfHostBuild) {
+    // Required in every mode: a self-host build never falls back to the
+    // apps/web dev server, and the shared parser validates the URL.
+    const selfHostBaseUrl = readCloudBaseUrlForBundle(process.env);
+    if (mode !== 'production') {
+      process.stdout.write(
+        `${formatCanopyCloudBaseUrlLog(selfHostBaseUrl, 'CANOPY_CLOUD_BASE_URL')}\n`,
+      );
+    }
+    return selfHostBaseUrl;
   }
   const cloudBaseUrl = readEnvString('CANOPY_CLOUD_BASE_URL');
   if (cloudBaseUrl) {
@@ -432,12 +452,13 @@ function createDependencyVersionDefines(mode: string): Record<string, string> {
       readEnvString('CANOPY_INTERNAL_RELEASE_INDICATOR'),
     ),
     __CANOPY_UPDATE_BASE_URL__: JSON.stringify(
-      localOnlyBuild ? '' : readEnvString('CANOPY_UPDATE_BASE_URL'),
+      hostedServicesOff ? '' : readEnvString('CANOPY_UPDATE_BASE_URL'),
     ),
     __CANOPY_SOURCE_BUILD__: JSON.stringify(
       readEnvString('CANOPY_SOURCE_BUILD') === 'true',
     ),
     __CANOPY_LOCAL_ONLY__: JSON.stringify(localOnlyBuild),
+    __CANOPY_SELF_HOST__: JSON.stringify(selfHostBuild),
   };
 }
 
@@ -449,10 +470,10 @@ function createDesktopInstrumentationDefines(): Record<string, string> {
       readEnvString('CANOPY_VERSION', pkg.version ?? ''),
     ),
     __CANOPY_POSTHOG_ENABLED__: JSON.stringify(
-      !localOnlyBuild && readEnvBoolean('CANOPY_POSTHOG_ENABLED', false),
+      !hostedServicesOff && readEnvBoolean('CANOPY_POSTHOG_ENABLED', false),
     ),
     __CANOPY_POSTHOG_PROJECT_KEY__: JSON.stringify(
-      localOnlyBuild ? '' : readEnvString('CANOPY_POSTHOG_PROJECT_KEY'),
+      hostedServicesOff ? '' : readEnvString('CANOPY_POSTHOG_PROJECT_KEY'),
     ),
     __CANOPY_POSTHOG_HOST__: JSON.stringify(
       readEnvString('CANOPY_POSTHOG_HOST', 'https://us.i.posthog.com'),
@@ -465,7 +486,9 @@ function createDesktopInstrumentationDefines(): Record<string, string> {
 
 const desktopFeatureFlagDefines = {
   __CANOPY_LAUNCHDARKLY_DESKTOP_CLIENT_SIDE_ID__: JSON.stringify(
-    localOnlyBuild ? '' : readEnvString('LAUNCHDARKLY_DESKTOP_CLIENT_SIDE_ID'),
+    hostedServicesOff
+      ? ''
+      : readEnvString('LAUNCHDARKLY_DESKTOP_CLIENT_SIDE_ID'),
   ),
 };
 

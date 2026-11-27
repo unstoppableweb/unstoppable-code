@@ -3,14 +3,14 @@
 import { Dot } from '../primitives/Badge';
 import { useCallback, useMemo, useRef, useState, type JSX } from 'react';
 import { ArchiveIcon, FilterIcon, TrashIcon } from '../icons/AppIcons';
+import { Picker } from '../primitives/Picker';
 import {
-  FloatingPickerMenu,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-  PickerMenuOptionLeading,
-} from '../primitives/PickerMenu';
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionLabel,
+  PickerOptionLeading,
+} from '../primitives/PickerParts';
 import { RailIconButton } from './RailIconButton';
 import {
   getArchivedContainerStateLabel,
@@ -93,7 +93,7 @@ export function ArchivedStateFilterDropdown({
         />
       )}
 
-      <FloatingPickerMenu
+      <Picker
         open={open}
         onOpenChange={setOpen}
         anchorRef={triggerRef}
@@ -106,7 +106,7 @@ export function ArchivedStateFilterDropdown({
         {STATE_OPTIONS.map(({ state, Icon }) => {
           const isVisible = !hiddenSet.has(state);
           return (
-            <PickerMenuOption
+            <PickerOption
               key={state}
               role="menuitemcheckbox"
               aria-checked={isVisible}
@@ -114,19 +114,19 @@ export function ArchivedStateFilterDropdown({
               data-testid={`${testIdPrefix}-option-${state}`}
               selected={isVisible}
             >
-              <PickerMenuOptionCheck selected={isVisible} reserveSpace />
-              <PickerMenuOptionLeading tone="secondary">
+              <PickerOptionCheck selected={isVisible} reserveSpace />
+              <PickerOptionLeading tone="secondary">
                 <Icon size="sm" aria-hidden="true" />
-              </PickerMenuOptionLeading>
-              <PickerMenuOptionContent>
-                <PickerMenuOptionLabel>
+              </PickerOptionLeading>
+              <PickerOptionContent>
+                <PickerOptionLabel>
                   {getArchivedContainerStateLabel(state)}
-                </PickerMenuOptionLabel>
-              </PickerMenuOptionContent>
-            </PickerMenuOption>
+                </PickerOptionLabel>
+              </PickerOptionContent>
+            </PickerOption>
           );
         })}
-      </FloatingPickerMenu>
+      </Picker>
     </div>
   );
 }

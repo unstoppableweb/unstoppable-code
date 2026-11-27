@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 
 import type { CoreScriptCommandShell } from '@canopy/protocol/canopy-core';
 
@@ -57,14 +57,19 @@ function buildPowerShellScript(script: string): string {
  * - Linux runs `shell.linux` from PATH (Bash by default, then `/bin/bash`)
  *   and refuses a missing zsh rather than falling back.
  * - macOS runs `shell.mac` from PATH, then `/bin/{shell}`; without one, and
- *   on other POSIX hosts, the login shell, then `/bin/bash`.
+ *   on other POSIX hosts, the absolute `SHELL` of the run's environment, then
+ *   the host's login shell, then `/bin/bash`.
  * - POSIX shells start with `-li`, or `-l` when not interactive.
  */
 export function buildScriptShellCommand(
   host: ScriptShellHost,
   script: string,
   shell?: ScriptCommandShell,
-  options?: { interactive?: boolean },
+  options?: {
+    interactive?: boolean;
+    /** The run's own environment, which may name another shell than the host's. */
+    environment?: Readonly<Record<string, string | undefined>>;
+  },
 ): ScriptShellCommand {
   const platform = host.platform();
   if (platform === 'win32') {
@@ -132,9 +137,14 @@ export function buildScriptShellCommand(
   }
 
   const requestedShell = platform === 'darwin' ? shell?.mac : undefined;
+  // A daemon started by launchd has no SHELL of its own, so the run's wins:
+  // bash -l would rebuild PATH with path_helper and skip the user's setup.
+  const runShell = options?.environment?.SHELL;
   const command = requestedShell
     ? (host.findExecutable(requestedShell) ?? `/bin/${requestedShell}`)
-    : host.loginShell() || '/bin/bash';
+    : (runShell && isAbsolute(runShell) ? runShell : undefined) ||
+      host.loginShell() ||
+      '/bin/bash';
   return {
     command,
     args: [options?.interactive === false ? '-l' : '-li', '-c', script],

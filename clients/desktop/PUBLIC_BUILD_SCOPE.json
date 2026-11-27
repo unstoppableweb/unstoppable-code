@@ -36,6 +36,7 @@
   ],
   "distribution": false,
   "localOnlyProfile": true,
+  "selfHostProfile": true,
   "excludedTestScopes": [
     "Windows native process identity qualification requiring the private helper build script",
     "internal migration native cold qualification requiring the private Windows process-helper build script",

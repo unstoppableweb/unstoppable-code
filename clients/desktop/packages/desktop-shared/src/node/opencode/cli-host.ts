@@ -10,6 +10,7 @@ import {
 } from './cli-inference';
 import {
   prepareCliOpenCodeCapabilities,
+  selectedCapabilityRoot,
   type CliOpenCodeCapabilityServices,
 } from './cli-capabilities';
 import type { OpenCodeApprovalPort } from './tool-approval';
@@ -51,6 +52,7 @@ export function createCliOpenCodeHost(
         signal: AbortSignal;
         authorize: OpenCodePromptHost['authorize'];
         approval: OpenCodeApprovalPort;
+        exemptWorkingFolder: (path: string) => void;
         capabilityServices?: CliOpenCodeCapabilityServices;
       }
     | undefined;
@@ -198,6 +200,8 @@ export function createCliOpenCodeHost(
         await assertEnabled();
         active = {
           signal,
+          exemptWorkingFolder: (path): void =>
+            approval.exemptWorkingFolder(path),
           capabilityServices: services
             ? {
                 ...services,
@@ -269,6 +273,9 @@ export function createCliOpenCodeHost(
     async prepareCapabilities(profile, signal) {
       if (!active || active.signal.aborted)
         throw new Error('OpenCode session is unavailable.');
+      // The model is told to Read its skills here; the rest of the profile
+      // (private config, hook plugins) stays protected.
+      active.exemptWorkingFolder(selectedCapabilityRoot(profile));
       return prepareCliOpenCodeCapabilities(
         request,
         profile,

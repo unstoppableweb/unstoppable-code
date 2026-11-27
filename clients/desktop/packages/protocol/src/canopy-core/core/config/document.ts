@@ -149,7 +149,8 @@ export type ConfigDocumentLoadError = z.output<
 
 export const ConfigDocumentGetParamsSchema = z.strictObject({});
 
-export const ConfigDocumentGetResultSchema = z
+/** The document as every read and write answers it. */
+const ConfigDocumentStateSchema = z
   .object({
     revision: ConfigDocumentRevisionSchema,
     /** The runtime projection of the stored record. Holds no secret. */
@@ -160,6 +161,40 @@ export const ConfigDocumentGetResultSchema = z
     loadError: ConfigDocumentLoadErrorSchema.nullable(),
   })
   .catchall(CanopyJsonValueSchema);
+
+/**
+ * What one authority read proved about a stored usage-data choice (CAN-7991).
+ * `allowed` and `denied` need the saved value to be a boolean, or absent (the
+ * default), judged on the saved text before the revocation journal's overlay;
+ * a well-formed value is then answered as overlaid, so a journaled revocation
+ * reads `denied`. `denial-journal-unreadable`: the journal could not be read,
+ * so every flow reads as denied without saying what the member chose.
+ * `unconfirmed`: nothing was proven (a latched recovery, an unreadable
+ * document, a malformed saved value).
+ */
+export const CONFIG_STORED_USAGE_DATA_CHOICES = [
+  'allowed',
+  'denied',
+  'unconfirmed',
+  'denial-journal-unreadable',
+] as const;
+export type ConfigStoredUsageDataChoice =
+  (typeof CONFIG_STORED_USAGE_DATA_CHOICES)[number];
+
+/** Each usage-data flow the core tracks, by its `usageData` key. */
+export const ConfigStoredUsageDataSchema = z
+  .object({})
+  .catchall(z.enum(CONFIG_STORED_USAGE_DATA_CHOICES))
+  .refine(keysAreBounded, 'Usage-data keys are camelCase names.');
+
+export const ConfigDocumentGetResultSchema = ConfigDocumentStateSchema.extend({
+  /**
+   * The stored usage-data choices, from an authority read of its own beside
+   * the one `value` comes from. Only this read reports them; a core that does
+   * not observe them omits the field, which a client reads as `unconfirmed`.
+   */
+  storedUsageData: ConfigStoredUsageDataSchema.optional(),
+});
 export type ConfigDocumentGetResult = z.output<
   typeof ConfigDocumentGetResultSchema
 >;
@@ -192,7 +227,7 @@ export type ConfigDocumentUpdateParams = z.output<
 >;
 
 export const ConfigDocumentUpdateResultSchema =
-  ConfigDocumentGetResultSchema.extend({
+  ConfigDocumentStateSchema.extend({
     /** Patch keys the save rules dropped without writing; empty when none. */
     dropped: z.array(ConfigDocumentKeySchema).max(CONFIG_DOCUMENT_MAX_KEYS),
   });
@@ -211,8 +246,7 @@ export type ConfigDocumentOwnerUpdateParams = z.output<
   typeof ConfigDocumentOwnerUpdateParamsSchema
 >;
 
-export const ConfigDocumentOwnerUpdateResultSchema =
-  ConfigDocumentGetResultSchema;
+export const ConfigDocumentOwnerUpdateResultSchema = ConfigDocumentStateSchema;
 
 export const ConfigLegacyClientLocalGetParamsSchema = z.strictObject({});
 

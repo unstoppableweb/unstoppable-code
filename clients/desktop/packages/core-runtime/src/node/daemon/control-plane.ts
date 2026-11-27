@@ -87,6 +87,8 @@ export interface CanopyControlConnectionIdentity {
   readonly lease: CanopyClientLeaseView | null;
   /** The connection proved the daemon's owner secret at initialize (CAN-5771). */
   readonly owner: boolean;
+  /** A non-owner connection proved it comes from the launching desktop. */
+  readonly peer: boolean;
 }
 
 export type CanopyControlPlaneConnectionOptions = Omit<
@@ -430,6 +432,16 @@ function ownerProofOf(params: Record<string, unknown>): unknown {
     : undefined;
 }
 
+/** `client.desktopPeerProof` as sent, of any type; undefined when absent. */
+function desktopPeerProofOf(params: Record<string, unknown>): unknown {
+  const client = params.client;
+  if (typeof client !== 'object' || client === null || Array.isArray(client))
+    return undefined;
+  return Object.prototype.hasOwnProperty.call(client, 'desktopPeerProof')
+    ? Reflect.get(client, 'desktopPeerProof')
+    : undefined;
+}
+
 /** Serves one authenticated connection until it closes. */
 function serveControlConnection(
   connection: CanopyFramedConnection,
@@ -467,10 +479,12 @@ function serveControlConnection(
   let clientCapabilities: ReadonlySet<string> = new Set();
   let advertisedChannelKinds: ReadonlySet<string> = new Set();
   let owner = false;
+  let peer = false;
   const identity = (): CanopyControlConnectionIdentity => ({
     connectionId: connection.connectionId,
     lease: leases.lease(connection.connectionId),
     owner,
+    peer,
   });
   let initialization: 'none' | 'pending' | 'done' = 'none';
   let ownedLeaseId: string | null = null;
@@ -889,6 +903,13 @@ function serveControlConnection(
         }
         owner = true;
       }
+      // A failed peer proof is not an error: the connection stays ordinary.
+      const peerClaim = desktopPeerProofOf(request.params);
+      peer =
+        !owner &&
+        typeof peerClaim === 'string' &&
+        options.ownerProof?.verifyPeer(connection.connectionId, peerClaim) ===
+          true;
     }
     try {
       const caller = options.callerFor(identity());

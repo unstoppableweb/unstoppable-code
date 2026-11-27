@@ -388,10 +388,10 @@ export function preserveRendererOnlyTabFields(
   next: ChatTab,
 ): ChatTab {
   if (!previous) return next;
-  const authoritativeMessages =
-    next.transcriptLoaded === false ? [] : next.messages;
+  const incomingBodyless = next.transcriptLoaded === false;
+  const authoritativeMessages = incomingBodyless ? [] : next.messages;
 
-  if (next.transcriptLoaded === false) {
+  if (incomingBodyless) {
     // A body-less canonical tab (`messages: []`, not loaded) is metadata
     // only. The rows and the window stay authoritative in the renderer:
     // `message.upserted` keeps them current and `transcript.updated` moves
@@ -435,7 +435,9 @@ export function preserveRendererOnlyTabFields(
 
   const preserved: ChatTab = {
     ...next,
-    ...(previous.transcriptStale ? { transcriptStale: true } : {}),
+    ...(incomingBodyless && previous.transcriptStale
+      ? { transcriptStale: true }
+      : {}),
     pendingUserMessages: previous.pendingUserMessages,
     pendingTurn: previous.pendingTurn,
     pendingQueueDispatch: previous.pendingQueueDispatch,

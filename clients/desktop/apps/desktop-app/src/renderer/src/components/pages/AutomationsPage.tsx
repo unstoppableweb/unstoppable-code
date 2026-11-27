@@ -98,14 +98,14 @@ import {
   Dot,
   type DotTone,
   CopyDetailsButton,
-  FloatingPickerMenu,
+  Picker,
   Notice,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionDescription,
-  PickerMenuOptionLabel,
-  PickerMenuOptionLeading,
+  PickerOption,
+  PickerOptionCheck,
+  PickerOptionContent,
+  PickerOptionDescription,
+  PickerOptionLabel,
+  PickerOptionLeading,
   Surface,
 } from '@canopy/ui-shared/components';
 import {
@@ -1447,7 +1447,7 @@ function StatusBadgeDropdown({
         <span>{label}</span>
         <ChevronDownIcon size="sm" />
       </ControlButton>
-      <FloatingPickerMenu
+      <Picker
         id={menuId}
         open={open}
         onOpenChange={setOpen}
@@ -1483,7 +1483,7 @@ function StatusBadgeDropdown({
             }
           }}
         />
-      </FloatingPickerMenu>
+      </Picker>
     </>
   );
 }
@@ -1502,20 +1502,20 @@ function StatusDropdownOption({
   onSelect: () => void;
 }): JSX.Element {
   return (
-    <PickerMenuOption
+    <PickerOption
       role="option"
       aria-selected={selected}
       selected={selected}
       onClick={onSelect}
     >
-      <PickerMenuOptionLeading>
+      <PickerOptionLeading>
         <Dot tone={dotTone} />
-      </PickerMenuOptionLeading>
-      <PickerMenuOptionContent>
-        <PickerMenuOptionLabel>{label}</PickerMenuOptionLabel>
-        <PickerMenuOptionDescription>{description}</PickerMenuOptionDescription>
-      </PickerMenuOptionContent>
-      <PickerMenuOptionCheck selected={selected} />
-    </PickerMenuOption>
+      </PickerOptionLeading>
+      <PickerOptionContent>
+        <PickerOptionLabel>{label}</PickerOptionLabel>
+        <PickerOptionDescription>{description}</PickerOptionDescription>
+      </PickerOptionContent>
+      <PickerOptionCheck selected={selected} />
+    </PickerOption>
   );
 }

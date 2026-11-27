@@ -2096,7 +2096,7 @@
   padding-top: 0;
 }
 
-/* The ⌄ list: one shared menu row (PickerMenuOption) per tab, with the
+/* The ⌄ list: one shared menu row (PickerOption) per tab, with the
    strip's own glyph in its leading slot. Rows sit 4px inside the menu, so
    their 8px corners nest in its 12px ones. */
 .canopy-panel-tab-list-rows {

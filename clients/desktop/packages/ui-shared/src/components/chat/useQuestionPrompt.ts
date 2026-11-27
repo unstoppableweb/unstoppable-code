@@ -127,6 +127,8 @@ export interface QuestionPromptState {
   /** Answer the current step with the typed text, then move on or submit. */
   readonly send: (text: string) => void;
   readonly back: () => void;
+  /** Advance to the next question step without recording or submitting an answer. */
+  readonly next: () => void;
   /** Forget this request's kept progress, for a skip. */
   readonly discard: () => void;
 }
@@ -374,6 +376,14 @@ export function useQuestionPrompt({
     keep(previousStep, selections, texts);
   }, [keep, safeStep, selections, texts]);
 
+  const next = useCallback((): void => {
+    const nextStep = Math.min(Math.max(0, stepCount - 1), safeStep + 1);
+    if (nextStep === safeStep) return;
+    setValidationError(null);
+    setStep(nextStep);
+    keep(nextStep, selections, texts);
+  }, [keep, safeStep, selections, stepCount, texts]);
+
   const discard = useCallback((): void => {
     if (requestId) clearQuestionPromptProgress(requestId);
   }, [requestId]);
@@ -396,6 +406,7 @@ export function useQuestionPrompt({
       skips,
       send,
       back,
+      next,
       discard,
     }),
     [
@@ -415,6 +426,7 @@ export function useQuestionPrompt({
       skips,
       send,
       back,
+      next,
       discard,
     ],
   );

@@ -112,6 +112,11 @@ export function customizeDiscoveryIdentity(
   entry: UnifiedPluginEntry,
 ): UnifiedPluginEntry {
   const next: UnifiedPluginEntry = { ...entry };
+  // A catalog MCP server not added is its own install target (Sergii's QA
+  // B): a plugin that bundles the same server never makes it read
+  // "Installed via" that plugin, on its row or its page.
+  if (entry.ref.type === 'curated-mcp' && entry.state === 'available')
+    next.installedVia = undefined;
   if (!hasText(entry.authorName) && hasText(entry.derivedPublisher)) {
     next.authorName = entry.derivedPublisher;
     next.publisherDerived = true;

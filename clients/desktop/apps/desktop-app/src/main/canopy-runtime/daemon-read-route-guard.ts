@@ -25,7 +25,7 @@ export type FilesReadRouteOperation =
   | 'files.search'
   | 'files.link';
 
-/** `status` and `diff` are reserved for CAN-4103's changed-files and diff reads. */
+/** `status` is reserved for CAN-4103's changed-files reads. */
 export type GitReadRouteOperation =
   | 'git.branch.list'
   | 'git.remote.get'
@@ -110,7 +110,10 @@ const REMOTE_RETAINED: ReadRouteDisposition = {
  * search, link and branch list qualified on Linux in CAN-5547 after their
  * equivalence suites passed; Linux owns the daemon since CAN-4966. Worktree
  * health qualified on macOS and Linux in CAN-4729: its checks run no network
- * Git, and the daemon answers with codes only.
+ * Git, and the daemon answers with codes only. The diff read qualified there
+ * in CAN-4729 too: revision 3 answers the reads the legacy changed-files
+ * lists are rebuilt from, and a missing object fails as `objectMissing`
+ * instead of fetching.
  * Reserved cells stay blocked pending assessment even when prerequisites
  * are met.
  * A missing row or platform fails to compile.
@@ -143,11 +146,7 @@ export const READ_ROUTE_TABLE: Readonly<
     win32: WINDOWS_PENDING,
     linux: CHANGED_FILES_QUALIFICATION_PENDING,
   },
-  'git.diff.get': {
-    darwin: CHANGED_FILES_QUALIFICATION_PENDING,
-    win32: WINDOWS_PENDING,
-    linux: CHANGED_FILES_QUALIFICATION_PENDING,
-  },
+  'git.diff.get': ELIGIBLE_EXCEPT_WINDOWS,
 };
 
 /** Non-platform blockers survive any platform qualification change. */
@@ -164,7 +163,7 @@ export const READ_ROUTE_PREREQUISITES: Readonly<
   'git.worktree.health.get': ELIGIBLE,
   'git.executable.get': EXECUTABLE_RETAINED,
   'git.status.get': CHANGED_FILES_PENDING,
-  'git.diff.get': CHANGED_FILES_PENDING,
+  'git.diff.get': ELIGIBLE,
 };
 
 /**

@@ -43,13 +43,12 @@ export function CustomizeInstalledList({
     onShowAll !== undefined &&
     entries.length > previewLimit;
   const visible = collapsed ? entries.slice(0, previewLimit) : entries;
-  const sharedByMe = sectionId === 'shared-by-me';
   const rows = (
     <div className="flex flex-col gap-3 pt-3">
       <ul
         data-testid={`customize-section-${sectionId}-rows`}
         data-row-count={visible.length}
-        className={`${sharedByMe ? 'grid grid-cols-1 gap-x-8 gap-y-2 @min-[40rem]:grid-cols-2' : CUSTOMIZE_ROW_GRID_CLASS}`}
+        className={CUSTOMIZE_ROW_GRID_CLASS}
         onKeyDown={moveFocus}
       >
         {visible.map((entry) => (
@@ -69,8 +68,6 @@ export function CustomizeInstalledList({
       )}
     </div>
   );
-  // A viewport breakpoint can leave two tiny columns beside the sidebar at
-  // increased interface scale. Reserve enough room for the public-link badge
-  // and row actions by choosing columns from this section's actual width.
-  return sharedByMe ? <div className="@container">{rows}</div> : rows;
+  // Columns follow this section's actual width (see the grid class).
+  return <div className="@container">{rows}</div>;
 }
