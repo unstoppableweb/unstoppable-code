@@ -956,7 +956,7 @@ body {
 /*
  * Search fields never draw the browser's own clear button (Chromium's blue
  * ×) or search decoration, in any field of either app. A field that offers
- * clearing renders the shared muted icon button instead (PickerMenuSearchInput
+ * clearing renders the shared muted icon button instead (PickerSearchInput
  * `onClear`). Layered, so a field's own utilities still apply.
  */
 @layer base {
