@@ -7,6 +7,7 @@ import {
   type TerminalPreset,
 } from '../../../types';
 import * as NormalizationEnvironment from '../normalization-environment';
+import { createCatalogPreferencesModelFacts } from '../catalog-model-facts';
 import { normalizePreferences } from '../normalize-preferences';
 import { mergePreferenceUpdate } from '../merge-preference-update';
 import { applyTerminalSettingsSaveRule } from '../terminal-settings';
@@ -44,12 +45,14 @@ describe('terminal settings revision and the preferences:save rule (CAN-4148)', 
         show: { capabilities: ['completion', 'tools'] },
       },
     ]);
-    NormalizationEnvironment.installPreferencesNormalizationEnvironment({
-      resolveAvailableModel: (model) =>
-        typeof model === 'string' ? (resolveKnownModel(model) ?? null) : null,
-      ollamaEnabled: () => false,
-      shortcutPlatform: () => 'darwin',
-    });
+    NormalizationEnvironment.installPreferencesNormalizationEnvironment(
+      createCatalogPreferencesModelFacts({
+        status: (model) =>
+          resolveKnownModel(model) ? 'available' : 'unavailable',
+        ollamaEnabled: () => false,
+        shortcutPlatform: () => 'darwin',
+      }),
+    );
   });
 
   function existing(): PreferencesData {

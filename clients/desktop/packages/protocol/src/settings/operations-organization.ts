@@ -412,6 +412,8 @@ const modelIdListSchema = z.array(z.string().min(1).max(256)).max(2000);
  */
 const policiesUpdateFields = {
   allowExternalContainerSharing: z.boolean().optional(),
+  /** Public shared artifact links for this organization (CAN-8016). */
+  allowPublicArtifactSharing: z.boolean().optional(),
   enforceMemberDataSharing: z.boolean().optional(),
   enforcedSync: enforcedSyncScopesInputSchema.optional(),
   enforceMemberModelPolicy: z.boolean().optional(),

@@ -36,6 +36,11 @@ export interface ChatAutoArchiveHost {
   locked(target: ChatTurnStateScope): boolean;
   /** A send to the chat is still being dispatched. */
   dispatchInFlight(target: ChatTurnStateScope): boolean;
+  /**
+   * An active watcher notifies this chat. Archiving it would drop that
+   * notification, which needs the chat open.
+   */
+  awaitsWatcher(target: ChatTurnStateScope): Promise<boolean>;
   /** Sends a chat command through `core.chat.archive`. */
   dispatch(request: ChatCommandRequest): Promise<ChatCommandResult>;
   warn(message: string, details: Record<string, unknown>): void;
@@ -89,8 +94,10 @@ function applied(result: ChatCommandResult): boolean {
  * the session kept, once its root terminal is reduced (so an empty completion
  * is classified first), the chat is idle with a completed runtime, and
  * nothing holds it: queued input, a pending question or plan exit, a send in
- * flight, a Split PR lock or close-blocking work. Otherwise the next committed
- * idle, a dismissed question or the terminal's reduction re-evaluates it. A
+ * flight, a Split PR lock, close-blocking work or an active watcher that
+ * notifies the chat. Otherwise the next committed idle, a dismissed question
+ * or the terminal's reduction re-evaluates it. A watcher's notification
+ * starts a newer turn, which drops the marker, so a held chat stays open. A
  * refused archive keeps the marker and retries at the next committed idle, up
  * to {@link AUTO_ARCHIVE_MAX_ATTEMPTS} times for that turn.
  */
@@ -226,6 +233,8 @@ export class ChatAutoArchiver {
         runtime.turn.current !== undefined
       )
         return;
+      // Read last: it lists watchers, so only a chat that would archive pays.
+      if (await this.host.awaitsWatcher(target)) return;
       result = undefined;
       failure = undefined;
       try {

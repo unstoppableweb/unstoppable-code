@@ -279,6 +279,40 @@ export async function authorizeBackgroundExecution(
     | { projectId: string; worktreeId?: string },
   authorizations?: ChildPipelineAuthorization[],
 ): Promise<ResourceContextDecision> {
+  return decideBackgroundAccess(
+    executionContext,
+    resources,
+    destination,
+    authorizations,
+    'execute',
+  );
+}
+
+/** Authorize the selected definitions and destination, never their run dependencies. */
+export function authorizeBackgroundRead(
+  executionContext: string | undefined,
+  resources: readonly PipelineContextResource[],
+  destination: { scope: 'global' } | { projectId: string; worktreeId?: string },
+): Promise<ResourceContextDecision> {
+  return decideBackgroundAccess(
+    executionContext,
+    resources,
+    destination,
+    undefined,
+    'read',
+  );
+}
+
+async function decideBackgroundAccess(
+  executionContext: string | undefined,
+  resources: readonly PipelineContextResource[],
+  destination:
+    | { scope: 'global' }
+    | { projectId: string; worktreeId?: string }
+    | undefined,
+  authorizations: ChildPipelineAuthorization[] | undefined,
+  purpose: 'read' | 'execute',
+): Promise<ResourceContextDecision> {
   if (!backgroundExecutionContextEnabled()) return { allow: true };
   try {
     if (!destination) return { allow: false, reason: 'unknown-provenance' };
@@ -328,32 +362,59 @@ export async function authorizeBackgroundExecution(
             resource.storedPipelineId,
           );
       }
-      return getResourceContextPolicyService().decide({
-        resource: {
-          owner: resource.owner,
-          ...(provenance ? { provenance } : {}),
-          ...(resource.subject ? { subject: resource.subject } : {}),
+      return getResourceContextPolicyService().decide(
+        {
+          resource: {
+            owner: resource.owner,
+            ...(provenance ? { provenance } : {}),
+            ...(resource.subject ? { subject: resource.subject } : {}),
+          },
+          target,
+          invocation: {
+            mode: 'background',
+            context,
+            executionContext,
+          },
         },
-        target,
-        invocation: {
-          mode: 'background',
-          context,
-          executionContext,
-        },
-      });
+        { recordDenial: purpose === 'execute' },
+      );
     };
     let resolveCapabilities:
       | ReturnType<typeof createBackgroundCapabilityResolver>
       | undefined;
+    const decideCapabilities = async (
+      capabilities: NonNullable<PipelineContextResource['capabilities']>,
+    ): Promise<ResourceContextDecision> => {
+      resolveCapabilities ??= (
+        await import('./background-capability-context')
+      ).createBackgroundCapabilityResolver(decide);
+      return resolveCapabilities(capabilities);
+    };
+    const definitions: readonly PipelineContextResource[] = resources.length
+      ? resources
+      : [{ owner: undefined }];
+    if (purpose === 'read') {
+      for (const resource of definitions) {
+        // Installed automation receipts establish definition ownership;
+        // MCP, model, plugin, action and child checks belong only to a run.
+        if (resource.childPipeline || resource.unsupportedTarget)
+          return { allow: false, reason: 'unsupported-target' };
+        const installedAutomation = resource.capabilities?.installedAutomation;
+        if (resource.capabilities && !installedAutomation)
+          return { allow: false, reason: 'unknown-provenance' };
+        const decision = installedAutomation
+          ? await decideCapabilities({ installedAutomation })
+          : await decide(resource);
+        if (!decision.allow) return decision;
+      }
+      return { allow: true };
+    }
     return await authorizePipelineContextResources(
-      resources.length ? resources : [{ owner: undefined }],
-      async (resource) => {
-        if (!resource.capabilities) return decide(resource);
-        resolveCapabilities ??= (
-          await import('./background-capability-context')
-        ).createBackgroundCapabilityResolver(decide);
-        return resolveCapabilities(resource.capabilities);
-      },
+      definitions,
+      (resource) =>
+        resource.capabilities
+          ? decideCapabilities(resource.capabilities)
+          : decide(resource),
       new Set(),
       authorizations,
     );

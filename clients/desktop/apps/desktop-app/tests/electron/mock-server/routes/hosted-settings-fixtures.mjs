@@ -75,6 +75,7 @@ function defaultConfig() {
   return {
     usageStatsMinRole: 'ADMIN',
     allowExternalContainerSharing: false,
+    allowPublicArtifactSharing: false,
     enforceMemberDataSharing: false,
     enforceMemberModelPolicy: false,
     blockedModelIds: [],

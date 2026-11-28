@@ -1,5 +1,8 @@
 import { renderProviderSwitchSeed } from '@canopy/agent-transcript';
-import { getListedModelContextWindow } from '@canopy/desktop-shared/types';
+import {
+  getListedModelContextWindow,
+  type AgentProviderType,
+} from '@canopy/desktop-shared/types';
 import { readChatTranscript } from './chat-tabs-reader';
 
 /** A seed a turn owes, and its receipt once the provider accepts the turn. */
@@ -7,7 +10,7 @@ export interface ProviderSwitchSeed {
   /** Undefined when there is nothing to carry; the debt is still settled. */
   text: string | undefined;
   /** Clears the chat's pending flag; call only after the turn is accepted. */
-  delivered: () => Promise<void>;
+  delivered: (expectedProvider?: AgentProviderType) => Promise<void>;
 }
 
 /**
@@ -56,13 +59,14 @@ export async function loadProviderSwitchSeed(options: {
   });
   return {
     text: seed.text || undefined,
-    delivered: async (): Promise<void> => {
+    delivered: async (expectedProvider): Promise<void> => {
       // Lazy import breaks the chat state and turn dispatch import cycle.
       const { getChatStateService } =
         await import('../services/chat-state-service');
       await getChatStateService().consumeProviderSwitchSeed(
         { projectId: options.projectId, worktreeId: options.worktreeId },
         options.chatId,
+        expectedProvider,
       );
     },
   };

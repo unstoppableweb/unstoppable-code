@@ -65,10 +65,11 @@ describe('provider switch seed delivery (CAN-6445)', () => {
     expect(seed?.text).not.toContain('The message this turn sends');
     // Owed until the provider accepts the turn that carries it.
     expect(consumeProviderSwitchSeed).not.toHaveBeenCalled();
-    await seed?.delivered();
+    await seed?.delivered('codex');
     expect(consumeProviderSwitchSeed).toHaveBeenCalledWith(
       { projectId: 'cowork-default', worktreeId: 'entry-1' },
       'chat-1',
+      'codex',
     );
   });
 

@@ -96,14 +96,18 @@ async function place(
 // Run the production listener and its state projection without starting the
 // entire Electron entrypoint. AST extraction tolerates formatting and types;
 // neither the close ordering nor the broadcast logic is copied into this test.
-function windowStateScript(): string {
-  const file = path.join(__dirname, '../../index.ts');
-  const source = ts.createSourceFile(
+function readMainSource(relativePath: string): ts.SourceFile {
+  const file = path.join(__dirname, '../../', relativePath);
+  return ts.createSourceFile(
     file,
     readFileSync(file, 'utf8'),
     ts.ScriptTarget.Latest,
     true,
   );
+}
+
+function windowStateScript(): string {
+  const source = readMainSource('index.ts');
   const names = new Set([
     'isAppAdvisorVisible',
     'isAppAdvisorFocused',
@@ -137,6 +141,37 @@ function windowStateScript(): string {
   return ts.transpileModule([...functions, ...listeners].join('\n'), {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   }).outputText;
+}
+
+function approvalsNavigationScript(): string {
+  const main = readMainSource('index.ts');
+  const ipc = readMainSource('ipc/app-advisor.ts');
+  const openApprovals = main.statements.find(
+    (node) =>
+      ts.isFunctionDeclaration(node) &&
+      node.name?.text === 'openAppAdvisorApprovalsSettings',
+  );
+  const register = ipc.statements
+    .filter(ts.isFunctionDeclaration)
+    .find((node) => node.name?.text === 'registerAppAdvisorHandlers');
+  const registration = register?.body?.statements.find(
+    (node) =>
+      ts.isExpressionStatement(node) &&
+      ts.isCallExpression(node.expression) &&
+      node.expression.arguments[0]?.getText(ipc) ===
+        'IPC_CHANNELS.appAdvisorOpenApprovalsSettings',
+  );
+  if (!openApprovals || !registration) {
+    throw new Error('Orchestrator Approvals host route is missing');
+  }
+  return ts.transpileModule(
+    [
+      openApprovals.getText(main),
+      'const accessors = { openAppAdvisorApprovalsSettings };',
+      registration.getText(ipc),
+    ].join('\n'),
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
 }
 
 describe.each(['floating', 'full'] as const)('%s placement', (placement) => {
@@ -222,5 +257,58 @@ describe.each(['floating', 'full'] as const)('%s placement', (placement) => {
       });
     }
     expect(quit).not.toHaveBeenCalled();
+  });
+
+  test('hands an Orchestrator Settings request to the main window', async () => {
+    const f = fixture();
+    await place(f, placement);
+    const frame = {};
+    const sender = { mainFrame: frame };
+    const order: string[] = [];
+    type Handler = (event: {
+      sender: typeof sender;
+      senderFrame: object;
+    }) => Promise<void>;
+    const handlers = new Map<string, Handler>();
+    const closeAppAdvisorWindow = jest.fn(() =>
+      Promise.resolve().then(() => {
+        f.host.hide();
+        order.push('minimize');
+      }),
+    );
+    runInNewContext(approvalsNavigationScript(), {
+      IPC_CHANNELS,
+      registerIpcHandler: (channel: string, handler: Handler) => {
+        handlers.set(channel, handler);
+      },
+      mainWindow: placement === 'floating' ? f.main : null,
+      appAdvisorHost: f.host,
+      getAppAdvisorRendererSurface: () => ({ webContents: sender }),
+      ensureMainWindowFromPreferences: () =>
+        Promise.resolve().then(() => {
+          order.push('reopen');
+        }),
+      closeAppAdvisorWindow,
+      queueApprovalsSettingsOpen: () => order.push('open Approvals'),
+    });
+    const invoke = handlers.get(IPC_CHANNELS.appAdvisorOpenApprovalsSettings);
+    if (!invoke) throw new Error('Orchestrator Approvals IPC is missing');
+
+    expect(() => invoke({ sender, senderFrame: {} })).toThrow('request frame');
+    await expect(
+      invoke({ sender: { mainFrame: frame }, senderFrame: frame }),
+    ).rejects.toThrow('request sender');
+    expect(order).toEqual([]);
+
+    await invoke({ sender, senderFrame: frame });
+    if (placement === 'floating') {
+      expect(closeAppAdvisorWindow).toHaveBeenCalledWith({ minimize: true });
+      expect(f.host.isVisible()).toBe(false);
+      expect(order).toEqual(['open Approvals', 'minimize']);
+    } else {
+      expect(closeAppAdvisorWindow).not.toHaveBeenCalled();
+      expect(f.host.isVisible()).toBe(true);
+      expect(order).toEqual(['open Approvals', 'reopen']);
+    }
   });
 });

@@ -22,6 +22,7 @@ import {
 } from '../account-proxy/quota-recovery';
 import { codexLoginManager } from '../auth/codex-login';
 import { getChatQueueService } from '../services/chat-queue-service';
+import { isInputLedger } from '@canopy/desktop-shared/chat-input-delivery';
 import {
   matchesUsageResumeBinding,
   USAGE_RESUME_INELIGIBLE,
@@ -713,13 +714,15 @@ export async function handleResumeUsageLimitedChats(
         onDispatched: () => void;
       }
     | {
-        userMessageId: string;
-        interruption: UsageLimitResumeInterruption;
-        requireClearUsage: boolean;
+        scheduledInputId: string;
+        gate?: {
+          interruption: UsageLimitResumeInterruption;
+          requireClearUsage: boolean;
+        };
       },
 ): Promise<ResumeUsageLimitedChatsResponse> {
-  const scheduledGate =
-    typeof resumeContext === 'object' && 'interruption' in resumeContext
+  const scheduled =
+    typeof resumeContext === 'object' && 'scheduledInputId' in resumeContext
       ? resumeContext
       : undefined;
   const requestedInterruption = req.requireClearUsageFor;
@@ -730,14 +733,14 @@ export async function handleResumeUsageLimitedChats(
     return { resumedCount: 0, failedTargets: req.targets };
   }
   const gatedResume =
-    scheduledGate ??
+    scheduled?.gate ??
     (requestedInterruption === undefined
       ? undefined
       : { interruption: requestedInterruption, requireClearUsage: true });
   const userMessageId =
     typeof resumeContext === 'string'
       ? resumeContext
-      : scheduledGate?.userMessageId;
+      : scheduled?.scheduledInputId;
   const authentication =
     typeof resumeContext === 'object' && 'attemptId' in resumeContext
       ? resumeContext
@@ -871,6 +874,9 @@ export async function handleResumeUsageLimitedChats(
             resumesInterruptedTurn: true,
             autoResume: resumePrompt.autoResume,
             initiationSource: 'automation',
+            ...(scheduled
+              ? { nativeAutomationRunInputId: scheduled.scheduledInputId }
+              : {}),
             ...(resumePrompt.resendsUserMessage && resumePrompt.inputMode
               ? { inputMode: resumePrompt.inputMode }
               : {}),
@@ -896,11 +902,21 @@ export async function handleResumeUsageLimitedChats(
               dispatchTarget.worktreeId,
               { chatIds: [target.chatId], pageOnly: true },
             );
-            const delivered = current.tabs
-              .find((candidate) => candidate.id === target.chatId)
-              ?.messages.some(
-                (message) => message.id === durableResumeMessageId,
-              );
+            const tab = current.tabs.find(
+              (candidate) => candidate.id === target.chatId,
+            );
+            const delivered = scheduled
+              ? tab?.lastAcceptedUserMessageId === durableResumeMessageId ||
+                (isInputLedger(tab?.inputDelivery) &&
+                  tab.inputDelivery.rows.some(
+                    (row) =>
+                      row.id === durableResumeMessageId &&
+                      row.payload.nativeAutomationRunInputId === row.id &&
+                      row.state === 'picked-up',
+                  ))
+              : tab?.messages.some(
+                  (message) => message.id === durableResumeMessageId,
+                );
             if (delivered) break;
             if (Date.now() >= deadline || getResumeQueue().isStopping())
               throw new Error(

@@ -857,15 +857,15 @@ export const CLIENT_FEATURE_FLAGS = {
   },
   canopyWebCoreClient: {
     key: 'canopy-web-core-client',
-    // Off everywhere until browser features move onto the web core
-    // (CAN-6092 to CAN-6094); the /chat route evaluates it per user.
-    launchDarklyDisabledDefaultValue: false,
-    launchDarklyEnabledUnavailableValue: false,
+    // On for every user in LaunchDarkly, as checked on 2026-11-26 (CAN-6924),
+    // so web /chat stays on the web core when LaunchDarkly is off or unreachable.
+    launchDarklyDisabledDefaultValue: true,
+    launchDarklyEnabledUnavailableValue: true,
     // Hosted (web core): off in a local-only build.
     localOnlyDefaultValue: false,
     ownership: 'both',
     description:
-      'Web /chat opens and holds a shared-protocol connection to the web core (CAN-6091); no feature uses it yet.',
+      'Web /chat opens and holds a shared-protocol connection to the web core (CAN-6091), which serves its cloud chats, projects and terminals.',
   },
   canopyDesktopExternalAgentsMenu: {
     key: 'canopy-desktop-external-agents-menu',
@@ -914,9 +914,9 @@ export const CLIENT_FEATURE_FLAGS = {
     // Hosted (artifacts are stored and served by the web): off in a
     // local-only build.
     localOnlyDefaultValue: false,
-    // Nothing reads it yet; CAN-8016 changes this to `both` with the server
-    // gate.
-    ownership: 'interface',
+    // The web core and the shared artifact routes gate on it server-side
+    // (CAN-8016); clients gate their surfaces on it too.
+    ownership: 'both',
     description:
       'Shared artifacts: publishing static HTML, Markdown, image and PDF content from desktop and sharing it with a team, an organization or the public (CAN-8015).',
   },

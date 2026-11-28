@@ -12,6 +12,7 @@ import {
   type AppAdvisorBrowserAction,
   type AppAdvisorClaudeMdLoadResponse,
   type AppAdvisorClaudeMdSaveRequest,
+  type AppAdvisorClaudeMdSaveResponse,
   type AppAdvisorRendererToolCancellation,
   type AppAdvisorRendererToolRequest,
   type AppAdvisorRendererToolResponse,
@@ -281,7 +282,9 @@ export interface AppAdvisorWorkspaceOperations {
     settings: AppAdvisorSettingsSaveRequest,
   ): Promise<AppAdvisorSettingsSaveResponse>;
   loadClaudeMd(): Promise<AppAdvisorClaudeMdLoadResponse>;
-  saveClaudeMd(contents: AppAdvisorClaudeMdSaveRequest): Promise<void>;
+  saveClaudeMd(
+    request: AppAdvisorClaudeMdSaveRequest,
+  ): Promise<AppAdvisorClaudeMdSaveResponse>;
 }
 
 export interface AppAdvisorRendererToolSurfaces {
@@ -296,6 +299,7 @@ export interface AppAdvisorRendererToolSurfaces {
 }
 
 export interface AppAdvisorWindowAccessors extends AppAdvisorRendererToolSurfaces {
+  openAppAdvisorApprovalsSettings: (sender: WebContents) => Promise<void>;
   /** `options` is untrusted renderer input (`AppAdvisorWindowCloseOptions`). */
   closeAppAdvisorWindow: (options?: unknown) => Promise<AppAdvisorWindowState>;
   toggleAppAdvisorWindow: (
@@ -1293,6 +1297,15 @@ export function registerAppAdvisorHandlers(
   accessors: AppAdvisorWindowAccessors,
   workspaceOperations?: AppAdvisorWorkspaceOperations,
 ): void {
+  registerIpcHandler<[], void>(
+    IPC_CHANNELS.appAdvisorOpenApprovalsSettings,
+    (event) => {
+      if (event.senderFrame !== event.sender.mainFrame) {
+        throw new Error('Unexpected Orchestrator Settings request frame');
+      }
+      return accessors.openAppAdvisorApprovalsSettings(event.sender);
+    },
+  );
   registerIpcHandler<[OpenTurnFileRequest], ShowFilesRendererResult>(
     IPC_CHANNELS.appAdvisorOpenTurnFile,
     async (event, request) => {
@@ -1513,17 +1526,22 @@ export function registerAppAdvisorHandlers(
     () => requireWorkspaceOperations(workspaceOperations).loadClaudeMd(),
   );
 
-  registerIpcHandler<[AppAdvisorClaudeMdSaveRequest], void>(
-    IPC_CHANNELS.appAdvisorSaveClaudeMd,
-    (_event, contents) => {
-      if (typeof contents !== 'string') {
-        throw new Error('Invalid App Advisor CLAUDE.md contents');
-      }
-      return requireWorkspaceOperations(workspaceOperations).saveClaudeMd(
-        contents,
-      );
-    },
-  );
+  registerIpcHandler<
+    [AppAdvisorClaudeMdSaveRequest],
+    AppAdvisorClaudeMdSaveResponse
+  >(IPC_CHANNELS.appAdvisorSaveClaudeMd, (_event, request) => {
+    if (
+      !isRecord(request) ||
+      typeof request.content !== 'string' ||
+      typeof request.revision !== 'string' ||
+      !request.revision
+    ) {
+      throw new Error('Instructions and a loaded revision are required.');
+    }
+    return requireWorkspaceOperations(workspaceOperations).saveClaudeMd(
+      request,
+    );
+  });
 
   registerIpcHandler<[AppAdvisorWindowUiState], void>(
     IPC_CHANNELS.appAdvisorReportWindowUiState,

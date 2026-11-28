@@ -161,6 +161,12 @@ export const SharedArtifactPermissionsSchema = z.strictObject({
   canSetPublic: z.boolean(),
   canUnshare: z.boolean(),
   canViewAnalytics: z.boolean(),
+  /**
+   * Whether the caller may perform the takedown action that applies now: take
+   * down a live artifact, or restore a taken-down one. Platform administrators
+   * and Owners/Admins of the governing organization (CAN-8016).
+   */
+  canTakedown: z.boolean(),
 });
 export type SharedArtifactPermissions = z.output<
   typeof SharedArtifactPermissionsSchema
@@ -479,8 +485,11 @@ export const SHARED_ARTIFACT_ERROR_CODE_KINDS = {
 } as const;
 
 /**
- * CAN-8016 decides which sessions hold these in `webCoreGrants`. Agent
- * sessions hold none; `moderate` is for platform administrators.
+ * The web core gives all three to browser and desktop-key sessions and to no
+ * agent session (CAN-8016). `moderate` protects nothing alone: the takedown
+ * handler authorizes every call against the caller's platform role and the
+ * governing organization's Owners/Admins. Never rely on holding `moderate`
+ * for a later operation.
  */
 export const SHARED_ARTIFACT_GRANTS = {
   read: 'core.sharedArtifact.read',

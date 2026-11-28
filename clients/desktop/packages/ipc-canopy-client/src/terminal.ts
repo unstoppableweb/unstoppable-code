@@ -59,6 +59,7 @@ export interface TerminalSliceOptions {
 interface TerminalScopedPayload {
   readonly projectId: string;
   readonly worktreeId: string;
+  readonly terminalId?: string;
 }
 
 function matchesTerminalScope(
@@ -69,7 +70,9 @@ function matchesTerminalScope(
     (filter?.projectId === undefined ||
       filter.projectId === payload.projectId) &&
     (filter?.worktreeId === undefined ||
-      filter.worktreeId === payload.worktreeId)
+      filter.worktreeId === payload.worktreeId) &&
+    (filter?.terminalId === undefined ||
+      filter.terminalId === payload.terminalId)
   );
 }
 

@@ -1,7 +1,12 @@
 import { KeyedOutcomes } from '../keyed-outcomes';
 import { basename, join } from 'node:path';
 import {
+  WORKER_TERMINAL_EVENTS_MAX_RECENT_EXITS,
+  WORKER_TERMINAL_EVENTS_MAX_TERMINALS,
   WORKER_TERMINAL_RECORD_SCHEMA_REVISION,
+  type WorkerTerminalEventsExit,
+  type WorkerTerminalEventsItem,
+  type WorkerTerminalEventsParams,
   type WorkerTerminalRecordAttribution,
   type WorkerTerminalRecordClient,
 } from '@canopy/protocol/canopy-core';
@@ -136,6 +141,11 @@ export interface WorkerTerminalHandlers {
       context: CanopyHandlerContext,
       sink: CanopyStreamSink<WorkerTerminalAttachItem>,
     ) => Promise<() => void>;
+    'worker.terminal.events': (
+      params: WorkerTerminalEventsParams,
+      context: CanopyHandlerContext,
+      sink: CanopyStreamSink<WorkerTerminalEventsItem>,
+    ) => Promise<() => void>;
   };
 }
 
@@ -156,6 +166,10 @@ interface Descriptor {
   outputOffset: number;
   /** When it first wrote live output (CAN-7051); never set by a replay. */
   firstOutputAt?: number;
+  /** Its foreground process, as the host last reported it (CAN-8038). */
+  running: boolean;
+  processName: string | null;
+  readonly createdAt: number;
 }
 
 interface RecentExit {
@@ -214,7 +228,16 @@ const FLUSH_INTERVAL_MS = 16;
 const ITEM_MAX_BYTES = 64 * 1024;
 const PENDING_MAX_BYTES = 1024 * 1024;
 const STREAM_HIGH_WATER_ITEMS = 32;
-const MAX_RECENT_EXITS = 256;
+const MAX_RECENT_EXITS = WORKER_TERMINAL_EVENTS_MAX_RECENT_EXITS;
+/**
+ * Events stream pacing (CAN-8038): past {@link STREAM_HIGH_WATER_ITEMS}
+ * unsent frames, output offsets keep only each terminal's latest; past this
+ * many, the stream ends with `worker.terminal.snapshotRequired`, well before
+ * the stream's own 1,024-frame bound.
+ */
+const EVENTS_SNAPSHOT_REQUIRED_ITEMS = 512;
+/** A refused attachment's retry: a slot frees when another stream ends. */
+const ATTACH_CAPACITY_RETRY_MS = 250;
 
 function terminalError(
   kind: CanopyErrorPayload['kind'],
@@ -247,6 +270,21 @@ function exitSignalOf(params: {
   return params.revision === WORKER_TERMINAL_RECORD_SCHEMA_REVISION
     ? params.exitSignal
     : undefined;
+}
+
+/**
+ * A revision 2 Claude terminal, whose host reads its output for the
+ * user-interrupted status line (Q-D, CAN-8038).
+ */
+function watchesInterrupt(params: {
+  readonly revision?: number;
+  readonly session?: WorkerTerminalRecordAttribution;
+}): boolean {
+  return (
+    params.revision === WORKER_TERMINAL_RECORD_SCHEMA_REVISION &&
+    (params.session?.kind === 'claude-code' ||
+      params.session?.kind === 'claude-worker')
+  );
 }
 
 /** Host failures as the operation's typed errors; host details stay here. */
@@ -485,6 +523,75 @@ class AttachmentPacer {
   }
 }
 
+type EventsScope = WorkerTerminalEventsParams['scope'];
+
+function inScope(filter: EventsScope, scope: CanopyWorkspaceScope): boolean {
+  return (
+    (filter?.workspaceId === undefined ||
+      scope.workspaceId === filter.workspaceId) &&
+    (filter?.worktreeId === undefined || scope.worktreeId === filter.worktreeId)
+  );
+}
+
+/**
+ * One `worker.terminal.events` stream's deliveries (CAN-8038). Behind a slow
+ * client, output offsets keep each terminal's latest until the next delivery
+ * finds room; other items still go out, until the backlog reaches
+ * {@link EVENTS_SNAPSHOT_REQUIRED_ITEMS} and the client must reopen.
+ */
+class EventsSubscriber {
+  private readonly heldOffsets = new Map<string, number>();
+  private closed = false;
+
+  public constructor(
+    private readonly filter: EventsScope,
+    private readonly sink: CanopyStreamSink<WorkerTerminalEventsItem>,
+    private readonly onClose: () => void,
+  ) {}
+
+  public deliver(
+    scope: CanopyWorkspaceScope,
+    item: WorkerTerminalEventsItem,
+  ): void {
+    if (this.closed || !inScope(this.filter, scope)) return;
+    const backlog = this.sink.buffered?.() ?? 0;
+    if (backlog < STREAM_HIGH_WATER_ITEMS) {
+      for (const [terminalId, outputOffset] of this.heldOffsets)
+        if (!this.emit({ type: 'output', terminalId, outputOffset })) return;
+      this.heldOffsets.clear();
+    } else if (item.type === 'output') {
+      this.heldOffsets.set(item.terminalId, item.outputOffset);
+      return;
+    } else if (backlog >= EVENTS_SNAPSHOT_REQUIRED_ITEMS) {
+      this.close();
+      this.sink.end('error', {
+        kind: 'resource_exhausted',
+        code: 'worker.terminal.snapshotRequired',
+        message:
+          'The terminal events stream fell behind. Reopen it for a new snapshot.',
+        retry: { kind: 'same_request' },
+      });
+      return;
+    }
+    // An exit carries its terminal's final offset.
+    if (item.type === 'exit') this.heldOffsets.delete(item.terminalId);
+    this.emit(item);
+  }
+
+  public close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.heldOffsets.clear();
+    this.onClose();
+  }
+
+  private emit(item: WorkerTerminalEventsItem): boolean {
+    if (this.sink.emit(item) !== null) return true;
+    this.close();
+    return false;
+  }
+}
+
 /**
  * `worker.terminal.*` over a supervised terminal host (CAN-5088). The worker
  * serves interactive terminals only, started in a directory it resolves from
@@ -527,6 +634,13 @@ export function createWorkerTerminalHandlers(
     string,
     { lifetimeId: number | undefined; at: number }
   >();
+  const subscribers = new Set<EventsSubscriber>();
+  const publish = (
+    scope: CanopyWorkspaceScope,
+    item: WorkerTerminalEventsItem,
+  ): void => {
+    for (const subscriber of subscribers) subscriber.deliver(scope, item);
+  };
   /** The live descriptor of exactly this lifetime of `terminalId`. */
   const descriptorOf = (
     terminalId: string,
@@ -546,20 +660,67 @@ export function createWorkerTerminalHandlers(
   };
   // Output progress reaches the handlers outside any attachment (CAN-7051).
   supervisor.onReport((report) => {
-    if (report.type === 'offset')
-      noteOffset(report.terminalId, report.lifetimeId, report.outputOffset);
-    else if (report.type === 'output')
-      noteOffset(report.terminalId, report.lifetimeId, report.toOffset);
-    else {
-      const descriptor = descriptorOf(report.terminalId, report.lifetimeId);
-      if (descriptor && descriptor.firstOutputAt === undefined)
-        descriptor.firstOutputAt = report.at;
-      firstOutputs.set(report.terminalId, {
-        lifetimeId: report.lifetimeId,
-        at: report.at,
-      });
+    const descriptor = descriptorOf(report.terminalId, report.lifetimeId);
+    switch (report.type) {
+      case 'offset':
+        noteOffset(report.terminalId, report.lifetimeId, report.outputOffset);
+        // At most about once a second: the host coalesces offsets.
+        if (descriptor)
+          publish(descriptor.scope, {
+            type: 'output',
+            terminalId: report.terminalId,
+            outputOffset: descriptor.outputOffset,
+          });
+        return;
+      case 'output':
+        noteOffset(report.terminalId, report.lifetimeId, report.toOffset);
+        return;
+      case 'firstOutput':
+        if (descriptor && descriptor.firstOutputAt === undefined) {
+          descriptor.firstOutputAt = report.at;
+          publish(descriptor.scope, {
+            type: 'firstOutput',
+            terminalId: report.terminalId,
+            at: report.at,
+          });
+        }
+        firstOutputs.set(report.terminalId, {
+          lifetimeId: report.lifetimeId,
+          at: report.at,
+        });
+        return;
+      case 'interruptText':
+        if (descriptor)
+          publish(descriptor.scope, {
+            type: 'interruptHint',
+            terminalId: report.terminalId,
+          });
+        return;
     }
   });
+  /** A new lifetime, ahead of its held reports and exit (CAN-8038). */
+  const announceAdded = (terminalId: string, descriptor: Descriptor): void => {
+    publish(descriptor.scope, {
+      type: 'added',
+      terminalId,
+      scope: descriptor.scope,
+      kind: descriptor.kind,
+      createdAt: descriptor.createdAt,
+    });
+    if (descriptor.running || descriptor.processName !== null)
+      publish(descriptor.scope, {
+        type: 'running',
+        terminalId,
+        running: descriptor.running,
+        processName: descriptor.processName,
+      });
+    if (descriptor.firstOutputAt !== undefined)
+      publish(descriptor.scope, {
+        type: 'firstOutput',
+        terminalId,
+        at: descriptor.firstOutputAt,
+      });
+  };
   const attribute = (
     attribution: TerminalRecordAttribution,
   ): TerminalRecordRegistration | undefined => {
@@ -621,7 +782,34 @@ export function createWorkerTerminalHandlers(
   };
   const recentExits = new Map<string, RecentExit>();
   let revision = 0;
+  const exitFields = (
+    terminalId: string,
+    exit: RecentExit,
+  ): WorkerTerminalEventsExit => ({
+    terminalId,
+    scope: exit.descriptor.scope,
+    exitCode: exit.exitCode,
+    signal: exit.signal,
+    outputOffset: exit.outputOffset,
+    confirmed: exit.confirmed,
+  });
   supervisor.onEvent((event) => {
+    if (event.type === 'runningChanged') {
+      const descriptor = descriptorOf(event.terminalId, event.lifetimeId);
+      if (!descriptor) return;
+      descriptor.running = event.running;
+      descriptor.processName = event.processName;
+      publish(descriptor.scope, {
+        type: 'running',
+        terminalId: event.terminalId,
+        running: event.running,
+        processName: event.processName,
+        ...(event.interruptedByUser !== undefined && {
+          interruptedByUser: event.interruptedByUser,
+        }),
+      });
+      return;
+    }
     if (event.type !== 'exit') return;
     if (firstOutputs.get(event.terminalId)?.lifetimeId === event.lifetimeId)
       firstOutputs.delete(event.terminalId);
@@ -629,7 +817,9 @@ export function createWorkerTerminalHandlers(
     if (!descriptor) return;
     descriptors.delete(event.terminalId);
     revision += 1;
-    recentExits.set(event.terminalId, {
+    // Reinserted, so the map stays oldest first for eviction and snapshots.
+    recentExits.delete(event.terminalId);
+    const exit: RecentExit = {
       descriptor,
       lifetimeId: event.lifetimeId,
       exitCode: event.exitCode,
@@ -642,12 +832,48 @@ export function createWorkerTerminalHandlers(
           : 0,
       ),
       confirmed: event.outputOffset !== undefined,
-    });
+    };
+    recentExits.set(event.terminalId, exit);
     while (recentExits.size > MAX_RECENT_EXITS) {
       const oldest = recentExits.keys().next().value;
       if (oldest === undefined) break;
       recentExits.delete(oldest);
     }
+    publish(descriptor.scope, {
+      type: 'exit',
+      ...exitFields(event.terminalId, exit),
+    });
+  });
+
+  /**
+   * The first item of every events stream, from this worker's own state: no
+   * host round trip, so no host event can fall between it and the stream.
+   */
+  const snapshot = (filter: EventsScope): WorkerTerminalEventsItem => ({
+    type: 'snapshot',
+    terminals: Array.from(descriptors)
+      .filter(([, descriptor]) => inScope(filter, descriptor.scope))
+      .slice(-WORKER_TERMINAL_EVENTS_MAX_TERMINALS)
+      .map(([terminalId, descriptor]) => ({
+        terminalId,
+        scope: descriptor.scope,
+        kind: descriptor.kind,
+        running: descriptor.running,
+        processName: descriptor.processName,
+        outputOffset: descriptor.outputOffset,
+        ...(descriptor.firstOutputAt !== undefined && {
+          firstOutputAt: descriptor.firstOutputAt,
+        }),
+        createdAt: descriptor.createdAt,
+      })),
+    recentExits: Array.from(recentExits)
+      .filter(
+        ([terminalId, exit]) =>
+          !descriptors.has(terminalId) &&
+          inScope(filter, exit.descriptor.scope),
+      )
+      .map(([terminalId, exit]) => exitFields(terminalId, exit)),
+    revision,
   });
 
   /**
@@ -781,6 +1007,7 @@ export function createWorkerTerminalHandlers(
                   initialCommand: params.initialCommand,
                 }),
                 persist,
+                watchInterrupt: watchesInterrupt(params),
               },
               params.cols,
               params.rows,
@@ -799,8 +1026,12 @@ export function createWorkerTerminalHandlers(
                     firstOutput.lifetimeId === created.lifetimeId && {
                       firstOutputAt: firstOutput.at,
                     }),
+                  running: created.running,
+                  processName: created.processName,
+                  createdAt: created.session.createdAt,
                 };
                 descriptors.set(created.session.id, known);
+                announceAdded(created.session.id, known);
                 const registration = recorded
                   ? attribute({
                       terminalId: created.session.id,
@@ -939,6 +1170,7 @@ export function createWorkerTerminalHandlers(
                     }),
                     scrollback,
                     persist,
+                    watchInterrupt: watchesInterrupt(params),
                   },
                 },
                 (restoredTerminal, wasRecreated) => {
@@ -947,7 +1179,7 @@ export function createWorkerTerminalHandlers(
                   // A concurrent restore may have recreated it first: this one
                   // adopts the live terminal without changing its snapshot.
                   if (wasRecreated || !descriptors.has(terminalId)) {
-                    descriptors.set(terminalId, {
+                    const restoredDescriptor: Descriptor = {
                       kind: 'interactive',
                       scope,
                       cwdRootId: snapshot.cwdRootId,
@@ -955,8 +1187,14 @@ export function createWorkerTerminalHandlers(
                       profileId: null,
                       initialCommand: snapshot.initialCommand ?? null,
                       lifetimeId: restoredTerminal.lifetimeId,
-                      outputOffset: 0,
-                    });
+                      // A replay sends no offset report: start past it.
+                      outputOffset: restoredTerminal.outputOffset,
+                      running: restoredTerminal.running,
+                      processName: restoredTerminal.processName,
+                      createdAt: restoredTerminal.session.createdAt,
+                    };
+                    descriptors.set(terminalId, restoredDescriptor);
+                    announceAdded(terminalId, restoredDescriptor);
                     const registration =
                       recorded && wasRecreated
                         ? attribute({
@@ -1085,6 +1323,10 @@ export function createWorkerTerminalHandlers(
           options.flushIntervalMs ?? FLUSH_INTERVAL_MS,
         );
         let attachmentId: string | undefined;
+        // A refused attach ends with its refusal alone (CAN-8038), so running
+        // updates wait for the host's admission; only the latest is kept.
+        let admitted = false;
+        let heldRunning: RunningState | undefined;
         const unsubscribe = supervisor.onEvent((event) => {
           if (
             event.type !== 'runningChanged' ||
@@ -1092,13 +1334,23 @@ export function createWorkerTerminalHandlers(
             descriptors.get(params.terminalId) !== descriptor
           )
             return;
-          pacer.running({
+          const state: RunningState = {
             running: event.running,
             processName: event.processName,
             ...(event.interruptedByUser !== undefined && {
               interruptedByUser: event.interruptedByUser,
             }),
-          });
+          };
+          if (admitted) pacer.running(state);
+          // A re-sent idle state (`engine.list()`) never carries the interrupt
+          // hint, so it must not erase a held one.
+          else
+            heldRunning =
+              heldRunning?.interruptedByUser === true &&
+              !heldRunning.running &&
+              !state.running
+                ? { ...state, interruptedByUser: true }
+                : state;
         });
         const close = (): void => {
           unsubscribe();
@@ -1130,13 +1382,19 @@ export function createWorkerTerminalHandlers(
             },
           );
           attachmentId = opened.attachmentId;
+          admitted = true;
           // The foreground process as of this attachment, ahead of any
           // later change, so a client that was away does not keep a stale one.
-          if (descriptors.get(params.terminalId) === descriptor)
+          // A held update repeats that state (the host's reply re-sends every
+          // terminal's first) or, delivered just after the reply, advances it.
+          if (descriptors.get(params.terminalId) === descriptor) {
             pacer.running({
               running: opened.terminal.running,
               processName: opened.terminal.processName,
             });
+            if (heldRunning) pacer.running(heldRunning);
+          }
+          heldRunning = undefined;
         } catch (error) {
           close();
           const exited = recentExits.get(params.terminalId);
@@ -1146,12 +1404,37 @@ export function createWorkerTerminalHandlers(
             exited?.descriptor === descriptor
           )
             return complete(exited);
+          // Only attach may retry the same request: a slot frees when another
+          // attachment or terminal ends (CAN-8038).
+          if (
+            error instanceof TerminalHostRequestError &&
+            error.error.code === 'capacity'
+          )
+            throw new CanopyOperationError({
+              kind: 'resource_exhausted',
+              message:
+                'No room for another terminal attachment. Try again shortly.',
+              retry: {
+                kind: 'same_request',
+                delayMs: ATTACH_CAPACITY_RETRY_MS,
+              },
+            });
           throw translate(error);
         }
         return () => {
           close();
           if (attachmentId !== undefined) supervisor.detach(attachmentId);
         };
+      },
+      'worker.terminal.events': (params, _context, sink) => {
+        const subscriber = new EventsSubscriber(params.scope, sink, () => {
+          subscribers.delete(subscriber);
+        });
+        // Snapshot and subscription in one turn: nothing falls between them.
+        if (sink.emit(snapshot(params.scope)) === null)
+          return Promise.resolve(() => undefined);
+        subscribers.add(subscriber);
+        return Promise.resolve(() => subscriber.close());
       },
     },
   };

@@ -67,7 +67,7 @@ export const APP_CONTROL_RECIPES = {
   'sidebar-project-reorder':
     'focus-ring relative inline-flex h-5 w-5 shrink-0 cursor-default items-center justify-center rounded-md',
   'sidebar-section-disclosure':
-    'flex min-w-0 flex-1 items-center gap-2 text-left',
+    'focus-ring flex min-w-0 flex-1 items-center gap-2 rounded-row text-left',
   'sidebar-worktree-reorder':
     'focus-ring h-4 w-4 cursor-grab rounded active:cursor-grabbing',
   'summary-preview-open':

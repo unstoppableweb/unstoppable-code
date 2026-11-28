@@ -1,0 +1,17 @@
+{
+  "name": "@canopy/memory-store",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local memory file storage, host-neutral Node: contained owner-only memory files with atomic and durable writes, memory note identity, and the import ledger. Electron main composes it; it registers no operation and owns no route.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "@canopy/core-platform": "workspace:*",
+    "@canopy/execution-engine": "workspace:*",
+    "@canopy/memory-consolidation": "workspace:*",
+    "@canopy/protocol": "workspace:*"
+  }
+}

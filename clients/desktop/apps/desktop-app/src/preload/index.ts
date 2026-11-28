@@ -2,7 +2,6 @@ import {
   resolveIpcAppError,
   resolveIpcCoworkFolderMissing,
   resolveIpcOperationFailure,
-  restoreIpcAppError,
 } from './ipc-app-errors';
 import { parseOrganizationLayerView } from '@canopy/desktop-shared/lib/organization-capabilities';
 import type {
@@ -40,10 +39,6 @@ import type {
 import type { PostHogSessionState } from '@canopy/execution-engine/types/observability';
 import { isCloudProjectSetupProgress } from '@canopy/desktop-shared/lib/cloud-project-setup';
 import { isWebCoreTarget } from '../shared/web-core-scope';
-import {
-  hasPairedComputerTarget,
-  rejectPairedComputerLocalIpc,
-} from '../shared/paired-computer-target';
 import {
   isOrgProjectSetupProgress,
   type OrgProjectDeepLinkOpenEvent,
@@ -90,10 +85,16 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { contextBridge, webFrame, webUtils } from 'electron';
-import { ipcRenderer, remoteWindowContext } from './ipc-router';
+import {
+  createLocalIpcRenderer,
+  ipcRenderer,
+  remoteWindowContext,
+} from './ipc-router';
+import { refusesPairedComputerIds } from '../shared/paired-computer-target';
 import { createChatStateApi } from './api/chat-state-api';
 import { createChatEventSubscription } from './api/chat-event-api';
 import { createCanopyClientTransport } from './api/canopy-client-transport-api';
+import { createTerminalWindowApi } from './api/terminal-window-api';
 import { createCodexSpeedApi } from './api/codex-speed-api';
 import { createW5RecoveryApi } from './api/w5-recovery-api';
 import { createBackgroundServiceApi } from './api/background-service-api';
@@ -219,6 +220,7 @@ import {
   type VoiceEventPayload,
   type TerminalExitEvent,
   type TerminalOutputEvent,
+  type TerminalOutputProgressEvent,
   type TerminalRunningChangedEvent,
   type TerminalSession,
   type BrowserServiceEvent,
@@ -364,16 +366,6 @@ async function invokeOptionalSharedContainerReplicaState(
     throw new Error('Main returned an invalid shared-container replica state');
   }
   return response;
-}
-
-function invokeLocalScopedIpc<T>(
-  channel: string,
-  request: unknown,
-): Promise<T> {
-  if (hasPairedComputerTarget(request)) {
-    return rejectPairedComputerLocalIpc(channel);
-  }
-  return ipcRenderer.invoke(channel, request);
 }
 
 function serializeAppAdvisorSettingsSaveRequest(
@@ -1861,6 +1853,17 @@ function isTerminalOutputEvent(value: unknown): value is TerminalOutputEvent {
   return value.data instanceof Uint8Array;
 }
 
+function isTerminalOutputProgressEvent(
+  value: unknown,
+): value is TerminalOutputProgressEvent {
+  return (
+    isRecord(value) &&
+    hasTerminalRouteKeys(value) &&
+    typeof value.seq === 'number' &&
+    Number.isFinite(value.seq)
+  );
+}
+
 function isRunCommentsUpdatedEvent(
   value: unknown,
 ): value is RunCommentsUpdatedEvent {
@@ -2401,7 +2404,7 @@ const canopyApi: CanopyApi = {
   onDeepLinkSettingsOpen: (cb) => {
     const handler = (
       _event: Electron.IpcRendererEvent,
-      section: DesktopSettingsDeepLink['section'],
+      section: Parameters<typeof cb>[0],
     ): void => {
       cb(section);
     };
@@ -3643,9 +3646,9 @@ const canopyApi: CanopyApi = {
       ? Promise.reject(
           new Error('A cloud task has no folder on this computer.'),
         )
-      : invokeLocalScopedIpc(IPC_CHANNELS.worktreeGetPath, request),
+      : ipcRenderer.invoke(IPC_CHANNELS.worktreeGetPath, request),
   listWorktreeRepoEntries: (request) =>
-    invokeLocalScopedIpc(IPC_CHANNELS.worktreeListRepoEntries, request),
+    ipcRenderer.invoke(IPC_CHANNELS.worktreeListRepoEntries, request),
   showInFinder: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.fileShowInFinder, request),
   openExternalFile: (request) =>
@@ -3660,49 +3663,46 @@ const canopyApi: CanopyApi = {
     ipcRenderer.invoke(IPC_CHANNELS.fileSaveContent, request),
   activity: {
     getChangedFiles: (request) =>
-      invokeLocalScopedIpc(IPC_CHANNELS.activityChangedFiles, request),
+      ipcRenderer.invoke(IPC_CHANNELS.activityChangedFiles, request),
     revertFile: (request) =>
-      invokeLocalScopedIpc(IPC_CHANNELS.activityRevertFile, request),
+      ipcRenderer.invoke(IPC_CHANNELS.activityRevertFile, request),
     loadWorktreeSummary: (request) =>
-      invokeLocalScopedIpc(IPC_CHANNELS.worktreeSummaryLoad, request),
+      ipcRenderer.invoke(IPC_CHANNELS.worktreeSummaryLoad, request),
     loadWorktreeSummaries: (request) =>
-      invokeLocalScopedIpc(IPC_CHANNELS.worktreeSummaryLoadBatch, request),
+      ipcRenderer.invoke(IPC_CHANNELS.worktreeSummaryLoadBatch, request),
     refreshWorktreeSummary: (request) =>
-      invokeLocalScopedIpc(IPC_CHANNELS.worktreeSummaryRefresh, request),
+      ipcRenderer.invoke(IPC_CHANNELS.worktreeSummaryRefresh, request),
     getFileDiff: (request) =>
-      invokeLocalScopedIpc(IPC_CHANNELS.activityFileDiff, request),
+      ipcRenderer.invoke(IPC_CHANNELS.activityFileDiff, request),
     getTurnFileDiff: (request) =>
-      invokeLocalScopedIpc(IPC_CHANNELS.activityTurnFileDiff, request),
+      ipcRenderer.invoke(IPC_CHANNELS.activityTurnFileDiff, request),
     plans: {
       list: (request) =>
-        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansList, request),
+        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansList, request),
       listWithSkipped: (request) =>
-        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansListWithSkipped, request),
+        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansListWithSkipped, request),
       get: (request) =>
-        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansGet, request),
+        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansGet, request),
       create: (request) =>
-        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansCreate, request),
+        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansCreate, request),
       update: (request) =>
-        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansUpdate, request),
+        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansUpdate, request),
       delete: (request) =>
-        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansDelete, request),
+        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansDelete, request),
       saveComments: (request) =>
-        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansSaveComments, request),
+        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansSaveComments, request),
       generateDiagrams: (request) =>
-        invokeLocalScopedIpc(
-          IPC_CHANNELS.trackedPlansGenerateDiagrams,
-          request,
-        ),
+        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansGenerateDiagrams, request),
       share: (request) =>
-        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansShare, request),
+        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansShare, request),
       unshare: (request) =>
-        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansUnshare, request),
+        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansUnshare, request),
       import: (request) =>
-        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansImport, request),
+        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansImport, request),
       refreshComments: (request) =>
-        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansRefreshComments, request),
+        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansRefreshComments, request),
       setFileVisibility: (request) =>
-        invokeLocalScopedIpc(IPC_CHANNELS.trackedPlansFileVisibility, request),
+        ipcRenderer.invoke(IPC_CHANNELS.trackedPlansFileVisibility, request),
     },
     // A cloud task is not this computer's: main can't resolve its ids
     // (CAN-6395).
@@ -3711,15 +3711,15 @@ const canopyApi: CanopyApi = {
         ? Promise.reject(
             new Error('A cloud task has no Stop on this computer.'),
           )
-        : invokeLocalScopedIpc(IPC_CHANNELS.activityStopBgProcess, request),
+        : ipcRenderer.invoke(IPC_CHANNELS.activityStopBgProcess, request),
     startOutputPolling: (request) =>
-      invokeLocalScopedIpc(IPC_CHANNELS.activityStartOutputPolling, request),
+      ipcRenderer.invoke(IPC_CHANNELS.activityStartOutputPolling, request),
     stopOutputPolling: (request) =>
-      invokeLocalScopedIpc(IPC_CHANNELS.activityStopOutputPolling, request),
+      ipcRenderer.invoke(IPC_CHANNELS.activityStopOutputPolling, request),
     readFullOutput: (request) =>
       ipcRenderer.invoke(IPC_CHANNELS.activityReadFullOutput, request),
     listLiveBgTasks: (request) =>
-      invokeLocalScopedIpc(IPC_CHANNELS.activityListLiveBgTasks, request),
+      ipcRenderer.invoke(IPC_CHANNELS.activityListLiveBgTasks, request),
     onLiveBgTasksChanged: (callback) => {
       const handler = (
         _event: Electron.IpcRendererEvent,
@@ -3791,11 +3791,11 @@ const canopyApi: CanopyApi = {
     },
     detectedPlans: {
       scan: (request) =>
-        invokeLocalScopedIpc(IPC_CHANNELS.detectedPlansScan, request),
+        ipcRenderer.invoke(IPC_CHANNELS.detectedPlansScan, request),
       list: (request) =>
-        invokeLocalScopedIpc(IPC_CHANNELS.detectedPlansList, request),
+        ipcRenderer.invoke(IPC_CHANNELS.detectedPlansList, request),
       update: (request) =>
-        invokeLocalScopedIpc(IPC_CHANNELS.detectedPlansUpdate, request),
+        ipcRenderer.invoke(IPC_CHANNELS.detectedPlansUpdate, request),
     },
     onDetectedPlansUpdated: (callback) => {
       const handler = (
@@ -4934,6 +4934,21 @@ const canopyApi: CanopyApi = {
         ipcRenderer.removeListener(IPC_CHANNELS.terminalOutput, handler);
       };
     },
+    onOutputProgress: (listener) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        data: unknown,
+      ): void => {
+        if (isTerminalOutputProgressEvent(data)) listener(data);
+      };
+      ipcRenderer.on(IPC_CHANNELS.terminalOutputProgress, handler);
+      return () => {
+        ipcRenderer.removeListener(
+          IPC_CHANNELS.terminalOutputProgress,
+          handler,
+        );
+      };
+    },
     onExit: (listener) => {
       const handler = (
         _event: Electron.IpcRendererEvent,
@@ -4966,6 +4981,20 @@ const canopyApi: CanopyApi = {
       };
     },
   },
+  terminalWindow: createTerminalWindowApi({
+    invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
+    // Loaded once main first admits the window, never at startup.
+    open: async (options) =>
+      (
+        await import('./terminal-window-connection')
+      ).openTerminalWindowConnection(options),
+    clientInstanceId: `desktop-window:${randomUUID()}`,
+    foreground: () => document.visibilityState === 'visible',
+    onVisible: (listener) =>
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') listener();
+      }),
+  }),
   runs: {
     share: (request) => ipcRenderer.invoke(IPC_CHANNELS.runsShare, request),
     checkShareEligibility: (request) =>
@@ -5645,12 +5674,8 @@ const canopyApi: CanopyApi = {
       };
     },
     loadClaudeMd: () => ipcRenderer.invoke(IPC_CHANNELS.appAdvisorLoadClaudeMd),
-    saveClaudeMd: (contents) => {
-      if (typeof contents !== 'string') {
-        throw new TypeError('App Advisor CLAUDE.md contents must be a string');
-      }
-      return ipcRenderer.invoke(IPC_CHANNELS.appAdvisorSaveClaudeMd, contents);
-    },
+    saveClaudeMd: (request) =>
+      ipcRenderer.invoke(IPC_CHANNELS.appAdvisorSaveClaudeMd, request),
     reportWindowUiState: (state) =>
       ipcRenderer.invoke(
         IPC_CHANNELS.appAdvisorReportWindowUiState,
@@ -5673,6 +5698,8 @@ const canopyApi: CanopyApi = {
     },
     openWindow: (request?: AppAdvisorWindowOpenRequest) =>
       ipcRenderer.invoke(IPC_CHANNELS.appAdvisorWindowOpen, request),
+    openApprovalsSettings: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.appAdvisorOpenApprovalsSettings),
     ensureWindow: (request?: AppAdvisorWindowOpenRequest) =>
       ipcRenderer.invoke(IPC_CHANNELS.appAdvisorWindowEnsure, request),
     closeWindow: (options?: AppAdvisorWindowCloseOptions) =>
@@ -5933,29 +5960,29 @@ const canopyApi: CanopyApi = {
     message: (
       req: ManagedDelegationMessageRequest,
     ): Promise<ManagedDelegationMessageResult> =>
-      invokeLocalScopedIpc(IPC_CHANNELS.managedDelegationMessage, req),
+      ipcRenderer.invoke(IPC_CHANNELS.managedDelegationMessage, req),
     tree: (
       req: ManagedDelegationTreeRequest,
     ): Promise<ManagedDelegationTreeResult> =>
-      invokeLocalScopedIpc(IPC_CHANNELS.managedDelegationTree, req),
+      ipcRenderer.invoke(IPC_CHANNELS.managedDelegationTree, req),
     transcriptPage: (
       req: ManagedDelegationTranscriptPageRequest,
     ): Promise<ManagedDelegationTranscriptPageResult> =>
-      invokeLocalScopedIpc(IPC_CHANNELS.managedDelegationTranscriptPage, req),
+      ipcRenderer.invoke(IPC_CHANNELS.managedDelegationTranscriptPage, req),
     roots: (
       req: ManagedDelegationRootsRequest,
     ): Promise<ManagedDelegationRootsResult> =>
-      invokeLocalScopedIpc(IPC_CHANNELS.managedDelegationRoots, req),
+      ipcRenderer.invoke(IPC_CHANNELS.managedDelegationRoots, req),
     worktreeSummary: (
       req: ManagedDelegationWorktreeSummaryRequest,
     ): Promise<ManagedDelegationWorktreeSummaryResult> =>
-      invokeLocalScopedIpc(IPC_CHANNELS.managedDelegationWorktreeSummary, req),
+      ipcRenderer.invoke(IPC_CHANNELS.managedDelegationWorktreeSummary, req),
     getModelPolicyCatalog: (): Promise<ManagedDelegationPolicyCatalogResult> =>
       ipcRenderer.invoke(IPC_CHANNELS.managedDelegationModelPolicyCatalog),
     getLifetimeStatus: (
       req: ManagedDelegationLifetimeStatusRequest,
     ): Promise<ManagedDelegationLifetimeStatus> =>
-      invokeLocalScopedIpc(IPC_CHANNELS.managedDelegationLifetimeStatus, req),
+      ipcRenderer.invoke(IPC_CHANNELS.managedDelegationLifetimeStatus, req),
     onLifetimeChanged: (
       cb: (event: ManagedDelegationLifetimeChangedEvent) => void,
     ): (() => void) => {
@@ -5974,7 +6001,7 @@ const canopyApi: CanopyApi = {
     extendLifetimeLimit: (
       req: ManagedDelegationExtendLifetimeLimitRequest,
     ): Promise<ManagedDelegationExtendLifetimeLimitResult> =>
-      invokeLocalScopedIpc(
+      ipcRenderer.invoke(
         IPC_CHANNELS.managedDelegationExtendLifetimeLimit,
         req,
       ),
@@ -5999,19 +6026,19 @@ const canopyApi: CanopyApi = {
     stop: (
       req: ManagedDelegationStopRequest,
     ): Promise<ManagedDelegationStopResult> =>
-      invokeLocalScopedIpc(IPC_CHANNELS.managedDelegationStop, req),
+      ipcRenderer.invoke(IPC_CHANNELS.managedDelegationStop, req),
     stopAll: (
       req: ManagedDelegationStopAllRequest,
     ): Promise<ManagedDelegationStopAllResult> =>
-      invokeLocalScopedIpc(IPC_CHANNELS.managedDelegationStopAll, req),
+      ipcRenderer.invoke(IPC_CHANNELS.managedDelegationStopAll, req),
     changes: (
       req: ManagedDelegationChangesRequest,
     ): Promise<ManagedDelegationChangesResult> =>
-      invokeLocalScopedIpc(IPC_CHANNELS.managedDelegationChanges, req),
+      ipcRenderer.invoke(IPC_CHANNELS.managedDelegationChanges, req),
     transcript: (
       req: ManagedDelegationTranscriptRequest,
     ): Promise<ManagedDelegationTranscriptResult> =>
-      invokeLocalScopedIpc(IPC_CHANNELS.managedDelegationTranscript, req),
+      ipcRenderer.invoke(IPC_CHANNELS.managedDelegationTranscript, req),
   },
   referencePreview: {
     linearScope: () =>
@@ -6710,18 +6737,32 @@ const canopyApi: CanopyApi = {
     ipcRenderer.invoke(IPC_CHANNELS.resumeUsageLimitedSessions, req),
 };
 
+/**
+ * The Toolkit's `window.electron`, with its IPC sends behind the same check
+ * as the router's (CAN-8065): no call through it carries a paired computer's
+ * ids to main. Invoke rejections keep their app error; a refused message is
+ * dropped, as a send is.
+ */
+const guardedToolkitIpc = createLocalIpcRenderer(electronAPI.ipcRenderer);
+const toolkitElectronApi = {
+  ...electronAPI,
+  ipcRenderer: {
+    ...electronAPI.ipcRenderer,
+    invoke: guardedToolkitIpc.invoke,
+    send: guardedToolkitIpc.send,
+    sendSync: guardedToolkitIpc.sendSync,
+    postMessage: (
+      ...args: Parameters<typeof electronAPI.ipcRenderer.postMessage>
+    ): void => {
+      if (!refusesPairedComputerIds(args[0], [args[1]]))
+        electronAPI.ipcRenderer.postMessage(...args);
+    },
+  },
+};
+
 if (process.contextIsolated) {
   try {
-    contextBridge.exposeInMainWorld('electron', {
-      ...electronAPI,
-      ipcRenderer: {
-        ...electronAPI.ipcRenderer,
-        invoke: (
-          ...args: Parameters<typeof electronAPI.ipcRenderer.invoke>
-        ): Promise<unknown> =>
-          electronAPI.ipcRenderer.invoke(...args).catch(restoreIpcAppError),
-      },
-    });
+    contextBridge.exposeInMainWorld('electron', toolkitElectronApi);
     contextBridge.exposeInMainWorld('appErrors', {
       resolve: resolveIpcAppError,
       resolveCoworkFolderMissing: resolveIpcCoworkFolderMissing,
@@ -6771,16 +6812,7 @@ if (process.contextIsolated) {
     console.error(error);
   }
 } else {
-  window.electron = {
-    ...electronAPI,
-    ipcRenderer: {
-      ...electronAPI.ipcRenderer,
-      invoke: (
-        ...args: Parameters<typeof electronAPI.ipcRenderer.invoke>
-      ): Promise<unknown> =>
-        electronAPI.ipcRenderer.invoke(...args).catch(restoreIpcAppError),
-    },
-  };
+  window.electron = toolkitElectronApi;
   window.appErrors = {
     resolve: resolveIpcAppError,
     resolveCoworkFolderMissing: resolveIpcCoworkFolderMissing,

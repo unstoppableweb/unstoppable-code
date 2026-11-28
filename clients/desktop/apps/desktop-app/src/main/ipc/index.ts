@@ -193,6 +193,7 @@ export interface WindowAccessors {
   /** Renderers allowed to drive their own layers; the main renderer by default. */
   isOverlayLayerOpener?: OverlayLayerHandlerAccessors['isOverlayLayerOpener'];
   getAppAdvisorWindow: () => BrowserWindow | null;
+  openAppAdvisorApprovalsSettings: (sender: WebContents) => Promise<void>;
   openAppAdvisorWindow: (
     request?: AppAdvisorWindowOpenRequest,
   ) => Promise<AppAdvisorWindowState>;

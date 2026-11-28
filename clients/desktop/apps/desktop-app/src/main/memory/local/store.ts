@@ -24,9 +24,9 @@ import {
   isMemoryMarkdownFileName,
   isNodeError,
   writeNewMemoryFile,
-} from './memory-files';
+} from '@canopy/memory-store/memory-files';
 import { prepareInboxNote, type PreparedInboxNote } from './prepared-note';
-import { memoryNoteCreatedMs } from './note-identity';
+import { memoryNoteCreatedMs } from '@canopy/memory-store/note-identity';
 import {
   LocalMemoryReplicaUnavailableError,
   localMemoryReplicaHooks,

@@ -13,6 +13,7 @@ import {
   type RuntimeInstructionGuard,
   type RuntimeModule,
   type RuntimePrincipal,
+  type RuntimeStreamGuard,
   type RuntimeProfileGraph,
   type RuntimeService,
   type PlatformOperatingSystem,
@@ -484,6 +485,10 @@ interface DaemonCoreOptions {
   readonly mutationFence?: RuntimeModule;
   /** Runs on the core before any forwarded worker instruction. */
   readonly instructionGuard?: RuntimeInstructionGuard;
+  /** Runs on the core before any forwarded worker stream opens (CAN-8039). */
+  readonly streamGuard?: RuntimeStreamGuard;
+  /** Window tickets and terminal grants (CAN-8039): `core.client.window.*`. */
+  readonly windowAdmission?: RuntimeModule;
   /** `core.integration.cloudAccount.*` once account authority is selected (CAN-6997). */
   readonly cloudAccount?: RuntimeModule;
   readonly identity: CanopyRuntimeIdentity;
@@ -567,6 +572,7 @@ function coreModules(options: DaemonCoreOptions): RuntimeModule[] {
     ...(options.vault ? [options.vault] : []),
     ...(options.credentials ? [options.credentials] : []),
     ...(options.mutationFence ? [options.mutationFence] : []),
+    ...(options.windowAdmission ? [options.windowAdmission] : []),
     ...(options.cloudAccount ? [options.cloudAccount] : []),
   ];
 }
@@ -614,6 +620,7 @@ export async function createCanopyDaemonGraph(
     ...(options.instructionGuard && {
       instructionGuard: options.instructionGuard,
     }),
+    ...(options.streamGuard && { streamGuard: options.streamGuard }),
     operationReceipts: true,
     ...GRAPH_TIMING,
   });
@@ -647,6 +654,7 @@ export function createCanopyDaemonSplitGraph(
     ...(options.instructionGuard && {
       instructionGuard: options.instructionGuard,
     }),
+    ...(options.streamGuard && { streamGuard: options.streamGuard }),
     operationReceipts: true,
     ...GRAPH_TIMING,
   });

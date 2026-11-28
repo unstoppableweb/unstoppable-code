@@ -129,6 +129,9 @@ export interface ScriptRunReapPass {
   readonly failed: readonly string[];
 }
 
+/** `own`: only runs this host started; `own-or-legacy`: also runs recorded without a spawner. */
+export type ScriptRunStopOwnership = 'own' | 'own-or-legacy';
+
 /** `unverifiable`: the inspector could not tell; the run is left as it is. */
 export type ScriptRunWriterState = 'running' | 'gone' | 'unverifiable';
 
@@ -167,6 +170,8 @@ export interface ScriptRunWriterFence {
    * nothing is signalled. Absent, a confirmed Stop may signal that PID.
    */
   readonly refusesUnidentifiedStop?: true;
+  /** Any other run is refused as `not_owner` and nothing is signalled; absent, any run. */
+  readonly stopOwnership?: ScriptRunStopOwnership;
   /**
    * An orphaned run's live group members once its leader has exited, as
    * `listScriptRunGroup` reads them (CAN-6601). Absent without process groups.
@@ -259,6 +264,16 @@ function parseScriptRunWriter(value: unknown): ScriptRunWriter | null {
   )
     return null;
   return { pid: value.pid, startIdentity: value.startIdentity };
+}
+
+function stopsRunOf(
+  fence: ScriptRunWriterFence | undefined,
+  spawner: string | undefined,
+): boolean {
+  const ownership = fence?.stopOwnership;
+  if (ownership === undefined) return true;
+  if (spawner === undefined) return ownership === 'own-or-legacy';
+  return spawner === fence?.spawner;
 }
 
 function parseScriptRunSpawner(value: unknown): string | undefined {
@@ -1066,6 +1081,7 @@ export class ScriptRunLogStore {
     | ScriptRunChildStop
     | 'absent'
     | 'not_orphaned'
+    | 'not_owner'
     | 'unconfirmed'
     | 'unsupported'
   > {
@@ -1080,6 +1096,7 @@ export class ScriptRunLogStore {
     const { child } = found;
     const identified = isScriptRunChildIdentified(child);
     const fence = this.options.writerFence;
+    if (!stopsRunOf(fence, found.spawner)) return 'not_owner';
     if (!identified && fence?.refusesUnidentifiedStop) return 'unverifiable';
     if ((args.mode === 'force' || !identified) && !args.confirmed)
       return 'unconfirmed';
@@ -1105,7 +1122,9 @@ export class ScriptRunLogStore {
     scriptKey: string,
     runId: string,
   ): Promise<
-    { child: ScriptRunChild; startedAtMs: number } | 'absent' | 'not_orphaned'
+    | { child: ScriptRunChild; startedAtMs: number; spawner?: string }
+    | 'absent'
+    | 'not_orphaned'
   > {
     await this.runLogs.awaitPendingWrite(projectId, worktreeId, scriptKey);
     const meta = await this.readMeta(
@@ -1119,7 +1138,27 @@ export class ScriptRunLogStore {
       child === undefined
     )
       return 'not_orphaned';
-    return { child, startedAtMs: Date.parse(meta.startedAt) };
+    return {
+      child,
+      startedAtMs: Date.parse(meta.startedAt),
+      ...(meta.spawner !== undefined ? { spawner: meta.spawner } : {}),
+    };
+  }
+
+  /** Read as written to route a Stop; it never reconciles or reaps. */
+  async orphanSpawner(args: {
+    projectId: string;
+    worktreeId: string;
+    scriptKey: string;
+    runId: string;
+  }): Promise<{ spawner: string | undefined } | 'absent' | 'not_orphaned'> {
+    const found = await this.orphanedChild(
+      args.projectId,
+      args.worktreeId,
+      args.scriptKey,
+      args.runId,
+    );
+    return typeof found === 'string' ? found : { spawner: found.spawner };
   }
 
   /**
@@ -1160,7 +1199,9 @@ export class ScriptRunLogStore {
       readonly pid: number;
       readonly startIdentity: string;
     }[];
-  }): Promise<ScriptRunGroupStop | 'absent' | 'not_orphaned' | 'unconfirmed'> {
+  }): Promise<
+    ScriptRunGroupStop | 'absent' | 'not_orphaned' | 'not_owner' | 'unconfirmed'
+  > {
     const { projectId, worktreeId, scriptKey, runId } = args;
     if (!args.confirmed || args.members.length === 0) return 'unconfirmed';
     const found = await this.orphanedChild(
@@ -1171,6 +1212,7 @@ export class ScriptRunLogStore {
     );
     if (typeof found === 'string') return found;
     const fence = this.options.writerFence;
+    if (!stopsRunOf(fence, found.spawner)) return 'not_owner';
     if (!fence?.stopGroup) return { kind: 'unsupported' };
     if (!Number.isFinite(found.startedAtMs)) return { kind: 'unverifiable' };
     const outcome = await fence.stopGroup(

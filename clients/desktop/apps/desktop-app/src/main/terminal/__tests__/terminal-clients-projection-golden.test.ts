@@ -41,10 +41,18 @@ const mockState: {
   root: string;
   bridge: BrowserWindow | undefined;
   daemonHealthy: boolean;
+  /** The operations main's daemon session serves; none: no session. */
+  manifest: ReadonlySet<string> | undefined;
+  windowCalls: [string, unknown][];
+  /** Each time something asked for main's terminal session. */
+  sessionAsks: number;
 } = {
   root: '',
   bridge: undefined,
   daemonHealthy: false,
+  manifest: undefined,
+  windowCalls: [],
+  sessionAsks: 0,
 };
 
 jest.mock('@canopy/core-platform', () => ({
@@ -92,8 +100,53 @@ jest.mock('../../canopy-runtime/electron-daemon-access', () => ({
   getElectronDaemonFilesContext: jest.fn(() =>
     Promise.resolve({ canonicalDataRoot: '/unused', authorityId: 'local' }),
   ),
-  getElectronDaemonConnections: jest.fn(() => {
-    throw new Error('Unexpected daemon connection');
+  // CAN-8070: main's terminal session, which admits windows when a test
+  // gives it the window operations.
+  getElectronDaemonConnections: jest.fn(() => ({
+    get: (): Promise<unknown> => {
+      mockState.sessionAsks += 1;
+      const manifest = mockState.manifest;
+      if (!manifest) throw new Error('Unexpected daemon connection');
+      const signal = new AbortController().signal;
+      const client = {
+        identity: { runtimeId: 'runtime-1', daemonEpoch: 'epoch-1' },
+        manifest: {
+          has: (_kind: string, name: string): boolean => manifest.has(name),
+          schemaRevisions: new Map([['worker.terminal.create', 2]]),
+        },
+        signal,
+        instruction: (name: string, params: unknown): Promise<unknown> => {
+          mockState.windowCalls.push([name, params]);
+          return Promise.resolve(
+            name === 'core.client.window.issue'
+              ? {
+                  ticketId: 'ticket-1',
+                  secret: 's'.repeat(43),
+                  expiresAt: '2026-11-27T00:01:00.000Z',
+                }
+              : {},
+          );
+        },
+      };
+      return Promise.resolve({
+        signal,
+        client,
+        lease: {
+          register: (
+            _key: string,
+            issue: (lease: { leaseId: string }, connected: unknown) => void,
+          ): (() => void) => {
+            issue({ leaseId: 'lease-1' }, client);
+            return (): void => undefined;
+          },
+        },
+      });
+    },
+  })),
+  verifiedDaemonEndpoint: (): object => ({
+    kind: 'socket',
+    path: '/tmp/core.sock',
+    auth: { secret: 'token', dataRootHash: 'hash' },
   }),
 }));
 jest.mock('../../remote-control/host/bridge-window', () => ({
@@ -330,11 +383,14 @@ const daemonTransport: RemoteTerminalTransport = {
   resize: unexpectedDaemonCall,
   kill: unexpectedDaemonCall,
   release: unexpectedDaemonCall,
-  attach: (_params, onFrame) => {
+  attach: (params, onFrame) => {
     daemonFrames = onFrame;
+    daemonFramesOf.set(params.terminalId, onFrame);
     return Promise.resolve({ close: (): void => undefined });
   },
 };
+/** Each daemon terminal's mirror attachment, by terminal. */
+const daemonFramesOf = new Map<string, (frame: RemoteTerminalFrame) => void>();
 
 function invoke(
   channel: string,
@@ -394,8 +450,12 @@ beforeEach(() => {
   jest.useFakeTimers();
   engine.reset();
   mockState.daemonHealthy = false;
+  mockState.manifest = undefined;
+  mockState.windowCalls = [];
+  mockState.sessionAsks = 0;
   daemonCreates = [];
   daemonFrames = undefined;
+  daemonFramesOf.clear();
   routed.useDaemonTerminals(
     new RemoteTerminals({
       transport: daemonTransport,
@@ -623,6 +683,282 @@ describe('terminal clients project one worker terminal (CAN-4148)', () => {
       replay: Buffer.from('claude output'),
     });
     expect(replays[1]).toEqual(replays[0]);
+  });
+
+  describe('a window reads daemon terminals on its own connection (CAN-8070)', () => {
+    const RECORD_OPERATIONS = [
+      'worker.terminal.record.open',
+      'worker.terminal.record.apply',
+    ];
+    const WINDOW_OPERATIONS = [
+      ...RECORD_OPERATIONS,
+      'core.client.window.issue',
+      'core.client.window.grant',
+      'core.client.window.revoke',
+      'core.events.unsubscribe',
+    ];
+    /** An invoke from the window's live main frame, as a page sends it. */
+    function invokeFromPage(channel: string, request?: unknown): unknown {
+      const handler = handlers.get(channel);
+      if (!handler) throw new Error(`Missing IPC handler ${channel}`);
+      const event: IpcMainInvokeEvent = {
+        sender: main.webContents,
+        senderFrame: main.webContents.mainFrame,
+        frameId: 1,
+        processId: 1,
+        type: 'frame',
+        preventDefault: () => undefined,
+        defaultPrevented: false,
+      };
+      return Promise.resolve().then((): unknown => handler(event, request));
+    }
+    function progress(window: BrowserWindow): unknown[] {
+      const calls: readonly unknown[][] = jest.spyOn(window.webContents, 'send')
+        .mock.calls;
+      return calls
+        .filter(([channel]) => channel === IPC_CHANNELS.terminalOutputProgress)
+        .map((call) => call[1]);
+    }
+    async function daemonTerminal(claude: boolean): Promise<TerminalSession> {
+      const daemon = routed.daemonTerminals;
+      if (!daemon) throw new Error('No daemon terminals');
+      return daemon.create({
+        projectId: 'project',
+        worktreeId: 'task',
+        scope: { workspaceId: 'project', worktreeId: 'task' },
+        cwdRootId: 'project',
+        cwdRelativePath: '',
+        cwd: mockState.root,
+        shell: claude
+          ? { shell: '/opt/claude', args: [], shellBasename: 'claude' }
+          : { shell: '/bin/sh', args: [], shellBasename: 'sh' },
+        environment: {},
+        cols: 80,
+        rows: 24,
+        ...(claude && {
+          managed: {
+            kind: 'claude-code',
+            title: 'Claude Code',
+            chatId: 'chat-1',
+          },
+        }),
+      });
+    }
+    function daemonOutput(
+      terminalId: string,
+      from: number,
+      data: string,
+    ): void {
+      daemonFramesOf.get(terminalId)?.({
+        kind: 'item',
+        item: {
+          terminalId,
+          fromOffset: from,
+          toOffset: from + data.length,
+          data,
+          encoding: 'utf8',
+          truncatedBefore: false,
+          exit: null,
+        },
+      });
+      jest.advanceTimersByTime(20);
+    }
+
+    it('an admitted window gets no daemon terminal:output, and its route grants by kind', async () => {
+      mockState.daemonHealthy = true;
+      mockState.manifest = new Set(WINDOW_OPERATIONS);
+      const shell = await daemonTerminal(false);
+      const claude = await daemonTerminal(true);
+      await expect(
+        invokeFromPage(IPC_CHANNELS.terminalWindowConnect, {
+          terminalId: shell.id,
+        }),
+      ).resolves.toMatchObject({
+        runtime: { runtimeId: 'runtime-1', daemonEpoch: 'epoch-1' },
+        ticket: { ticketId: 'ticket-1' },
+      });
+      // Q-F: a shell takes the window's input; a Claude terminal's stays on main.
+      await expect(
+        invokeFromPage(IPC_CHANNELS.terminalWindowRoute, {
+          terminalId: shell.id,
+        }),
+      ).resolves.toMatchObject({
+        terminalId: shell.id,
+        rights: ['attach', 'write', 'resize'],
+        session: { id: shell.id },
+      });
+      await expect(
+        invokeFromPage(IPC_CHANNELS.terminalWindowRoute, {
+          terminalId: claude.id,
+        }),
+      ).resolves.toMatchObject({
+        terminalId: claude.id,
+        rights: ['attach', 'resize'],
+      });
+      daemonOutput(shell.id, 0, 'shell output');
+      daemonOutput(claude.id, 0, 'claude');
+      expect(outputs(main)).toEqual([]);
+      // Byte-free progress feeds its attention and Linux update watchers.
+      expect(progress(main)).toEqual([
+        {
+          projectId: 'project',
+          worktreeId: 'task',
+          terminalId: shell.id,
+          seq: 12,
+        },
+        {
+          projectId: 'project',
+          worktreeId: 'task',
+          terminalId: claude.id,
+          seq: 6,
+        },
+      ]);
+      // Main still produces it: Remote Control's copy is unchanged.
+      expect(mirroredOutput()).toEqual([
+        expect.objectContaining({
+          terminalId: shell.id,
+          data: Buffer.from('shell output'),
+        }),
+        expect.objectContaining({
+          terminalId: claude.id,
+          data: Buffer.from('claude'),
+        }),
+      ]);
+      // Handed back, the terminal is relayed again.
+      await invokeFromPage(IPC_CHANNELS.terminalWindowRelease, {
+        terminalId: shell.id,
+      });
+      daemonOutput(shell.id, 12, '!');
+      expect(outputs(main)).toEqual([
+        expect.objectContaining({
+          terminalId: shell.id,
+          data: Buffer.from('!'),
+          seq: 13,
+        }),
+      ]);
+      expect(mockState.windowCalls.map(([name]) => name)).toEqual([
+        'core.client.window.issue',
+        'core.client.window.grant',
+        'core.client.window.grant',
+        'core.client.window.revoke',
+      ]);
+    });
+
+    it('an older daemon without the window operations keeps the relay', async () => {
+      mockState.daemonHealthy = true;
+      mockState.manifest = new Set(RECORD_OPERATIONS);
+      const shell = await daemonTerminal(false);
+      await expect(
+        invokeFromPage(IPC_CHANNELS.terminalWindowConnect, {
+          terminalId: shell.id,
+        }),
+      ).resolves.toBeNull();
+      await expect(
+        invokeFromPage(IPC_CHANNELS.terminalWindowRoute, {
+          terminalId: shell.id,
+        }),
+      ).resolves.toBeNull();
+      daemonOutput(shell.id, 0, 'output');
+      expect(outputs(main)).toEqual([
+        expect.objectContaining({
+          terminalId: shell.id,
+          data: Buffer.from('output'),
+          seq: 6,
+        }),
+      ]);
+      expect(progress(main)).toEqual([]);
+      expect(mockState.windowCalls).toEqual([]);
+    });
+
+    it("a route main answers null leaves main relaying, and a dropped grant's output returns", async () => {
+      mockState.daemonHealthy = true;
+      mockState.manifest = new Set(WINDOW_OPERATIONS);
+      const shell = await daemonTerminal(false);
+      await invokeFromPage(IPC_CHANNELS.terminalWindowConnect, {
+        terminalId: shell.id,
+      });
+      await expect(
+        invokeFromPage(IPC_CHANNELS.terminalWindowRoute, {
+          terminalId: shell.id,
+        }),
+      ).resolves.toMatchObject({ terminalId: shell.id });
+      daemonOutput(shell.id, 0, 'direct');
+      expect(outputs(main)).toEqual([]);
+      // Main's session no longer admits windows: it answers null and relays.
+      mockState.manifest = new Set(RECORD_OPERATIONS);
+      await expect(
+        invokeFromPage(IPC_CHANNELS.terminalWindowRoute, {
+          terminalId: shell.id,
+        }),
+      ).resolves.toBeNull();
+      daemonOutput(shell.id, 6, '!');
+      expect(outputs(main)).toEqual([
+        expect.objectContaining({
+          terminalId: shell.id,
+          data: Buffer.from('!'),
+          seq: 7,
+        }),
+      ]);
+      expect(mockState.windowCalls.map(([name]) => name)).toEqual([
+        'core.client.window.issue',
+        'core.client.window.grant',
+        'core.client.window.revoke',
+      ]);
+    });
+
+    it("a window asking for an in-process terminal never asks for main's daemon session", async () => {
+      // A reachable daemon: only the in-process placement keeps it unasked.
+      mockState.daemonHealthy = true;
+      mockState.manifest = new Set(WINDOW_OPERATIONS);
+      await invoke(IPC_CHANNELS.terminalSpawn, REQUEST, bridge);
+      const id = engineId();
+      await expect(
+        invokeFromPage(IPC_CHANNELS.terminalWindowConnect, { terminalId: id }),
+      ).resolves.toBeNull();
+      await expect(
+        invokeFromPage(IPC_CHANNELS.terminalWindowRoute, { terminalId: id }),
+      ).resolves.toBeNull();
+      expect(mockState.sessionAsks).toBe(0);
+      expect(mockState.windowCalls).toEqual([]);
+      engine.emitOutput(id, 'script', 6);
+      jest.advanceTimersByTime(20);
+      expect(outputs(main)).toEqual([
+        expect.objectContaining({ terminalId: id, seq: 6 }),
+      ]);
+    });
+
+    it("a window connection's reconnect asks main's session only while the window reads a daemon terminal", async () => {
+      mockState.daemonHealthy = true;
+      mockState.manifest = new Set(WINDOW_OPERATIONS);
+      const shell = await daemonTerminal(false);
+      await invokeFromPage(IPC_CHANNELS.terminalWindowConnect, {
+        terminalId: shell.id,
+      });
+      const reconnect = (): unknown =>
+        invokeFromPage(IPC_CHANNELS.terminalWindowConnect, { reconnect: true });
+      // Holding no grant, the connection ends rather than ask (or wake) the daemon.
+      const asks = mockState.sessionAsks;
+      await expect(reconnect()).resolves.toBeNull();
+      expect(mockState.sessionAsks).toBe(asks);
+      await invokeFromPage(IPC_CHANNELS.terminalWindowRoute, {
+        terminalId: shell.id,
+      });
+      await expect(reconnect()).resolves.toMatchObject({
+        runtime: { runtimeId: 'runtime-1', daemonEpoch: 'epoch-1' },
+      });
+      await invokeFromPage(IPC_CHANNELS.terminalWindowRelease, {
+        terminalId: shell.id,
+      });
+      const released = mockState.sessionAsks;
+      await expect(reconnect()).resolves.toBeNull();
+      expect(mockState.sessionAsks).toBe(released);
+      expect(mockState.windowCalls.map(([name]) => name)).toEqual([
+        'core.client.window.issue',
+        'core.client.window.grant',
+        'core.client.window.issue',
+        'core.client.window.revoke',
+      ]);
+    });
   });
 
   it('terminal:save-worktree-state rejects malformed forgetTerminalIds before saving (CAN-6616)', async () => {

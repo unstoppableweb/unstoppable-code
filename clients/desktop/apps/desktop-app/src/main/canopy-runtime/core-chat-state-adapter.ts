@@ -17,6 +17,7 @@ import type {
   PersistedChatTab,
 } from '@canopy/desktop-shared/types';
 import { projectChatRuntime } from '../services/chat-state-projection';
+import { persistedTabProvider } from '../lib/terminal-driven-chat';
 import {
   CanopyOperationError,
   canopyCapabilityUnavailableError,
@@ -133,7 +134,12 @@ export function projectChatUsageLimit(
   tab: PersistedChatTab,
 ): CoreChatUsageLimit | undefined {
   const banner = tab.llmProviderUsageLimitBanner;
-  if (!banner || !isUsageProvider(banner.provider)) return undefined;
+  if (
+    !banner ||
+    !isUsageProvider(banner.provider) ||
+    persistedTabProvider(tab) === 'antigravity'
+  )
+    return undefined;
   return {
     provider: banner.provider,
     detectedAt: usageCount(banner.detectedAt),

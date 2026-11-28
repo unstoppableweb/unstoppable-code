@@ -569,7 +569,8 @@ export type PersistedChatBlock =
        * when the provider doesn't name it; `event` when the task reported an
        * event and keeps running. `toolsLoaded` marks the continuation after
        * a tools load, which keeps its cause though it shares the prompt's
-       * anchor. Absent on every other turn.
+       * anchor. `peerMessage` marks a message from another agent session.
+       * Absent on every other turn.
        */
       spawnedBy?: {
         taskId?: string;
@@ -577,6 +578,7 @@ export type PersistedChatBlock =
         event?: true;
         scheduled?: true;
         toolsLoaded?: true;
+        peerMessage?: true;
       };
       startedAt?: number;
       pausedAt?: number | null;
@@ -608,6 +610,8 @@ export type PersistedChatBlock =
       scheduled?: true;
       /** The agent continued after Canopy restarted it to load tools. */
       toolsLoaded?: true;
+      /** Another agent session sent this one a message. */
+      peerMessage?: true;
     }
   | { type: 'hook_info'; triggerName: string; timestamp: number }
   | { type: 'automation_info'; activityName?: string; timestamp: number }

@@ -74,7 +74,8 @@ import { readPreferencesFileDetailed } from '../main/lib/preferences-store';
 import { DEFAULT_PREFERENCES } from '@canopy/desktop-shared/node/preferences/defaults';
 import { DESKTOP_PREFERENCES_CODEC } from '@canopy/desktop-shared/node/preferences/desktop-preferences-codec';
 import type { DomainPreferencesData } from '@canopy/desktop-shared/node/preferences/client-local-preferences';
-import * as PreferencesEnvironment from '@canopy/desktop-shared/node/preferences/normalization-environment';
+import * as PreferencesEnvironment from '@canopy/core-runtime/node/preferences/domain/normalization-environment';
+import { createCatalogPreferencesModelFacts } from '@canopy/desktop-shared/node/preferences/catalog-model-facts';
 import {
   createPreferencesRepository,
   type PreferencesRepository,
@@ -1644,11 +1645,13 @@ it.each([
   async (failure) => {
     jest
       .spyOn(PreferencesEnvironment, 'preferencesNormalizationEnvironment')
-      .mockReturnValue({
-        resolveAvailableModel: () => null,
-        ollamaEnabled: () => false,
-        shortcutPlatform: () => 'darwin',
-      });
+      .mockReturnValue(
+        createCatalogPreferencesModelFacts({
+          status: () => 'unavailable',
+          ollamaEnabled: () => false,
+          shortcutPlatform: () => 'darwin',
+        }),
+      );
     const document = new MemoryPreferencesDocument(
       'copilot-consent-' + failure,
     );

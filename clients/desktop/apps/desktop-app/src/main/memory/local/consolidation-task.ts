@@ -87,7 +87,7 @@ import {
   type LocalMemorySyncedConsolidation,
   type LocalMemorySyncedNote,
 } from './replica-hooks';
-import { memoryNoteId } from './note-identity';
+import { memoryNoteId } from '@canopy/memory-store/note-identity';
 import {
   assertMemoryPathContained,
   assertMemoryScopeLockHeld,
@@ -95,7 +95,7 @@ import {
   isMemoryMarkdownFileName,
   readMemoryFileBytes,
   readMemoryText,
-} from './memory-files';
+} from '@canopy/memory-store/memory-files';
 import {
   LOCAL_MEMORY_READ_ONLY_MESSAGE,
   LocalMemoryScopeReadOnlyError,
@@ -116,7 +116,7 @@ import { deleteStaleUsageRows } from './consolidation-usage-cleanup';
 import {
   stampImportsConsolidated,
   type ImportStateStagedEntry,
-} from './import/ledger';
+} from '@canopy/memory-store/import/ledger';
 
 export type { ConsolidationInput } from '@canopy/memory-consolidation/input';
 

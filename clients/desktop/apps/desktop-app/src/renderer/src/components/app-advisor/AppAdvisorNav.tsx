@@ -427,7 +427,7 @@ function AppAdvisorNavContent({ collapsed }: AppAdvisorNavProps): JSX.Element {
       ),
     [orderedWorkEntries, groups, activeWorkEntryId],
   );
-  const reportGroupError = (error: unknown): void =>
+  const reportGroupError = (error: unknown): false => {
     useGitHubStore
       .getState()
       .addToast(
@@ -438,10 +438,12 @@ function AppAdvisorNavContent({ collapsed }: AppAdvisorNavProps): JSX.Element {
         undefined,
         { caught: error },
       );
+    return false;
+  };
   const groupStore = useSidebarItemGroupsStore.getState();
   const commands: CodeSidebarItemGroupCommands = {
     create: (itemId) => groupStore.create({ scope: ADVISOR_SCOPE, itemId }),
-    update: (groupId, patch): Promise<void> =>
+    update: (groupId, patch): Promise<void | false> =>
       groupStore
         .update({ scope: ADVISOR_SCOPE, groupId, ...patch })
         .catch(reportGroupError),

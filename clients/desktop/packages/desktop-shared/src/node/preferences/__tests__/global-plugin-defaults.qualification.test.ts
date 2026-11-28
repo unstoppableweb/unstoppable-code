@@ -7,6 +7,7 @@ import {
   type PreferencesData,
 } from '../../../types';
 import * as NormalizationEnvironment from '../normalization-environment';
+import { createCatalogPreferencesModelFacts } from '../catalog-model-facts';
 import { normalizePreferences } from '../normalize-preferences';
 import { mergePreferenceUpdate } from '../merge-preference-update';
 import { applyGlobalPluginDefaultsSaveRule } from '../global-plugin-defaults';
@@ -35,12 +36,14 @@ describe('global plugin defaults and the preferences:save rule (CAN-5766)', () =
     ]);
     initCodexModels([{ id: 'gpt-6.1-sol', label: 'Codex default' }]);
     initOllamaModels([]);
-    NormalizationEnvironment.installPreferencesNormalizationEnvironment({
-      resolveAvailableModel: (model) =>
-        typeof model === 'string' ? (resolveKnownModel(model) ?? null) : null,
-      ollamaEnabled: () => false,
-      shortcutPlatform: () => 'darwin',
-    });
+    NormalizationEnvironment.installPreferencesNormalizationEnvironment(
+      createCatalogPreferencesModelFacts({
+        status: (model) =>
+          resolveKnownModel(model) ? 'available' : 'unavailable',
+        ollamaEnabled: () => false,
+        shortcutPlatform: () => 'darwin',
+      }),
+    );
   });
 
   it('keeps global plugin defaults out of a wide preferences:save patch and applies the exact one-key intent', () => {

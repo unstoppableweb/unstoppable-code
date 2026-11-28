@@ -44,6 +44,9 @@ export const WORKER_SCRIPT_ERROR_CODES = [
   'worker.script.notOrphaned',
   'worker.script.confirmationRequired',
   'worker.script.groupChanged',
+  'worker.script.notOwner',
+  'worker.script.daemonUnavailable',
+  'worker.script.outcomeUnknown',
   ...WORKER_EXECUTION_SECRET_ERROR_CODES,
 ] as const;
 

@@ -24,6 +24,7 @@ import {
 import { DESKTOP_PREFERENCES_CODEC } from '@canopy/desktop-shared/node/preferences/desktop-preferences-codec';
 import type { DomainPreferencesData } from '@canopy/desktop-shared/node/preferences/client-local-preferences';
 import { installPreferencesNormalizationEnvironment } from '@canopy/desktop-shared/node/preferences/normalization-environment';
+import { createCatalogPreferencesModelFacts } from '@canopy/desktop-shared/node/preferences/catalog-model-facts';
 import {
   createDesktopTerminalSettingsStore,
   createCoreTerminalSettingsAdapter,
@@ -149,12 +150,14 @@ describe('desktop terminal settings store (CAN-4148)', () => {
         show: { capabilities: ['completion', 'tools'] },
       },
     ]);
-    installPreferencesNormalizationEnvironment({
-      resolveAvailableModel: (model) =>
-        typeof model === 'string' ? (resolveKnownModel(model) ?? null) : null,
-      ollamaEnabled: () => false,
-      shortcutPlatform: () => 'darwin',
-    });
+    installPreferencesNormalizationEnvironment(
+      createCatalogPreferencesModelFacts({
+        status: (model) =>
+          resolveKnownModel(model) ? 'available' : 'unavailable',
+        ollamaEnabled: () => false,
+        shortcutPlatform: () => 'darwin',
+      }),
+    );
   });
 
   it('commits shells and presets through the preference queue and moves the revision once', async () => {

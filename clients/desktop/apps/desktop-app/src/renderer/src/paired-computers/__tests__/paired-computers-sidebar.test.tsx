@@ -1342,6 +1342,606 @@ describe("paired computers' tasks in the main window's sidebar (CAN-7766)", () =
     }
   });
 
+  describe("a paired computer's unchanged rows while this computer works (CAN-8047)", () => {
+    const pairedA = `computer-${MAC}:remote-a`;
+    const pairedB = `computer-${MAC}:remote-b`;
+    const sectionsState = (overrides: {
+      readonly localLabel: string;
+      readonly pairedBLabel?: string;
+    }): Pick<SessionViewModel, 'workspaces' | 'worktrees'> => ({
+      workspaces: [
+        {
+          localId: 'storefront',
+          name: 'storefront',
+          type: 'single-repo',
+          order: 0,
+        },
+      ],
+      worktrees: [
+        {
+          localId: 'local-task',
+          workspaceLocalId: 'storefront',
+          branch: 'local-task',
+          label: overrides.localLabel,
+          order: 0,
+        },
+        // Rebuilt on every render, as a snapshot refresh rebuilds them.
+        {
+          localId: pairedA,
+          workspaceLocalId: 'storefront',
+          branch: 'remote-a',
+          label: 'Remote A',
+          order: 1_000_000_000,
+        },
+        {
+          localId: pairedB,
+          workspaceLocalId: 'storefront',
+          branch: 'remote-b',
+          label: overrides.pairedBLabel ?? 'Remote B',
+          order: 1_000_000_001,
+        },
+      ],
+    });
+    const renderSections = (
+      root: Root,
+      state: Pick<SessionViewModel, 'workspaces' | 'worktrees'>,
+      onSelectWorktree: (workspaceId: string, worktreeId: string) => void,
+      rendered: Map<string, number>,
+    ): void => {
+      act(() => {
+        root.render(
+          <WorkspacesSidebarSections
+            state={state}
+            capabilities={DESKTOP}
+            // A new function on every render, as the desktop host passes it.
+            capabilitiesFor={(localId): CanopyCapabilities =>
+              localId.startsWith('computer-')
+                ? pairedSidebarRowCapabilities(DESKTOP)
+                : DESKTOP
+            }
+            selected={null}
+            onSelectWorktree={onSelectWorktree}
+            onCreateWorktree={(): Promise<undefined> =>
+              Promise.resolve(undefined)
+            }
+            useWorktreeRowOverrides={(context): undefined => {
+              const id = context.worktree.localId;
+              rendered.set(id, (rendered.get(id) ?? 0) + 1);
+              return undefined;
+            }}
+          />,
+        );
+      });
+    };
+
+    it("re-renders this computer's changed row but not the paired rows, and a paired row that changed renders again", () => {
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+      const root: Root = createRoot(container);
+      const rendered = new Map<string, number>();
+      try {
+        renderSections(
+          root,
+          sectionsState({ localLabel: 'Streaming 1' }),
+          jest.fn(),
+          rendered,
+        );
+        const first = new Map(rendered);
+        expect(first.get(pairedA)).toBeGreaterThan(0);
+        expect(first.get(pairedB)).toBeGreaterThan(0);
+
+        // This computer's chat streams: its own row changes, the paired
+        // computer's rows do not, and every callback is new.
+        renderSections(
+          root,
+          sectionsState({ localLabel: 'Streaming 2' }),
+          jest.fn(),
+          rendered,
+        );
+        expect(rendered.get('local-task')).toBeGreaterThan(
+          first.get('local-task') ?? 0,
+        );
+        expect(rendered.get(pairedA)).toBe(first.get(pairedA));
+        expect(rendered.get(pairedB)).toBe(first.get(pairedB));
+
+        // The paired computer renames one of its tasks: only that row
+        // renders again, and shows the new name.
+        renderSections(
+          root,
+          sectionsState({
+            localLabel: 'Streaming 2',
+            pairedBLabel: 'Remote B renamed',
+          }),
+          jest.fn(),
+          rendered,
+        );
+        expect(rendered.get(pairedA)).toBe(first.get(pairedA));
+        expect(rendered.get(pairedB)).toBeGreaterThan(first.get(pairedB) ?? 0);
+        expect(
+          container.querySelector(`[data-worktree-id="${pairedB}"]`)
+            ?.textContent,
+        ).toContain('Remote B renamed');
+      } finally {
+        act(() => {
+          root.unmount();
+        });
+        container.remove();
+      }
+    });
+
+    it("a reused paired row's click reaches the host's current handler", () => {
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+      const root: Root = createRoot(container);
+      const rendered = new Map<string, number>();
+      try {
+        const firstHandler = jest.fn();
+        renderSections(
+          root,
+          sectionsState({ localLabel: 'Streaming 1' }),
+          firstHandler,
+          rendered,
+        );
+        const pairedRenders = rendered.get(pairedA);
+        const currentHandler = jest.fn();
+        renderSections(
+          root,
+          sectionsState({ localLabel: 'Streaming 2' }),
+          currentHandler,
+          rendered,
+        );
+        // The row was reused, not rendered with the new handler.
+        expect(rendered.get(pairedA)).toBe(pairedRenders);
+
+        const row = container.querySelector(`[data-worktree-id="${pairedA}"]`);
+        expect(row).toBeInstanceOf(HTMLElement);
+        act(() => {
+          row?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        });
+        expect(currentHandler).toHaveBeenCalledWith('storefront', pairedA);
+        expect(firstHandler).not.toHaveBeenCalled();
+      } finally {
+        act(() => {
+          root.unmount();
+        });
+        container.remove();
+      }
+    });
+  });
+
+  describe("a long list of a paired computer's tasks (CAN-8060)", () => {
+    const ROW_HEIGHT = 32;
+    const VIEWPORT_HEIGHT = 400;
+    // A test may give its rows another height.
+    let rowHeight = ROW_HEIGHT;
+    const pairedId = (index: number): string =>
+      `computer-${MAC}:remote-${String(index).padStart(3, '0')}`;
+    const longState = (
+      count: number,
+      omit?: number,
+    ): Pick<SessionViewModel, 'workspaces' | 'worktrees'> => ({
+      workspaces: [
+        {
+          localId: 'storefront',
+          name: 'storefront',
+          type: 'single-repo',
+          order: 0,
+        },
+      ],
+      worktrees: Array.from({ length: count }, (_, index) => ({
+        localId: pairedId(index),
+        workspaceLocalId: 'storefront',
+        branch: `remote-${index}`,
+        label: `Remote ${index + 1}`,
+        order: 1_000_000_000 + index,
+      })).filter((_, index) => index !== omit),
+    });
+    // The sidebar's scroller and its rows, sized as a layout engine would.
+    let rects: jest.SpyInstance<DOMRect, []>;
+    let heights: jest.SpyInstance<number, []>;
+    const scrollIntoView = jest.fn<void, [ScrollIntoViewOptions?]>();
+    beforeEach(() => {
+      rects = jest
+        .spyOn(Element.prototype, 'getBoundingClientRect')
+        .mockImplementation(function (this: Element): DOMRect {
+          if (this instanceof HTMLElement && this.dataset['testScroller'])
+            return new DOMRect(0, 0, 300, VIEWPORT_HEIGHT);
+          if (
+            this instanceof HTMLElement &&
+            this.dataset['index'] !== undefined
+          )
+            return new DOMRect(0, 0, 300, rowHeight);
+          return new DOMRect(0, 0, 0, 0);
+        });
+      heights = jest
+        .spyOn(HTMLElement.prototype, 'offsetHeight', 'get')
+        .mockImplementation(function (this: HTMLElement): number {
+          if (this.dataset['testScroller']) return VIEWPORT_HEIGHT;
+          return this.dataset['index'] === undefined ? 0 : rowHeight;
+        });
+      scrollIntoView.mockClear();
+      Element.prototype.scrollIntoView = scrollIntoView;
+      // jsdom elements cannot scroll; a scroller keeps the offset it is given.
+      Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+        configurable: true,
+        value(this: HTMLElement, options?: ScrollToOptions): void {
+          if (options?.top !== undefined) this.scrollTop = options.top;
+        },
+      });
+    });
+    afterEach(() => {
+      rowHeight = ROW_HEIGHT;
+      rects.mockRestore();
+      heights.mockRestore();
+      Reflect.deleteProperty(HTMLElement.prototype, 'scrollTo');
+    });
+    const mount = (
+      count: number,
+      props: Partial<
+        Pick<
+          Parameters<typeof WorkspacesSidebarSections>[0],
+          'selected' | 'pendingRevealTarget' | 'renderWorktreeStatus'
+        >
+      > = {},
+    ): {
+      container: HTMLDivElement;
+      rerender: (nextCount: number, omit?: number) => void;
+      unmount: () => void;
+    } => {
+      const container = document.createElement('div');
+      container.dataset['testScroller'] = 'true';
+      container.style.overflowY = 'auto';
+      document.body.appendChild(container);
+      const root = createRoot(container);
+      const render = (rowCount: number, omit?: number): void => {
+        root.render(
+          <WorkspacesSidebarSections
+            state={longState(rowCount, omit)}
+            capabilities={DESKTOP}
+            capabilitiesFor={(localId): CanopyCapabilities =>
+              localId.startsWith('computer-')
+                ? pairedSidebarRowCapabilities(DESKTOP)
+                : DESKTOP
+            }
+            selected={props.selected ?? null}
+            pendingRevealTarget={props.pendingRevealTarget ?? null}
+            renderWorktreeStatus={props.renderWorktreeStatus}
+            onSelectWorktree={jest.fn()}
+            onCreateWorktree={(): Promise<undefined> =>
+              Promise.resolve(undefined)
+            }
+          />,
+        );
+      };
+      act(() => {
+        render(count);
+      });
+      return {
+        container,
+        rerender: (nextCount: number, omit?: number): void => {
+          act(() => {
+            render(nextCount, omit);
+          });
+        },
+        unmount: (): void => {
+          act(() => {
+            root.unmount();
+          });
+          container.remove();
+        },
+      };
+    };
+    const renderedRows = (container: HTMLElement): string[] =>
+      [...container.querySelectorAll('[data-worktree-id^="computer-"]')].map(
+        (row) => row.getAttribute('data-worktree-id') ?? '',
+      );
+    const frameOf = (container: HTMLElement, id: string): Element | null =>
+      container
+        .querySelector(`[data-worktree-id="${id}"]`)
+        ?.closest('[data-sidebar-row-frame]') ?? null;
+    // Moves focus to the next tabbable element in document order, as Tab does.
+    const pressTab = (container: HTMLElement): void => {
+      const tabbable = [
+        ...container.querySelectorAll<HTMLElement>(
+          'a[href], button, input, select, textarea, [tabindex]',
+        ),
+      ].filter(
+        (element) =>
+          element.tabIndex >= 0 &&
+          !element.hasAttribute('disabled') &&
+          element.closest('[inert], [hidden]') === null,
+      );
+      const active = document.activeElement;
+      const next =
+        tabbable[
+          active instanceof HTMLElement ? tabbable.indexOf(active) + 1 : 0
+        ];
+      if (next === undefined) throw new Error('nothing left to Tab to');
+      act(() => {
+        next.focus();
+      });
+    };
+
+    it('renders every row of a list of up to 30, as before', () => {
+      const { container, unmount } = mount(30);
+      try {
+        expect(renderedRows(container)).toHaveLength(30);
+        expect(
+          frameOf(container, pairedId(0))?.hasAttribute('aria-setsize'),
+        ).toBe(false);
+      } finally {
+        unmount();
+      }
+    });
+
+    it('renders only the rows near the viewport of a longer list, plus its first and last, and gives each its place in the whole list', () => {
+      const { container, unmount } = mount(120);
+      try {
+        const rows = renderedRows(container);
+        expect(rows.length).toBeGreaterThan(VIEWPORT_HEIGHT / ROW_HEIGHT);
+        expect(rows.length).toBeLessThan(40);
+        expect(rows).toContain(pairedId(0));
+        expect(rows).toContain(pairedId(119));
+        expect(rows).not.toContain(pairedId(60));
+        const first = frameOf(container, pairedId(0));
+        expect(first?.getAttribute('aria-setsize')).toBe('120');
+        expect(first?.getAttribute('aria-posinset')).toBe('1');
+        expect(
+          frameOf(container, pairedId(119))?.getAttribute('aria-posinset'),
+        ).toBe('120');
+      } finally {
+        unmount();
+      }
+    });
+
+    it('Tab walks from the first paired row past the window, one row after another, without scrolling by hand', () => {
+      const { container, unmount } = mount(120);
+      try {
+        const scroller = container;
+        expect(renderedRows(container)).not.toContain(pairedId(40));
+        const firstFrame = frameOf(container, pairedId(0));
+        if (!(firstFrame instanceof HTMLElement))
+          throw new Error('no first paired row');
+        act(() => {
+          firstFrame.focus();
+        });
+        const visited: number[] = [];
+        for (let press = 0; press < 400 && visited.at(-1) !== 41; press += 1) {
+          pressTab(container);
+          const frame = document.activeElement?.closest(
+            '[data-sidebar-row-frame]',
+          );
+          const position = Number(frame?.getAttribute('aria-posinset'));
+          if (Number.isInteger(position) && position !== visited.at(-1))
+            visited.push(position);
+        }
+        // Rows 2 to 41: every row in turn, well past the 31st.
+        expect(visited).toEqual(
+          Array.from({ length: 40 }, (_, index) => index + 2),
+        );
+        expect(scroller.scrollTop).toBe(0);
+      } finally {
+        unmount();
+      }
+    });
+
+    it('keeps focus on the same row when the list grows past 30 rows and shrinks back', async () => {
+      const { container, rerender, unmount } = mount(30);
+      try {
+        const focusedId = (): string | null =>
+          document.activeElement
+            ?.closest('[data-sidebar-row-frame]')
+            ?.querySelector('[data-worktree-id]')
+            ?.getAttribute('data-worktree-id') ?? null;
+        const frame = frameOf(container, pairedId(5));
+        if (!(frame instanceof HTMLElement))
+          throw new Error('no sixth paired row');
+        act(() => {
+          frame.focus();
+        });
+        expect(focusedId()).toBe(pairedId(5));
+
+        rerender(31);
+        await act(() => Promise.resolve());
+        expect(
+          frameOf(container, pairedId(5))?.hasAttribute('aria-setsize'),
+        ).toBe(true);
+        expect(focusedId()).toBe(pairedId(5));
+
+        rerender(30);
+        await act(() => Promise.resolve());
+        expect(
+          frameOf(container, pairedId(5))?.hasAttribute('aria-setsize'),
+        ).toBe(false);
+        expect(focusedId()).toBe(pairedId(5));
+      } finally {
+        unmount();
+      }
+    });
+
+    it('keeps the sidebar where it is scrolled when a list grows past 30 rows', () => {
+      const { container, rerender, unmount } = mount(30);
+      try {
+        container.scrollTop = 600;
+        rerender(31);
+        expect(
+          frameOf(container, pairedId(0))?.hasAttribute('aria-setsize'),
+        ).toBe(true);
+        expect(container.scrollTop).toBe(600);
+      } finally {
+        unmount();
+      }
+    });
+
+    it('gives focus back to the control inside a row, not just the row, when the list grows past 30 rows', async () => {
+      const { container, rerender, unmount } = mount(30, {
+        // A control inside each row, as a status badge with a popover is.
+        renderWorktreeStatus: (): JSX.Element => (
+          <button type="button">Status</button>
+        ),
+      });
+      try {
+        const controlIn = (frame: Element | null): HTMLElement | null =>
+          frame?.querySelector<HTMLElement>(
+            'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])',
+          ) ?? null;
+        const control = controlIn(frameOf(container, pairedId(5)));
+        if (control === null) throw new Error('no control in the sixth row');
+        act(() => {
+          control.focus();
+        });
+        expect(document.activeElement).toBe(control);
+
+        rerender(31);
+        await act(() => Promise.resolve());
+        const frame = frameOf(container, pairedId(5));
+        expect(frame?.hasAttribute('aria-setsize')).toBe(true);
+        expect(document.activeElement).not.toBe(frame);
+        expect(document.activeElement).toBe(controlIn(frame));
+      } finally {
+        unmount();
+      }
+    });
+
+    it('places a windowed row by its top offset, which layout measurements of the selected row read', () => {
+      const { container, unmount } = mount(120, {
+        selected: {
+          kind: 'worktree',
+          workspaceLocalId: 'storefront',
+          worktreeLocalId: pairedId(80),
+        },
+      });
+      try {
+        const place = frameOf(container, pairedId(80))?.parentElement;
+        expect(place?.dataset['index']).toBe('80');
+        // offsetTop ignores a transform; the rail's pin measures offsetTop.
+        expect(place?.style.transform).toBe('');
+        expect(place?.style.top).toBe(`${80 * (ROW_HEIGHT + 1)}px`);
+      } finally {
+        unmount();
+      }
+    });
+
+    it('never renders a list shorter than the one it replaces when it grows past 30 rows', () => {
+      rowHeight = 50;
+      const plainHeight = 30 * rowHeight + 29;
+      // The browser's resize reports: the plain list's measured height.
+      const original = window.ResizeObserver;
+      window.ResizeObserver = class {
+        constructor(private readonly callback: ResizeObserverCallback) {}
+        observe(target: Element): void {
+          const height =
+            target.getAttribute('role') === 'list' ? plainHeight : rowHeight;
+          this.callback(
+            [
+              {
+                target,
+                contentRect: new DOMRect(0, 0, 300, height),
+                borderBoxSize: [],
+                contentBoxSize: [],
+                devicePixelContentBoxSize: [],
+              },
+            ],
+            this,
+          );
+        }
+        unobserve(): void {}
+        disconnect(): void {}
+      };
+      const { container, rerender, unmount } = mount(30);
+      try {
+        const seen: number[] = [];
+        const styles = new MutationObserver(() => undefined);
+        styles.observe(container, {
+          subtree: true,
+          attributes: true,
+          attributeFilter: ['style'],
+          attributeOldValue: true,
+        });
+        rerender(31);
+        for (const record of styles.takeRecords()) {
+          const height = /height: (\d+)px/.exec(record.oldValue ?? '')?.[1];
+          if (
+            record.target instanceof HTMLElement &&
+            record.target.getAttribute('role') === 'list' &&
+            height !== undefined
+          )
+            seen.push(Number(height));
+        }
+        styles.disconnect();
+        const list = frameOf(container, pairedId(0))?.closest('[role="list"]');
+        if (!(list instanceof HTMLElement)) throw new Error('no paired list');
+        seen.push(Number.parseFloat(list.style.height));
+        expect(Math.min(...seen)).toBeGreaterThanOrEqual(plainHeight);
+      } finally {
+        unmount();
+        window.ResizeObserver = original;
+      }
+    });
+
+    it('does not give focus to a row that leaves and comes back once focus has moved on, even when the list later crosses 30 rows', async () => {
+      const { container, rerender, unmount } = mount(120);
+      const outside = document.createElement('button');
+      document.body.appendChild(outside);
+      try {
+        const frame = frameOf(container, pairedId(5));
+        if (!(frame instanceof HTMLElement))
+          throw new Error('no sixth paired row');
+        act(() => {
+          frame.focus();
+        });
+        rerender(120, 5);
+        act(() => {
+          outside.focus();
+        });
+        act(() => {
+          outside.blur();
+        });
+        rerender(120);
+        expect(frameOf(container, pairedId(5))).not.toBeNull();
+        expect(document.activeElement).toBe(document.body);
+
+        // Nor at a later threshold crossing, with focus on nothing.
+        rerender(30);
+        await act(() => Promise.resolve());
+        expect(document.activeElement).toBe(document.body);
+        rerender(31);
+        await act(() => Promise.resolve());
+        expect(document.activeElement).toBe(document.body);
+      } finally {
+        unmount();
+        outside.remove();
+      }
+    });
+
+    it('keeps the selected row rendered wherever the list is scrolled, and reveals a row waiting to be revealed', () => {
+      const { container, unmount } = mount(120, {
+        selected: {
+          kind: 'worktree',
+          workspaceLocalId: 'storefront',
+          worktreeLocalId: pairedId(80),
+        },
+        pendingRevealTarget: {
+          workspaceLocalId: 'storefront',
+          worktreeLocalId: pairedId(95),
+        },
+      });
+      try {
+        const rows = renderedRows(container);
+        expect(rows).toContain(pairedId(80));
+        expect(rows).toContain(pairedId(95));
+        expect(rows).not.toContain(pairedId(60));
+        const revealed = container.querySelector(
+          `[data-worktree-id="${pairedId(95)}"]`,
+        );
+        expect(scrollIntoView).toHaveBeenCalled();
+        expect(scrollIntoView.mock.contexts).toContain(revealed);
+      } finally {
+        unmount();
+      }
+    });
+  });
+
   it('keeps tasks with the same localId in different paired workspaces distinct for rows, live status, and approvals', async () => {
     const fake = fakeApi(() =>
       Promise.resolve({

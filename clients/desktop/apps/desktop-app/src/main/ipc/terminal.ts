@@ -11,11 +11,18 @@ import {
   type TerminalAttachRequest,
   type TerminalAttachResponse,
   type TerminalKillRequest,
+  type TerminalOutputEvent,
+  type TerminalOutputProgressEvent,
   type TerminalRestoreRequest,
   type TerminalResizeRequest,
   type TerminalSession,
   type TerminalShellProfile,
   type TerminalSpawnRequest,
+  type TerminalWindowConnectRequest,
+  type TerminalWindowConnectResponse,
+  type TerminalWindowReconnectRequest,
+  type TerminalWindowRouteRequest,
+  type TerminalWindowRouteResponse,
   type TerminalWriteRequest,
   type TerminalWriteDisposition,
   type ClaudeTerminalCleanupRequest,
@@ -30,7 +37,12 @@ import {
 import { isBotProjectId } from '@canopy/protocol/chat-targets';
 import type { WindowAccessors } from './index';
 import { sendToWindow } from '../lib/window-send';
-import { addRendererDeliveryBarrier } from '../lib/web-contents-send';
+import {
+  addRendererDeliveryBarrier,
+  sendToWebContents,
+  setRendererDeliveryFilter,
+  type IpcSendTarget,
+} from '../lib/web-contents-send';
 import { IdentifierValidationError, validateId } from '../lib/validation';
 import {
   closeTerminal,
@@ -48,6 +60,12 @@ import {
 } from '../terminal/worker-terminal';
 import { TerminalOutputDelivery } from '../terminal/output-delivery';
 import type { DaemonTerminalRouteContext } from '../terminal/daemon-terminal-route';
+import type {
+  TerminalWindowAdmission,
+  TerminalWindowSurface,
+} from '../terminal/window-admission';
+import { isCurrentDesktopMainFrame } from '../canopy-runtime/desktop-ipc-caller';
+import { rendererContentsOf } from '../lib/renderer-surface';
 import { assertNotSplitLocked } from '../services/split-lock-service';
 import { terminalPersistenceStore } from '../terminal/persistence';
 import { registerIpcHandler } from './register';
@@ -125,6 +143,45 @@ function normalizeTerminalWindowAccessors(
 }
 
 let removeTerminalOutputDelivery: (() => void) | undefined;
+/** Set once a window is first admitted; until then main relays everything. */
+let admittedWindows: Pick<TerminalWindowAdmission, 'reads'> | undefined;
+/** Each admitted renderer, as the delivery filter's target names it. */
+const windowSendTargets = new WeakMap<object, IpcSendTarget>();
+
+const isOutputPayload = (value: unknown): value is TerminalOutputEvent =>
+  typeof value === 'object' &&
+  value !== null &&
+  typeof Reflect.get(value, 'projectId') === 'string' &&
+  typeof Reflect.get(value, 'worktreeId') === 'string' &&
+  typeof Reflect.get(value, 'terminalId') === 'string' &&
+  typeof Reflect.get(value, 'seq') === 'number' &&
+  Reflect.get(value, 'data') instanceof Uint8Array;
+
+/**
+ * CAN-8070: a window that reads a terminal on its own connection gets no
+ * bytes from main, only their `seq` for its attention and update watchers.
+ * Observers still see the output, so Remote Control's copy is unchanged.
+ */
+function omitOutputReadDirectly(
+  target: object,
+  args: readonly unknown[],
+): boolean {
+  const event = args[0];
+  if (!admittedWindows || !isOutputPayload(event)) return false;
+  const sendTarget = windowSendTargets.get(target);
+  if (!sendTarget || !admittedWindows.reads(target, event.terminalId))
+    return false;
+  // Progress means bytes arrived (the Linux update terminal reads it so).
+  if (event.data.length === 0) return true;
+  const progress: TerminalOutputProgressEvent = {
+    projectId: event.projectId,
+    worktreeId: event.worktreeId,
+    terminalId: event.terminalId,
+    seq: event.seq,
+  };
+  sendToWebContents(sendTarget, IPC_CHANNELS.terminalOutputProgress, progress);
+  return true;
+}
 
 export function registerTerminalHandlers(
   windowAccessors: WindowAccessors | (() => BrowserWindow | null),
@@ -158,8 +215,13 @@ export function registerTerminalHandlers(
   const removeBarrier = addRendererDeliveryBarrier((_target, channel): void => {
     if (channel !== IPC_CHANNELS.terminalOutput) output.flushAll();
   });
+  const removeFilter = setRendererDeliveryFilter(
+    IPC_CHANNELS.terminalOutput,
+    omitOutputReadDirectly,
+  );
   removeTerminalOutputDelivery = (): void => {
     removeBarrier();
+    removeFilter();
     output.dispose();
   };
   workerTerminal.setEventSink((event): void => {
@@ -253,6 +315,95 @@ export function registerTerminalHandlers(
           !window.isDestroyed(),
       ),
   });
+
+  // CAN-8068: the renderer of the main window or of the Orchestrator, keyed
+  // on its web contents so the early access view qualifies wherever it is
+  // hosted. Never the remote-control bridge, a child frame or a stale page.
+  const terminalWindowSurface = (
+    event:
+      | Pick<IpcMainInvokeEvent, 'sender' | 'senderFrame'>
+      | null
+      | undefined,
+  ): TerminalWindowSurface | null => {
+    if (!event || resolveRemoteBridgeSender(event.sender) !== null) return null;
+    if (!isCurrentDesktopMainFrame(event.sender, event.senderFrame))
+      return null;
+    const main = accessors.getMainWindow();
+    if (main && !main.isDestroyed() && main.webContents === event.sender)
+      return 'main';
+    const advisor = accessors.getAppAdvisorWindow();
+    if (
+      advisor &&
+      !advisor.isDestroyed() &&
+      rendererContentsOf(advisor.webContents) === event.sender
+    )
+      return 'orchestrator';
+    return null;
+  };
+
+  registerIpcHandler<
+    [TerminalWindowConnectRequest | TerminalWindowReconnectRequest | undefined],
+    Promise<TerminalWindowConnectResponse | null>
+  >(
+    IPC_CHANNELS.terminalWindowConnect,
+    async (event, request): Promise<TerminalWindowConnectResponse | null> => {
+      const reconnect = Reflect.get(Object(request), 'reconnect') === true;
+      const terminalId: unknown = Reflect.get(Object(request), 'terminalId');
+      if (terminalId !== undefined) validateId(terminalId, 'terminalId');
+      const surface = terminalWindowSurface(event);
+      if (!event || surface === null) return null;
+      const { terminalWindowAdmission } =
+        await import('../terminal/daemon-terminal-route');
+      const response = reconnect
+        ? await terminalWindowAdmission.reconnect(event.sender, surface)
+        : await terminalWindowAdmission.connect(
+            event.sender,
+            surface,
+            typeof terminalId === 'string' ? terminalId : undefined,
+          );
+      if (response) {
+        admittedWindows = terminalWindowAdmission;
+        windowSendTargets.set(event.sender, event.sender);
+      }
+      return response;
+    },
+  );
+
+  registerIpcHandler<
+    [TerminalWindowRouteRequest],
+    Promise<TerminalWindowRouteResponse | null>
+  >(
+    IPC_CHANNELS.terminalWindowRoute,
+    async (event, request): Promise<TerminalWindowRouteResponse | null> => {
+      validateId(request.terminalId, 'terminalId');
+      const surface = terminalWindowSurface(event);
+      if (!event || surface === null) return null;
+      const { terminalWindowAdmission } =
+        await import('../terminal/daemon-terminal-route');
+      return terminalWindowAdmission.route(
+        event.sender,
+        surface,
+        request.terminalId,
+      );
+    },
+  );
+
+  registerIpcHandler<[TerminalWindowRouteRequest], Promise<void>>(
+    IPC_CHANNELS.terminalWindowRelease,
+    async (event, request): Promise<void> => {
+      validateId(request.terminalId, 'terminalId');
+      const surface = terminalWindowSurface(event);
+      if (!event || surface === null) return;
+      // The same import as route, so a release and a route ask stay in order.
+      const { terminalWindowAdmission } =
+        await import('../terminal/daemon-terminal-route');
+      terminalWindowAdmission.release(
+        event.sender,
+        surface,
+        request.terminalId,
+      );
+    },
+  );
 
   registerIpcHandler<[TerminalSpawnRequest], TerminalSession>(
     IPC_CHANNELS.terminalSpawn,

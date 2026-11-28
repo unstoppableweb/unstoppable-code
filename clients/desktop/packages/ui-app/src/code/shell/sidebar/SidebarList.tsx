@@ -1,4 +1,4 @@
-import type { HTMLAttributes, JSX, ReactNode } from 'react';
+import type { HTMLAttributes, JSX, ReactNode, Ref } from 'react';
 
 /**
  * Rhythm between rows. `hairline` keeps 1px between them so adjacent hover
@@ -18,6 +18,7 @@ export interface SidebarListProps extends Omit<
   'children'
 > {
   readonly children: ReactNode;
+  readonly ref?: Ref<HTMLDivElement>;
   readonly rowGap?: SidebarListRowGap;
   /** Fade the list to 80%: the hidden worktrees a user chose to tuck away. */
   readonly quiet?: boolean;

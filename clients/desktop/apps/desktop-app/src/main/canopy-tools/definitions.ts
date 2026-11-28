@@ -5,6 +5,7 @@ import type {
 import { sharingOpenDialogSchema } from '@canopy/desktop-shared/lib/sharing-action-schema';
 import { scopedSidebarItemGroupSchemas } from './sidebar-item-group-schema';
 import { SIDEBAR_ITEM_GROUP_COLORS } from '@canopy/protocol/sidebar';
+import { isBotId } from '@canopy/protocol/chat-targets';
 import { z } from 'zod/v4';
 import {
   READ_MEMORY_JSON_SCHEMA,
@@ -204,7 +205,7 @@ export const SETUP_WATCHERS_DESCRIPTION =
   setupWatchersDescription(AGENT_ACTION_BRAND);
 
 export const SET_AUTO_ARCHIVE_DESCRIPTION =
-  'Archive this chat (only this chat) when the active agent turn fully completes. Set enabled to true to enable chat auto-archive, or false to keep this chat open. Other chats and future sessions are unaffected. Use SetWorkEntryAutoDelete to remove the whole worktree or work entry instead.';
+  'Archive this chat (only this chat) when the active agent turn fully completes. An active watcher that notifies this chat keeps it open; the turn its message starts clears auto-archive. Set enabled to true to enable chat auto-archive, or false to keep this chat open. Other chats and future sessions are unaffected. Use SetWorkEntryAutoDelete to remove the whole worktree or work entry instead.';
 
 export const SET_WORK_ENTRY_AUTO_DELETE_DESCRIPTION =
   'Arm removal of this chat’s own worktree, Cowork work entry, or Orchestrator work entry once fully idle: no agents, workflows, or background work are active. Only the owning root chat can call this tool; delegates cannot. Set enabled to true to arm or replace an existing arm. Set enabled to false alone to turn it off. By default, Delete keeps a restorable archive for the retention window; archive: true keeps an archive until the user deletes it. Worktrees only: teardown defaults to error (a teardown failure stops removal); force removes without teardown if teardown fails. Worktrees only: unmergedLocalBranchDelete defaults to ask; error stops removal for an unmerged local branch, force deletes it. This branch option applies only when the Git setting “Delete fully merged branches on archive” is on. Both worktree-only options are rejected for Cowork and Orchestrator work entries. A recurring scheduled automation targeting this item makes the call fail. Failures turn auto-delete off and are reported back to this chat as a message. The result states the mode and what the item is waiting for.';
@@ -690,6 +691,7 @@ const scopedWorktreeActionBaseSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('pipeline.list'),
+    targetBotId: z.string().min(1).refine(isBotId).optional(),
     query: z.string().optional(),
     runModes: z.array(pipelineRunModeSchema).optional(),
     includeDisabled: z.boolean().optional(),
@@ -854,6 +856,7 @@ const scopedWorktreeActionBaseSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('automation.list'),
+    targetBotId: z.string().min(1).refine(isBotId).optional(),
     includeRuns: z.boolean().optional(),
   }),
   z.object({ type: z.literal('automation.get'), id: z.string().min(1) }),

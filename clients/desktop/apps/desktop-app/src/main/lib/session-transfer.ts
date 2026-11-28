@@ -253,8 +253,8 @@ export const SESSION_TRANSFER_FIELD_EXHAUSTIVENESS: Record<
   // Stripped: other providers' parked sessions, whose session files the
   // bundle does not carry (CAN-6445).
   providerSessions: true,
-  // Kept without an active session: the imported chat's next turn starts
-  // fresh, so it still carries the conversation as a seed (CAN-6445).
+  // Kept for a fresh session, including Antigravity whose native session
+  // cannot be transferred and may still owe the handoff.
   providerSwitchSeedPending: true,
   claudeForkSessionOnNextSend: true,
   autoArchive: true,
@@ -390,7 +390,9 @@ export function sanitizeTabForExport(
     ...(tab.globalInstructionsSnapshot !== undefined
       ? { globalInstructionsSnapshot: tab.globalInstructionsSnapshot }
       : {}),
-    ...(tab.providerSwitchSeedPending === true && tab.sdkSessionId === undefined
+    ...(tab.providerSwitchSeedPending === true &&
+    (tab.sdkSessionId === undefined ||
+      resolveTransferHarness(tab) === 'antigravity')
       ? { providerSwitchSeedPending: true }
       : {}),
     ...(tab.pluginSelections !== undefined

@@ -77,6 +77,23 @@ export type McpHttpAuthTarget =
   | McpPluginHttpAuthTarget;
 
 /**
+ * Compute a stable string key for an {@link McpHttpAuthTarget}. The key is
+ * used to look up and de-duplicate per-server preferences inside a
+ * {@link ChatTabPluginSelections#mcpHttpAuthPreferences} list.
+ */
+export function mcpHttpAuthTargetKey(target: McpHttpAuthTarget): string {
+  if (target.kind === 'standalone') {
+    return JSON.stringify([target.kind, target.serverId, target.configId]);
+  }
+  return JSON.stringify([
+    target.kind,
+    target.marketplaceId,
+    target.pluginName,
+    target.serverName,
+  ]);
+}
+
+/**
  * A persisted per-chat preference: for a given target, which side (canopy vs.
  * provider) should handle HTTP MCP auth?
  */

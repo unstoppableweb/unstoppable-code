@@ -146,6 +146,14 @@ describe('chat snapshot usage and limit projection (CAN-4114)', () => {
       }),
     ]);
     expect(dismissed.tabs.items[0]?.usageLimit?.dismissed).toBe(true);
+    const switched = await readSnapshot([
+      chatTab('chat-1', {
+        providerType: 'antigravity',
+        model: 'antigravity:gemini-4-neon',
+        llmProviderUsageLimitBanner: banner,
+      }),
+    ]);
+    expect(switched.tabs.items[0]?.usageLimit).toBeUndefined();
   });
 
   it('serves usage and limit state from the committed tab alone', async () => {

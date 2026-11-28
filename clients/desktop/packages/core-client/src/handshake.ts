@@ -40,6 +40,11 @@ export interface CanopyInitializeParamsInput {
   readonly ownerProof?: string;
   /** `client.desktopPeerProof` for the launching desktop's sessions. */
   readonly desktopPeerProof?: string;
+  /** `client.windowTicket` for a renderer window's own connection (CAN-8039). */
+  readonly windowTicket?: {
+    readonly ticketId: string;
+    readonly secret: string;
+  };
 }
 
 export interface CanopyAcceptedInitialize {
@@ -102,6 +107,12 @@ export function buildCanopyInitializeParams(
       }),
       ...(options.desktopPeerProof !== undefined && {
         desktopPeerProof: options.desktopPeerProof,
+      }),
+      ...(options.windowTicket !== undefined && {
+        windowTicket: {
+          ticketId: options.windowTicket.ticketId,
+          secret: options.windowTicket.secret,
+        },
       }),
     },
   });

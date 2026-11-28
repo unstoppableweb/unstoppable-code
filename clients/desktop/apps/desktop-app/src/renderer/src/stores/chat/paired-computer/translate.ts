@@ -389,6 +389,7 @@ function sanitizePairedBlock(
         if (block.spawnedBy.event === true) spawnedBy.event = true;
         if (block.spawnedBy.scheduled === true) spawnedBy.scheduled = true;
         if (block.spawnedBy.toolsLoaded === true) spawnedBy.toolsLoaded = true;
+        if (block.spawnedBy.peerMessage === true) spawnedBy.peerMessage = true;
         sanitized.spawnedBy = spawnedBy;
       }
       if (block.startedAt !== undefined) sanitized.startedAt = block.startedAt;
@@ -1435,6 +1436,7 @@ function sanitizePairedRecordBlock(deviceId: string, value: unknown): unknown {
           'event',
           'scheduled',
           'toolsLoaded',
+          'peerMessage',
         ]);
       }
       return out;

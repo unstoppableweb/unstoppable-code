@@ -52,6 +52,8 @@ describe('switching a started chat to another provider (CAN-6445)', () => {
     ['claude', 'cursor'],
     ['codex', 'copilot'],
     ['cursor', 'copilot'],
+    ['claude', 'antigravity'],
+    ['antigravity', 'codex'],
   ])('switches %s to %s in place', (from, to) => {
     expect(canSwitchChatProvider(startedTab(from), to, 'project')).toEqual({
       ok: true,

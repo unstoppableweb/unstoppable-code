@@ -393,22 +393,33 @@ export async function createRelativeAliasExclusive(
   platform: NodeJS.Platform,
   files: Pick<InstructionAliasPort, 'symlink' | 'hardLink'> &
     Pick<InstructionFileWritePort, 'copyFileExclusive'>,
-): Promise<void> {
+  options: { allowWindowsCompatibilityFallback?: boolean } = {},
+): Promise<'symlink' | 'hard-link' | 'copy'> {
   if (platform !== 'win32') {
     await files.symlink(targetPath, linkPath);
-    return;
+    return 'symlink';
   }
   const source = resolve(dirname(linkPath), targetPath);
   try {
     await files.hardLink(source, linkPath);
+    return 'hard-link';
   } catch (error) {
     // Unsupported links and cross-volume links can be represented by a copy.
-    // Permission, I/O and occupied-destination errors must remain failures.
+    // Managed homes retain the legacy fallback for permission errors and
+    // filesystems that report EISDIR when a hard link is unsupported.
+    // I/O and occupied-destination errors must remain failures.
     const code = instructionFileErrorCode(error);
-    if (!['EXDEV', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS'].includes(code ?? ''))
+    const compatibilityFallback =
+      options.allowWindowsCompatibilityFallback &&
+      (code === 'EPERM' || code === 'EACCES' || code === 'EISDIR');
+    if (
+      !compatibilityFallback &&
+      !['EXDEV', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS'].includes(code ?? '')
+    )
       throw error;
     try {
       await files.copyFileExclusive(source, linkPath);
+      return 'copy';
     } catch (copyError) {
       // EEXIST guarantees the exclusive copy left the occupied entry alone.
       // Other failures may occur after creation; never remove it to roll back.

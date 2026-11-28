@@ -12,6 +12,8 @@ export interface WakeTurnBoundaryProps {
   event?: boolean;
   scheduled?: boolean;
   toolsLoaded?: boolean;
+  /** Another agent session sent a message; the row names neither. */
+  peerMessage?: boolean;
   watcher?: ChatWatcherFiredInfo;
   followUp?: string;
   timestamp?: number;
@@ -43,6 +45,7 @@ export function WakeTurnBoundary({
   event,
   scheduled,
   toolsLoaded,
+  peerMessage,
   watcher,
   followUp,
   timestamp,
@@ -56,13 +59,15 @@ export function WakeTurnBoundary({
   const watchers = watcher?.combinedWatchers ?? [];
   const summary = watcher
     ? watcherWakeSummary(watcher)
-    : toolsLoaded
-      ? 'Loaded tools'
-      : scheduled
-        ? 'Scheduled prompt'
-        : event
-          ? 'Background task reported'
-          : 'Background task finished';
+    : peerMessage
+      ? 'Message from another chat'
+      : toolsLoaded
+        ? 'Loaded tools'
+        : scheduled
+          ? 'Scheduled prompt'
+          : event
+            ? 'Background task reported'
+            : 'Background task finished';
   const time =
     timestamp !== undefined && Number.isFinite(timestamp)
       ? new Date(timestamp).toLocaleTimeString([], {

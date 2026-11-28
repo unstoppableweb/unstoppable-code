@@ -1,4 +1,4 @@
-import { ipcMain, type BrowserWindow } from 'electron';
+import type { BrowserWindow } from 'electron';
 import {
   IPC_CHANNELS,
   type TelemetrySyncStatus,
@@ -6,7 +6,7 @@ import {
 import { getTelemetrySyncService } from '../services/telemetry-sync-service';
 import { getTelemetrySyncPauseMonitor } from '../services/telemetry-sync-pause-host';
 import { sendToWindow } from '../lib/window-send';
-import { registerIpcHandler } from './register';
+import { onIpcMessage, registerIpcHandler } from './register';
 
 /**
  * Bridges the main-process `TelemetrySyncService` status surface, with the
@@ -36,7 +36,7 @@ export function registerTelemetrySyncHandlers(
   // to return, and the renderer must never await a presence report. The service
   // only stamps an in-memory map, so this is cheap enough to sit on the main
   // event loop at the renderer's throttled cadence.
-  ipcMain.on(
+  onIpcMessage(
     IPC_CHANNELS.telemetrySyncRecordActivity,
     (_event, projectId: unknown, worktreeId: unknown) => {
       if (typeof projectId !== 'string' || typeof worktreeId !== 'string') {

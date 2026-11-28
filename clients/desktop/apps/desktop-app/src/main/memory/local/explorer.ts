@@ -25,7 +25,7 @@ import {
   assertMemoryScopeLockHeld,
   isMemoryMarkdownFileName,
   isMemoryPathContained,
-} from './memory-files';
+} from '@canopy/memory-store/memory-files';
 import { redactMemoryContent } from '@canopy/memory-consolidation/redaction';
 import {
   MEMORY_SUMMARY_PROBE_BYTES,
@@ -37,7 +37,7 @@ import {
   memoryNoteIdAt,
   withMemoryNoteId,
   withMemoryNoteScalarFields,
-} from './note-identity';
+} from '@canopy/memory-store/note-identity';
 import {
   assertReplicaStillSyncing,
   LocalMemoryReplicaUnavailableError,

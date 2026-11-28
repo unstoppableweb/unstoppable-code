@@ -13,6 +13,10 @@ import {
   readRemoteWindowContext,
   type RemoteWindowContext,
 } from '@canopy/desktop-shared/remote-control/window-context';
+import {
+  pairedComputerLocalIpcError,
+  refusesPairedComputerIds,
+} from '../shared/paired-computer-target';
 
 export type { RemoteWindowContext };
 
@@ -53,15 +57,31 @@ export interface PreloadIpcRenderer {
   removeAllListeners(channel: string): void;
 }
 
-function createLocalIpcRenderer(ipc: IpcRendererTransport): PreloadIpcRenderer {
+/**
+ * IPC for a window of this computer. A call whose arguments address a paired
+ * computer's project, task or chat never reaches main (CAN-8065): this
+ * computer serves only its own ids, and a paired computer's chats go through
+ * the remote-control channels with its own local ids. An invoke rejects as
+ * unavailable, a send is dropped (nothing awaits it, and main ignores it
+ * too), and a synchronous send throws.
+ */
+export function createLocalIpcRenderer(
+  ipc: IpcRendererTransport,
+): PreloadIpcRenderer {
   return {
     invoke: (channel: string, ...args: unknown[]): Promise<unknown> =>
-      ipc.invoke(channel, ...args).catch(restoreIpcAppError),
+      refusesPairedComputerIds(channel, args)
+        ? Promise.reject(pairedComputerLocalIpcError(channel))
+        : ipc.invoke(channel, ...args).catch(restoreIpcAppError),
     send: (channel: string, ...args: unknown[]): void => {
+      if (refusesPairedComputerIds(channel, args)) return;
       ipc.send(channel, ...args);
     },
-    sendSync: (channel: string, ...args: unknown[]): unknown =>
-      ipc.sendSync(channel, ...args),
+    sendSync: (channel: string, ...args: unknown[]): unknown => {
+      if (refusesPairedComputerIds(channel, args))
+        throw pairedComputerLocalIpcError(channel);
+      return ipc.sendSync(channel, ...args);
+    },
     on: (channel: string, listener: Listener): void => {
       ipc.on(channel, listener);
     },
@@ -131,13 +151,19 @@ export function createRemoteIpcRenderer(
     if (listeners.size === 0) remoteListeners.delete(channel);
   };
 
+  // The same refusal as a window of this computer (CAN-8065): a remote
+  // window's own ids are the other computer's local ones, never qualified,
+  // and main still refuses whatever reaches it.
   return {
     invoke: (channel: string, ...args: unknown[]): Promise<unknown> =>
-      (isLocal(channel)
-        ? ipc.invoke(channel, ...args)
-        : ipc.invoke(IPC_CHANNELS.remoteControlInvoke, channel, args)
-      ).catch(restoreIpcAppError),
+      refusesPairedComputerIds(channel, args)
+        ? Promise.reject(pairedComputerLocalIpcError(channel))
+        : (isLocal(channel)
+            ? ipc.invoke(channel, ...args)
+            : ipc.invoke(IPC_CHANNELS.remoteControlInvoke, channel, args)
+          ).catch(restoreIpcAppError),
     send: (channel: string, ...args: unknown[]): void => {
+      if (refusesPairedComputerIds(channel, args)) return;
       if (isLocal(channel)) {
         ipc.send(channel, ...args);
       } else {
@@ -146,8 +172,11 @@ export function createRemoteIpcRenderer(
     },
     // Synchronous IPC cannot cross machines; the only caller seeds a cache
     // that the asynchronous registry load replaces.
-    sendSync: (channel: string, ...args: unknown[]): unknown =>
-      ipc.sendSync(channel, ...args),
+    sendSync: (channel: string, ...args: unknown[]): unknown => {
+      if (refusesPairedComputerIds(channel, args))
+        throw pairedComputerLocalIpcError(channel);
+      return ipc.sendSync(channel, ...args);
+    },
     on: (channel: string, listener: Listener): void => {
       if (isLocal(channel)) {
         ipc.on(channel, listener);

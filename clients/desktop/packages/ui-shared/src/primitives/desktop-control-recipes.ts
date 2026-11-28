@@ -269,7 +269,7 @@ export const DESKTOP_CONTROL_RECIPES = {
   'searchable-select-trigger':
     'focus-ring flex w-full items-center justify-between gap-2 rounded-md border bg-base px-2.5 py-1.5 text-left text-s fg-primary transition-colors hover:bg-fg-primary/[0.04] disabled:cursor-not-allowed disabled:opacity-50',
   'sidebar-projects-return':
-    'flex shrink-0 items-center gap-1 px-4 py-1.5 text-left text-s font-normal fg-quaternary transition-colors hover:fg-secondary',
+    'focus-ring flex shrink-0 items-center gap-1 rounded-row px-4 py-1.5 text-left text-s font-normal fg-quaternary transition-colors hover:fg-secondary',
   'workspace-drag-handle':
     'focus-ring relative inline-flex h-5 w-5 shrink-0 cursor-default items-center justify-center rounded-full',
   'workspace-label-toggle':

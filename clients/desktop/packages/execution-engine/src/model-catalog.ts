@@ -54,6 +54,12 @@ import type {
   GatewayModelEntry,
 } from '@canopy/protocol/llm-gateway';
 
+export {
+  DEFAULT_CLAUDE_MODEL,
+  DEFAULT_CODEX_MODEL,
+} from '@canopy/protocol/chat-models';
+export type { ClaudeModel } from '@canopy/protocol/chat-models';
+
 // ---------------------------------------------------------------------------
 // Model types
 // ---------------------------------------------------------------------------
@@ -104,12 +110,6 @@ export interface ConfiguredModelEntry extends ConfiguredModelBillingMetadata {
 export interface ClaudeModelEntry extends ConfiguredModelEntry {
   harness?: 'claude';
 }
-
-/**
- * ClaudeModel is a string — model IDs are defined in package.json, not in code.
- * Use {@link isClaudeModel} for runtime checks.
- */
-export type ClaudeModel = string;
 
 /** Mutable runtime list of claude model IDs — populated by {@link initClaudeModels}. */
 export const CLAUDE_MODELS: string[] = [];
@@ -1673,9 +1673,6 @@ export function isSupportedOllamaModelEntry(entry: OllamaModelEntry): boolean {
 export function stripOllamaModelPrefix(model: string): string {
   return isOllamaModel(model) ? model.slice(OLLAMA_MODEL_PREFIX.length) : model;
 }
-
-export const DEFAULT_CLAUDE_MODEL: ClaudeModel = 'opus[1m]';
-export const DEFAULT_CODEX_MODEL: string = 'gpt-6.2-sol';
 
 export function getProviderForModel(
   model: ChatModel,

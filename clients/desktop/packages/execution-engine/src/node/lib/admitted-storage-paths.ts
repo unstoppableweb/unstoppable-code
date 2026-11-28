@@ -49,6 +49,7 @@ const DATA_ROOT_FILES: ReadonlyMap<string, AdmittedStorageNamespace> = new Map([
   ['preferences.json.usage-data-denied.json', 'preferences'],
   ['preferences.last-good.json', 'preferences'],
   ['preferences.generation.json', 'preferences'],
+  ['preference-outbox.json', 'preference_outbox'],
   ['client-preferences.json', 'client_preferences'],
   ['client-preferences.last-good.json', 'client_preferences'],
   ['client-preferences.generation.json', 'client_preferences'],
@@ -77,6 +78,7 @@ const MIGRATIONS_DAMAGED = /^migrations\.damaged-.+\.json$/;
 const COWORK_MIGRATION_DAMAGED = /^cowork-migration\.damaged-.+\.json$/;
 const PIPELINE_PREFERENCES_DAMAGED =
   /^pipeline-plugin-preferences\.json\.damaged-.+$/;
+const PREFERENCE_OUTBOX_DAMAGED = /^preference-outbox\.json\.damaged-.+$/;
 const PIPELINE_DEFINITION_FILE =
   /^(?:index\.json|index\.json\.damaged-\d+|[a-z0-9_-]+\.yaml)$/;
 const PROJECT_SHARE_LINKS_FILE = '.project-share-links.json';
@@ -281,7 +283,9 @@ function dataRootFile(name: string): AdmittedStorageNamespace | undefined {
               ? 'cowork_migration_map'
               : PIPELINE_PREFERENCES_DAMAGED.test(name)
                 ? 'pipeline_plugin_preferences'
-                : undefined)
+                : PREFERENCE_OUTBOX_DAMAGED.test(name)
+                  ? 'preference_outbox'
+                  : undefined)
   );
 }
 

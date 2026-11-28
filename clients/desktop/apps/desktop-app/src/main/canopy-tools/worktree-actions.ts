@@ -1,3 +1,9 @@
+import {
+  deriveWorkflowTarget,
+  workflowTargetsBot,
+  type WorkflowTarget,
+} from '@canopy/pipeline-interop/workflow-target';
+import { WORKFLOW_BOT_FILTER_UNCLASSIFIED_WARNING } from '@canopy/desktop-shared/lib/workflow-target';
 import { CanopyOperationError } from '@canopy/core-runtime';
 import { portablePipelineTriggerTypes } from '@canopy/protocol/pipelines';
 import { browserHandoffs } from '../browser/browser-handoffs';
@@ -298,6 +304,7 @@ type ScopedAction =
   | { type: 'skills.delete_shared'; skillId: string }
   | {
       type: 'pipeline.list';
+      targetBotId?: string;
       query?: string;
       runModes?: PipelineTriggerType[];
       includeDisabled?: boolean;
@@ -833,6 +840,7 @@ function pipelineInputDetails(
 }
 
 interface PipelineListRow {
+  target?: WorkflowTarget;
   id: string;
   name: string;
   description: string;
@@ -844,7 +852,10 @@ interface PipelineListRow {
   runModes: PipelineRunModeRow[];
 }
 
-function pipelineListRow(pipeline: PipelineData): PipelineListRow {
+function pipelineListRow(
+  pipeline: PipelineData,
+  projectId: string,
+): PipelineListRow {
   return {
     id: pipeline.info.id,
     name: pipeline.info.name,
@@ -855,6 +866,10 @@ function pipelineListRow(pipeline: PipelineData): PipelineListRow {
     filename: pipeline.info.filename,
     filePath: pipeline.info.filePath ?? '',
     runModes: pipelineRunModes(pipeline),
+    target: deriveWorkflowTarget(
+      pipeline.content,
+      pipeline.info.source === 'project' ? { projectId } : {},
+    ),
   };
 }
 
@@ -970,7 +985,7 @@ async function loadPipelineRows(
   return {
     rows: [
       ...hydrated.flatMap((pipeline) =>
-        pipeline ? [pipelineListRow(pipeline)] : [],
+        pipeline ? [pipelineListRow(pipeline, runtime.projectId)] : [],
       ),
       ...listed.filter((info) => info.source === 'shared').map(catalogRow),
       ...listed.filter((info) => info.source === 'curated').map(catalogRow),
@@ -1732,7 +1747,7 @@ async function listPipelines(
   const disabledIds = new Set(disabledPipelineIds);
   const requestedModes = new Set(action.runModes ?? []);
   const executionScope = runtimeExecutionScope(runtime);
-  const filtered = rows
+  const candidates = rows
     .map((row) => ({ ...row, enabled: !disabledIds.has(row.id) }))
     .filter((row) => action.includeDisabled === true || row.enabled)
     .filter((row) => {
@@ -1752,7 +1767,19 @@ async function listPipelines(
     .filter((row) => {
       if (requestedModes.size === 0) return true;
       return row.runModes.some((mode) => requestedModes.has(mode.mode));
-    })
+    });
+  if (
+    action.targetBotId !== undefined &&
+    candidates.some((row) => row.target === undefined)
+  ) {
+    warnings.push(WORKFLOW_BOT_FILTER_UNCLASSIFIED_WARNING);
+  }
+  const filtered = candidates
+    .filter(
+      (row) =>
+        action.targetBotId === undefined ||
+        workflowTargetsBot(row.target, action.targetBotId),
+    )
     .sort((left, right) => left.name.localeCompare(right.name));
   const limit = clampLimit(
     action.limit,
@@ -1767,6 +1794,9 @@ async function listPipelines(
     },
     filters: {
       query: action.query ?? '',
+      ...(action.targetBotId === undefined
+        ? {}
+        : { targetBotId: action.targetBotId }),
       runModes: action.runModes ?? [],
       includeDisabled: action.includeDisabled === true,
       limit,
@@ -1789,7 +1819,7 @@ async function getPipeline(
     return error('not_found', `Pipeline ${action.pipelineId} was not found.`);
   }
   const result = {
-    pipeline: pipelineListRow(pipeline),
+    pipeline: pipelineListRow(pipeline, runtime.projectId),
     version: pipeline.content.version ?? '',
     icon: pipeline.content.icon ?? '',
     env: jsonSafe(pipeline.content.env ?? {}),

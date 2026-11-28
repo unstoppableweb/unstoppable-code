@@ -161,7 +161,9 @@ What's off: PostHog analytics, hosted feature flags (the app uses each flag's
 built-in value), update checks, the skill safety check, remote images, and the
 other automatic calls listed under
 [Build without our services](#build-without-our-services). Sign-in, Remote
-Control, and cloud features use your server and the relay it hands out.
+Control, and cloud features use your server and the relay it hands out. AI
+gateways your account names (an organization's gateway, or your Personal
+gateway while it's on) are allowed while you're signed in.
 
 Anything else is blocked and logged to `local-only-egress.jsonl` in the app's
 data folder, as in the local-only build. To allow another host, add its
@@ -170,10 +172,18 @@ folder.
 
 Known limits:
 
-- Storage your server hands out on another host, or on another port of the
-  same host, is blocked. Add its host to `allowedHosts` to use it.
-- Cloud features that reach a host other than your server or its relay are
-  blocked, such as an organization's model gateway.
+- Uploads and downloads work when your server stores files in `local` or
+  `s3` storage, because your server relays them. Set the server's
+  `BETTER_AUTH_URL` to the same origin you built the app for. With `gcs`
+  storage, files come from `storage.googleapis.com`, which is blocked: add it
+  to `allowedHosts` to use it.
+- Connecting a new AI gateway from the app is blocked, because your server
+  hasn't saved its address yet. If the gateway is reachable from the
+  internet, connect it in your server's web settings. If it's on your
+  internal network, add its host to `allowedHosts`, because your server
+  won't connect to a private address.
+- Cloud features that reach another host than your server, its relay, or a
+  gateway your account names are blocked.
 - Cloud chats and the Remote Control web preview are off, because their
   built-in flag values are off.
 - Behind an HTTP or system proxy, connections go to the proxy, which is

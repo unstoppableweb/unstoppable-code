@@ -93,6 +93,8 @@ function isChatSendMessagePayload(
     ['projectId', 'worktreeId', 'chatId', 'userMessageId', 'text'].every(
       (key) => typeof value[key] === 'string',
     ) &&
+    (value.nativeAutomationRunInputId === undefined ||
+      value.nativeAutomationRunInputId === value.userMessageId) &&
     (value.agentSenderProvenance === undefined ||
       isAgentSenderProvenance(value.agentSenderProvenance)) &&
     (!record(value.hiddenContext) ||
@@ -493,6 +495,7 @@ export function detachInputDelivery(
       delete payload.pluginSelections;
       // A pipeline's per-turn settings, approvals and plugins included.
       delete payload.turnOverride;
+      delete payload.nativeAutomationRunInputId;
       delete payload.pendingSystemInstructions;
       // Plan ids are scoped to the source worktree.
       delete payload.activePlan;

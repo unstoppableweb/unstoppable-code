@@ -96,3 +96,110 @@ export function createEmptyGlobalInstructionsConfig(): GlobalInstructionsConfig 
     pipelines: createEmptyGlobalInstructionsSection(),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Persistence normalization
+// ---------------------------------------------------------------------------
+
+function isGlobalInstructionMode(
+  value: unknown,
+): value is GlobalInstructionMode {
+  return GLOBAL_INSTRUCTION_MODES.some((mode) => mode === value);
+}
+
+function normalizeAllowedArray<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+): T[] {
+  if (!Array.isArray(value)) return [];
+  const result: T[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string') continue;
+    const match = allowed.find((candidate) => candidate === entry);
+    if (match === undefined || result.includes(match)) continue;
+    result.push(match);
+  }
+  return result;
+}
+
+function normalizeModelArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const result: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string' || entry.length === 0) continue;
+    if (result.includes(entry)) continue;
+    result.push(entry);
+  }
+  return result;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeScopedInstruction(
+  value: unknown,
+  options: { allowWorkspaceTypes: boolean },
+): ScopedGlobalInstruction | null {
+  if (!isRecord(value)) return null;
+  const record = value;
+  if (typeof record.id !== 'string' || record.id.length === 0) return null;
+  return {
+    id: record.id,
+    text: typeof record.text === 'string' ? record.text : '',
+    mode: isGlobalInstructionMode(record.mode) ? record.mode : 'append',
+    harnesses: normalizeAllowedArray(
+      record.harnesses,
+      GLOBAL_INSTRUCTION_HARNESSES,
+    ),
+    models: normalizeModelArray(record.models),
+    workspaceTypes: options.allowWorkspaceTypes
+      ? normalizeAllowedArray(
+          record.workspaceTypes,
+          GLOBAL_INSTRUCTION_WORKSPACE_TYPES,
+        )
+      : [],
+  };
+}
+
+/** Clamp one persisted section; pipelines sections carry no workspace types. */
+export function normalizeGlobalInstructionsSection(
+  value: unknown,
+  options: { allowWorkspaceTypes: boolean },
+): GlobalInstructionsSection {
+  if (!isRecord(value)) {
+    return createEmptyGlobalInstructionsSection();
+  }
+  const record = value;
+  const scopedRaw = Array.isArray(record.scoped) ? record.scoped : [];
+  const scoped: ScopedGlobalInstruction[] = [];
+  const seenIds = new Set<string>();
+  for (const entry of scopedRaw) {
+    const normalized = normalizeScopedInstruction(entry, options);
+    if (!normalized || seenIds.has(normalized.id)) continue;
+    seenIds.add(normalized.id);
+    scoped.push(normalized);
+  }
+  return {
+    overall: typeof record.overall === 'string' ? record.overall : '',
+    scoped,
+  };
+}
+
+/** Clamp a persisted (possibly legacy or corrupt) value to a valid config. */
+export function normalizeGlobalInstructionsConfig(
+  value: unknown,
+): GlobalInstructionsConfig {
+  if (!isRecord(value)) {
+    return createEmptyGlobalInstructionsConfig();
+  }
+  const record = value;
+  return {
+    chats: normalizeGlobalInstructionsSection(record.chats, {
+      allowWorkspaceTypes: true,
+    }),
+    pipelines: normalizeGlobalInstructionsSection(record.pipelines, {
+      allowWorkspaceTypes: false,
+    }),
+  };
+}

@@ -15,6 +15,7 @@ import type {
   McpServerDefinitionData,
   McpServerIndexEntry,
 } from '../types/mcp-servers';
+import { mcpHttpAuthTargetKey } from '@canopy/protocol/mcp-servers';
 
 /** Every handler the protocol defines; leaving one out fails to compile. */
 const MCP_HTTP_AUTH_HANDLERS: Readonly<Record<McpHttpAuthHandler, true>> = {
@@ -33,22 +34,7 @@ export function isMcpHttpAuthHandler(
   );
 }
 
-/**
- * Compute a stable string key for an {@link McpHttpAuthTarget}. The key is
- * used to look up and de-duplicate per-server preferences inside a
- * {@link ChatTabPluginSelections#mcpHttpAuthPreferences} list.
- */
-export function mcpHttpAuthTargetKey(target: McpHttpAuthTarget): string {
-  if (target.kind === 'standalone') {
-    return JSON.stringify([target.kind, target.serverId, target.configId]);
-  }
-  return JSON.stringify([
-    target.kind,
-    target.marketplaceId,
-    target.pluginName,
-    target.serverName,
-  ]);
-}
+export { mcpHttpAuthTargetKey };
 
 /**
  * Resolve the effective HTTP MCP auth handler for `target`, given the chat's

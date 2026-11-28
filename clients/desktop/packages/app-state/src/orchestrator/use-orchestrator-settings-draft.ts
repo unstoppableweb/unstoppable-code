@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import type { OrchestratorInstructionsDraft } from '@canopy/protocol/remote-control/shell';
 import { normalizeArchiveRetentionDays } from '@canopy/protocol/archive-retention';
 import type {
   OrchestratorRetentionSettings,
@@ -13,6 +14,8 @@ export interface OrchestratorSettingsDraft<Failure> {
   readonly instructions: string;
   readonly setInstructions: (value: string) => void;
   readonly instructionsLoading: boolean;
+  readonly instructionsLoadError: boolean;
+  readonly retryInstructions: () => void;
   readonly retentionDays: number;
   readonly setRetentionDays: (value: number) => void;
   readonly autoArchiveEnabled: boolean;
@@ -34,8 +37,11 @@ export function useOrchestratorSettingsDraft<Failure>(
   failureFor: (error: unknown) => Failure | null,
 ): OrchestratorSettingsDraft<Failure> {
   const [instructions, setInstructions] = useState('');
-  const [savedInstructions, setSavedInstructions] = useState('');
+  const [savedInstructions, setSavedInstructions] =
+    useState<OrchestratorInstructionsDraft | null>(null);
   const [instructionsLoading, setInstructionsLoading] = useState(true);
+  const [instructionsLoadError, setInstructionsLoadError] = useState(false);
+  const [instructionsLoadAttempt, setInstructionsLoadAttempt] = useState(0);
   const [settings, setSettings] =
     useState<OrchestratorRetentionSettings | null>(null);
   const [days, setDays] = useState(DEFAULT_DAYS);
@@ -63,13 +69,23 @@ export function useOrchestratorSettingsDraft<Failure>(
       .loadInstructions()
       .then((loaded) => {
         if (cancelled) return;
-        setInstructions(loaded);
+        setInstructions(loaded.content);
         setSavedInstructions(loaded);
+        setInstructionsLoadError(false);
         setInstructionsLoading(false);
       })
       .catch(() => {
-        if (!cancelled) setInstructionsLoading(false);
+        if (cancelled) return;
+        setInstructionsLoadError(true);
+        setInstructionsLoading(false);
       });
+    return (): void => {
+      cancelled = true;
+    };
+  }, [client, instructionsLoadAttempt]);
+
+  useEffect(() => {
+    let cancelled = false;
     void client
       .loadRetention()
       .then((loaded) => {
@@ -94,7 +110,10 @@ export function useOrchestratorSettingsDraft<Failure>(
   }, [client]);
 
   const instructionsDirty =
-    !instructionsLoading && instructions !== savedInstructions;
+    !instructionsLoading &&
+    !instructionsLoadError &&
+    savedInstructions !== null &&
+    instructions !== savedInstructions.content;
   const retentionDirty =
     settings !== null &&
     (settings.archiveRetentionDays == null ||
@@ -111,9 +130,16 @@ export function useOrchestratorSettingsDraft<Failure>(
     setSaving(true);
     setSaveError(null);
     try {
-      if (instructionsDirty) {
-        await client.saveInstructions(instructions);
-        setSavedInstructions(instructions);
+      if (instructionsDirty && savedInstructions) {
+        const revision = await client.saveInstructions({
+          content: instructions,
+          revision: savedInstructions.revision,
+        });
+        setSavedInstructions((current) =>
+          current === savedInstructions
+            ? { content: instructions, revision }
+            : current,
+        );
       }
       if (retentionDirty || autoArchiveDirty) {
         applyRetention(
@@ -136,6 +162,11 @@ export function useOrchestratorSettingsDraft<Failure>(
     instructions,
     setInstructions,
     instructionsLoading,
+    instructionsLoadError,
+    retryInstructions: (): void => {
+      setInstructionsLoading(true);
+      setInstructionsLoadAttempt((attempt) => attempt + 1);
+    },
     retentionDays: days,
     setRetentionDays: setDays,
     autoArchiveEnabled,

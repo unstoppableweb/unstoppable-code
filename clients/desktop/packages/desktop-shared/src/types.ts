@@ -1,3 +1,4 @@
+import type { WorkflowTarget } from '@canopy/pipeline-interop/workflow-target';
 import type { AppError } from '@canopy/protocol/app-errors';
 import type { CloneJobSnapshot } from '@canopy/protocol/clone-jobs';
 import type { ClaudeConnectorAvailability } from '@canopy/protocol/remote-control/shell';
@@ -42,8 +43,6 @@ import type {
 } from '@canopy/protocol/feedback-report';
 import {
   CLAUDE_MODELS,
-  DEFAULT_CLAUDE_MODEL,
-  DEFAULT_CODEX_MODEL,
   OLLAMA_MODELS,
   OLLAMA_MODEL_PREFIX,
   clampThinkingLevelForModel,
@@ -58,7 +57,6 @@ import {
   resolveModelAlias,
 } from '@canopy/execution-engine/model-catalog';
 import type {
-  ClaudeModel,
   ClaudeModelEntry,
   CodexModelEntry,
   ConfiguredModelEntry,
@@ -163,6 +161,7 @@ export type {
   OllamaShowInfo,
   OllamaShowMessageEntry,
 } from '@canopy/execution-engine/model-catalog';
+export type { CodexModel } from '@canopy/protocol/chat-models';
 import { isRecord } from '@canopy/execution-engine/execution-types';
 import type {
   AccountChangeResumeReason,
@@ -279,6 +278,7 @@ export type {
   WorktreeDiscardResult,
 } from '@canopy/protocol/remote-control/shell';
 import type {
+  OrchestratorInstructionsDraft,
   RemoteControlAppAdvisorSettings,
   RemoteControlAppAdvisorSettingsSavePayload,
   RemoteControlEntityEnvelope,
@@ -702,6 +702,7 @@ import type {
   AiCreditsBalance,
   AiCreditsSubscription,
   GatewayModelConfig,
+  WorkOwner,
 } from '@canopy/protocol/llm-gateway';
 import type {
   AutomationExecutionLocation,
@@ -827,7 +828,7 @@ import type {
   ObservabilityApi,
   UsageInitiationSource,
 } from '@canopy/execution-engine/types/observability';
-import type { TerminalApi } from './types/terminal';
+import type { TerminalApi, TerminalWindowApi } from './types/terminal';
 import type { PanelLayoutApi } from './types/panel-layout';
 import type {
   WorkspaceAttachmentItem,
@@ -880,7 +881,6 @@ import type {
   HookScope,
   HookTriggerName,
 } from './hooks';
-import type { McpHttpAuthHandler } from '@canopy/execution-engine/types/mcp-servers';
 import type {
   EnvironmentConfigView,
   EnvironmentRuntime,
@@ -1244,9 +1244,35 @@ import type {
   OllamaConnectionMode,
   PreferencesData,
   ProjectOwnerContext,
-  PromotionalNotificationPreferences,
   ProviderModelSelection,
   SidebarSortMode,
+} from '@canopy/protocol/preferences';
+import {
+  DEFAULT_LOCAL_MEMORY_FALLBACK_MODEL,
+  DEFAULT_LOCAL_MEMORY_MODEL,
+  DEFAULT_SUMMARY_FALLBACK_MODEL,
+  DEFAULT_SUMMARY_MODEL,
+} from '@canopy/protocol/preferences';
+export {
+  DEFAULT_APP_ADVISOR_MODEL,
+  DEFAULT_BRANCH_NAMING_MODEL,
+  DEFAULT_CLAUDE_SESSION_IDLE_TIMEOUT_MINUTES,
+  DEFAULT_COMMIT_GENERATION_MODEL,
+  DEFAULT_CREDITS_CODEX_MODEL,
+  DEFAULT_CRON_GENERATION_MODEL,
+  DEFAULT_HANDOFF_SUMMARY_MODEL,
+  DEFAULT_HIDE_ANTHROPIC_NAV,
+  DEFAULT_IF_COMMAND_GENERATION_MODEL,
+  DEFAULT_LOCAL_MEMORY_FALLBACK_MODEL,
+  DEFAULT_LOCAL_MEMORY_MODEL,
+  DEFAULT_MCP_HTTP_AUTH_HANDLER,
+  DEFAULT_MCP_PROXY_PORT,
+  DEFAULT_MODEL,
+  DEFAULT_OLLAMA_SERVER_PORT,
+  DEFAULT_PIPELINE_ADVISOR_MODEL,
+  DEFAULT_PR_GENERATION_MODEL,
+  DEFAULT_SUMMARY_FALLBACK_MODEL,
+  DEFAULT_SUMMARY_MODEL,
 } from '@canopy/protocol/preferences';
 export {
   AI_CREDITS_ROUTING_MODES,
@@ -1299,6 +1325,7 @@ export type {
   PrInstructionMode,
   PreferencesData,
   ProjectOwnerContext,
+  PromotionalNotificationCategory,
   PromotionalNotificationPreferences,
   ProviderModelSelection,
   ScrollbarBehavior,
@@ -2468,13 +2495,6 @@ export {
   isClientFeatureFlagConfirmedEnabled,
 } from '@canopy/protocol/feature-flags';
 
-/**
- * Default HTTP MCP auth handler when no per-server override is set. Canopy
- * owns auth/proxy routing by default; users can opt individual servers into
- * provider-side handling.
- */
-export const DEFAULT_MCP_HTTP_AUTH_HANDLER: McpHttpAuthHandler = 'canopy';
-
 // ---------------------------------------------------------------------------
 // Standalone chat constants
 // ---------------------------------------------------------------------------
@@ -3203,6 +3223,8 @@ export type AiCreditsScopeRequest =
  * from a single payload without surfacing any UD-linking path.
  */
 export interface NativeAiCreditsAvailability {
+  /** The resolved owner of a work-scoped read, when available. */
+  workOwner?: WorkOwner;
   /**
    * Personal AI-credit balance is spendable right now. Source-agnostic: true for
    * a native Canopy wallet OR an already-linked UD account with credits. Derived
@@ -6119,24 +6141,11 @@ export interface WorktreeRepoEntryData {
 // targeting and this onboarding step must agree on one closed set.
 export { PROFILE_ROLES, type ProfileRoleId };
 
-export const DEFAULT_OLLAMA_SERVER_PORT = 11534;
-
-export const DEFAULT_MCP_PROXY_PORT = 37645;
-
-export const DEFAULT_HIDE_ANTHROPIC_NAV = true;
-
-export const DEFAULT_CLAUDE_SESSION_IDLE_TIMEOUT_MINUTES = 10;
-
 export type OsNotificationNamedSound =
   | (typeof OS_NOTIFICATION_MACOS_SOUNDS)[number]
   | (typeof OS_NOTIFICATION_WINDOWS_SOUNDS)[number];
 
 export type NotificationCategoryKey = keyof NotificationCategoryMap;
-
-export type PromotionalNotificationCategory = Exclude<
-  keyof PromotionalNotificationPreferences,
-  'enabled'
->;
 
 export interface OsNotificationShowRequest {
   id: string;
@@ -6988,6 +6997,8 @@ export type AgentSenderProvenance = {
       sender: Extract<ChatAgentSentInfo['sender'], { kind: 'pipeline' }>;
       /** The run's owner; the evidence a pipeline send is authorized by. */
       owner: ProjectOwnerContext;
+      /** The trusted execution segment was resumed by the scheduler. */
+      automationContinuation?: true;
       /** The agent chat whose admission applied (D11); absent for user-originated runs. */
       agentOrigin?: { projectId: string; worktreeId: string; chatId: string };
     }
@@ -8132,12 +8143,6 @@ export function omitModelFeatureFlags<T extends ConfiguredModelEntry>(
 }
 
 /**
- * CodexModel is a string — model IDs are defined in package.json, not in code.
- * Use {@link isCodexModel} for runtime checks.
- */
-export type CodexModel = string;
-
-/**
  * The preferred default when the configured model catalog offers it,
  * otherwise the fallback, so a default never names a model this install
  * cannot run.
@@ -8229,41 +8234,6 @@ export function isSelectableOllamaModel(
 ): model is string {
   return typeof model === 'string' && OLLAMA_MODELS.includes(model);
 }
-/** @deprecated Use DEFAULT_CLAUDE_MODEL instead. Kept as alias during rollout. */
-export const DEFAULT_MODEL: ClaudeModel = DEFAULT_CLAUDE_MODEL;
-/** Gateway-routable fallback for Codex calls without native authentication. */
-export const DEFAULT_CREDITS_CODEX_MODEL: CodexModel = 'gpt-6-luna';
-/** Preferred chat description model; see {@link defaultSummaryModel}. */
-export const DEFAULT_SUMMARY_MODEL: ChatModel = 'gpt-6-luna';
-export const DEFAULT_HANDOFF_SUMMARY_MODEL: ChatModel = 'haiku';
-/** Chat description default when the Codex model is not available (Sonnet 5.5). */
-export const DEFAULT_SUMMARY_FALLBACK_MODEL: ChatModel = 'sonnet';
-/** Preferred local memory model; see {@link defaultLocalMemoryModel}. */
-export const DEFAULT_LOCAL_MEMORY_MODEL: ChatModel = 'gpt-6.1-sol';
-/** Local memory default when the Codex model is not available (Opus 5.5). */
-export const DEFAULT_LOCAL_MEMORY_FALLBACK_MODEL: ChatModel =
-  DEFAULT_CLAUDE_MODEL;
-export const DEFAULT_BRANCH_NAMING_MODEL: ChatModel = 'haiku';
-export const DEFAULT_COMMIT_GENERATION_MODEL: ChatModel = 'sonnet';
-export const DEFAULT_PR_GENERATION_MODEL: ChatModel = 'sonnet';
-/**
- * Default Pipeline Advisor model. Typed as `ChatModel` (a string alias) so it
- * agrees with the `pipelineAdvisorModel` field on `PreferencesData`. The
- * backend rejects any non-Claude/non-Codex value (including Ollama models) and
- * substitutes this default at load time.
- */
-export const DEFAULT_PIPELINE_ADVISOR_MODEL: ChatModel = DEFAULT_CODEX_MODEL;
-
-/**
- * Default model used by the App Advisor (the local Canopy assistant). Typed
- * as `ChatModel` so it can be persisted in {@link PreferencesData} alongside
- * every other model preference. Aliased to {@link DEFAULT_CODEX_MODEL} so
- * Canopy's flagship Codex model is the default until the user changes it.
- */
-export const DEFAULT_APP_ADVISOR_MODEL: ChatModel = DEFAULT_CODEX_MODEL;
-export const DEFAULT_CRON_GENERATION_MODEL: ChatModel = DEFAULT_CODEX_MODEL;
-export const DEFAULT_IF_COMMAND_GENERATION_MODEL: ChatModel =
-  DEFAULT_CODEX_MODEL;
 
 /**
  * Resolve the overall default model + thinking level for a set of
@@ -8570,6 +8540,8 @@ export interface ChatSendMessageRequest {
   watcherDeliveryId?: string;
   /** Main-only durable provenance; never publish in queue/display projections. */
   agentSenderProvenance?: AgentSenderProvenance;
+  /** Host-only origin for a scheduler send on the retained native route. */
+  nativeAutomationRunInputId?: string;
   /**
    * Main-only: an accepted agent send held until its code task finishes
    * setup. `startedChat` marks the first message of a chat the sender started
@@ -9932,6 +9904,7 @@ export const IN_PLACE_SWITCH_PROVIDERS: readonly AgentProviderType[] = [
   'codex',
   'cursor',
   'copilot',
+  'antigravity',
 ];
 
 /** Whether a started chat may switch from one provider to the other in place. */
@@ -14976,17 +14949,21 @@ export type AppAdvisorSettingsPatchRequest =
   RemoteControlAppAdvisorSettingsSavePayload;
 /** Saved, or refused whole before any store was written. */
 export type AppAdvisorSettingsPatchResponse =
-  | { ok: true }
-  | { ok: false; code: 'invalid_payload'; error: string };
+  | { ok: true; instructionsRevision?: string }
+  | {
+      ok: false;
+      code: 'invalid_payload' | 'instructions_changed';
+      error: string;
+    };
 
 /** Empty request sent on `app-advisor:load-claude-md`. */
 export type AppAdvisorClaudeMdLoadRequest = undefined;
-/** Full current App Advisor CLAUDE.md text. */
-export type AppAdvisorClaudeMdLoadResponse = string;
-/** Full replacement text sent on `app-advisor:save-claude-md`. */
-export type AppAdvisorClaudeMdSaveRequest = string;
-/** Successful CLAUDE.md replacement has no response payload. */
-export type AppAdvisorClaudeMdSaveResponse = void;
+/** Current instructions and their revision from the same observation. */
+export type AppAdvisorClaudeMdLoadResponse = OrchestratorInstructionsDraft;
+/** Replacement text and the revision loaded by this draft. */
+export type AppAdvisorClaudeMdSaveRequest = OrchestratorInstructionsDraft;
+/** The new revision after saving the replacement text. */
+export type AppAdvisorClaudeMdSaveResponse = string;
 
 /**
  * Sanitized state reported by the separate App Advisor renderer. Only stable
@@ -17592,7 +17569,7 @@ export interface AutomationCancelRunRequest {
  * read.
  */
 export interface AutomationsListResponse {
-  activities: ScheduledActivity[];
+  activities: Array<ScheduledActivity & { target?: WorkflowTarget }>;
   recentRuns: ScheduledActivityRun[];
 }
 
@@ -17603,6 +17580,7 @@ export interface AutomationsListResponse {
  */
 export interface AutomationsListRequest {
   scope?: 'all' | 'selected-context';
+  includeWorkflowTargets?: boolean;
 }
 
 /**
@@ -18694,9 +18672,9 @@ export interface CanopyApi {
   onDeepLinkBillingUnlocked: (
     cb: (link: DesktopBillingDeepLink) => void,
   ) => () => void;
-  /** Subscribe to validated Settings section deep links. */
+  /** Subscribe to main-window Settings destinations delivered by the host. */
   onDeepLinkSettingsOpen: (
-    cb: (section: DesktopSettingsDeepLink['section']) => void,
+    cb: (section: DesktopSettingsDeepLink['section'] | 'approvals') => void,
   ) => () => void;
   onDeepLinkOrgProjectOpen: (
     cb: (event: OrgProjectDeepLinkOpenEvent) => void,
@@ -19962,6 +19940,8 @@ export interface CanopyApi {
   /** Codex speed capability projection. See {@link CodexSpeedApi}. */
   codexSpeed: CodexSpeedApi;
   terminal: TerminalApi;
+  /** This window's own daemon terminal connection (CAN-8069). */
+  terminalWindow: TerminalWindowApi;
   /**
    * Share a finished agent session as a run to Canopy Cloud (CAN-395).
    * See {@link RunsApi}.
@@ -23912,6 +23892,7 @@ export type AppAdvisorAction =
     }
   | {
       type: 'pipeline.list';
+      targetBotId?: string;
       projectId?: string;
       worktreeId?: string;
       query?: string;
@@ -24139,7 +24120,7 @@ export type AppAdvisorAction =
       runId?: string;
     }
   | { type: 'automation.open_shared_pipeline_review'; id: string }
-  | { type: 'automation.list'; includeRuns?: boolean }
+  | { type: 'automation.list'; includeRuns?: boolean; targetBotId?: string }
   | { type: 'automation.get'; id: string }
   | {
       type: 'automation.create';
@@ -25864,6 +25845,9 @@ export type ChatWindowCommand = {
  * declared under `IPC_CHANNELS.appAdvisor*`.
  */
 export interface AppAdvisorApi {
+  /** Open this computer's Settings → Approvals in the main window. */
+  openApprovalsSettings(): Promise<void>;
+
   /** Retrieve the current UI state envelope. */
   getState(): Promise<AppAdvisorUiStateEnvelope>;
 
@@ -25880,7 +25864,9 @@ export interface AppAdvisorApi {
   /** Load the complete App Advisor CLAUDE.md contents. */
   loadClaudeMd(): Promise<AppAdvisorClaudeMdLoadResponse>;
   /** Replace the complete App Advisor CLAUDE.md contents. */
-  saveClaudeMd(contents: AppAdvisorClaudeMdSaveRequest): Promise<void>;
+  saveClaudeMd(
+    request: AppAdvisorClaudeMdSaveRequest,
+  ): Promise<AppAdvisorClaudeMdSaveResponse>;
   /** Report the separate renderer's latest sanitized workspace UI state. */
   reportWindowUiState(state: AppAdvisorWindowUiState): Promise<void>;
   /**
@@ -26345,7 +26331,7 @@ export interface ClaudeTerminalScheduledPromptEvent {
   attachmentPromptContexts?: ChatAttachmentPromptContext[];
   inputMode?: 'typed' | 'voice';
   automationName?: string;
-  /** Main-only tool input identity; deduplicate by this, never by automation. */
+  /** Main-retained input identity for queueing and terminal submission. */
   acceptedInputId?: string;
   /** Terminal scrollback exception only; never append this to stored text. */
   hiddenContext?: Extract<
@@ -27468,6 +27454,13 @@ export const IPC_CHANNELS = {
   terminalListProfiles: 'terminal:list-profiles',
   terminalGetSettings: 'terminal:get-settings',
   terminalUpdateSettings: 'terminal:update-settings',
+  // Daemon window admission for this app's own windows (CAN-8068).
+  terminalWindowConnect: 'terminal:window-connect',
+  terminalWindowRoute: 'terminal:window-route',
+  // A window hands a routed terminal back to main's relay (CAN-8070).
+  terminalWindowRelease: 'terminal:window-release',
+  // Byte-free output position for a terminal the window reads itself (CAN-8070).
+  terminalOutputProgress: 'terminal:output-progress',
   // Per-worktree VS Code-style panel grid layout persistence (Phase 5).
   // Request channels (renderer → main `invoke`); see `./types/panel-layout`.
   panelLayoutLoad: 'panel-layout:load',
@@ -27756,6 +27749,7 @@ export const IPC_CHANNELS = {
     REMOTE_IPC_CHANNELS.appAdvisorWindowRendererReady,
   appAdvisorWindowCommand: 'app-advisor:window-command',
   appAdvisorOpenAgentArtifact: 'app-advisor:open-agent-artifact',
+  appAdvisorOpenApprovalsSettings: 'app-advisor:open-approvals-settings',
   appAdvisorOpenTurnFile: 'app-advisor:open-turn-file',
   appAdvisorTurnFileClosed: 'app-advisor:turn-file-closed',
   // App Advisor watcher channels.
@@ -28277,6 +28271,7 @@ export type {
   TerminalKillRequest,
   TerminalKind,
   TerminalOutputEvent,
+  TerminalOutputProgressEvent,
   TerminalPreset,
   TerminalPresetIcon,
   TerminalShellProfile,
@@ -28286,6 +28281,16 @@ export type {
   TerminalRunningChangedEvent,
   TerminalSession,
   TerminalSpawnRequest,
+  TerminalWindowApi,
+  TerminalWindowConnectRequest,
+  TerminalWindowConnectResponse,
+  TerminalWindowDaemonEndpoint,
+  TerminalWindowReconnectRequest,
+  TerminalWindowReply,
+  TerminalWindowRouteRequest,
+  TerminalWindowRouteResponse,
+  TerminalWindowStream,
+  TerminalWindowStreamOpen,
   TerminalWriteDisposition,
   TerminalWriteRequest,
   SaveWorktreeTerminalStateRequest,

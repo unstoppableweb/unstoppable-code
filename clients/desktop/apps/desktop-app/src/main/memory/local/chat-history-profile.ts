@@ -8,7 +8,10 @@ import {
   upsertChatHistoryProfileIndexLine,
 } from '@canopy/memory-consolidation/chat-history-profile';
 import { redactMemoryContent } from '@canopy/memory-consolidation/redaction';
-import { assertMemoryScopeLockHeld, ensureOwnerOnlyDir } from './memory-files';
+import {
+  assertMemoryScopeLockHeld,
+  ensureOwnerOnlyDir,
+} from '@canopy/memory-store/memory-files';
 
 /**
  * A user-scope memory profile distilled from the titles of the user's own
@@ -631,10 +634,11 @@ async function readTextIfPresent(filePath: string): Promise<string> {
 }
 
 async function writeOwnerOnlyFileAtomically(
+  scopeDir: string,
   filePath: string,
   content: string,
 ): Promise<void> {
-  await ensureOwnerOnlyDir(dirname(filePath));
+  await ensureOwnerOnlyDir(dirname(filePath), { trustedScopeRoot: scopeDir });
   const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporaryPath, content, { encoding: 'utf8', mode: 0o600 });
@@ -663,6 +667,7 @@ export async function saveChatHistoryProfile(
     if (refresh.profile) {
       await recordMemoryEdit(scopeDir);
       await writeOwnerOnlyFileAtomically(
+        scopeDir,
         join(scopeDir, CHAT_HISTORY_PROFILE_FILE_KEY),
         refresh.profile.topic,
       );
@@ -673,6 +678,7 @@ export async function saveChatHistoryProfile(
       // snapshotting it.
       const indexPath = join(scopeDir, 'MEMORY.md');
       await writeOwnerOnlyFileAtomically(
+        scopeDir,
         indexPath,
         upsertChatHistoryProfileIndexLine(
           await readTextIfPresent(indexPath),
@@ -681,6 +687,7 @@ export async function saveChatHistoryProfile(
       );
     }
     await writeOwnerOnlyFileAtomically(
+      scopeDir,
       join(scopeDir, STATE_FILENAME),
       `${JSON.stringify(refresh.state, null, 2)}\n`,
     );

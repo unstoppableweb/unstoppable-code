@@ -1,12 +1,8 @@
-import { isCodexContextWindowSetting } from './lib/codex-context-window';
-import { codexSpeedFastMode, isCodexSpeed } from './lib/codex-speed';
 import type { ConfiguredModelBillingMetadata } from './model-catalog';
-import { isThinkingLevel } from './thinking';
 import type { BrowserLoadStatus } from './types/browser';
 import type { UsageInitiationSource } from './types/observability';
 import type { ThinkingLevel } from './types/thinking';
 import type { AgentProviderType } from '@canopy/agent-transcript';
-import type { AgentModelConfig } from '@canopy/protocol/agent-model-config';
 import type { AiGatewayHarness } from '@canopy/protocol/ai-gateway-models';
 import type {
   GatewayModelConfig,
@@ -19,6 +15,7 @@ import type {
   ScriptLifecyclePhase,
 } from '@canopy/protocol/scripts';
 
+export { normalizeAgentModelConfig } from '@canopy/protocol/agent-model-config';
 export type { AgentModelConfig } from '@canopy/protocol/agent-model-config';
 export type {
   ChatTabPluginSelections,
@@ -76,7 +73,7 @@ export interface WorkspaceOwnershipTransfer {
   movedBackAt?: string;
 }
 
-export const DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MINUTES = 10;
+export { DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MINUTES } from '@canopy/protocol/preferences';
 
 export interface UsageLimitedChatTarget {
   projectId: string;
@@ -175,36 +172,6 @@ export function buildClaudeThinkingOptions(
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-export function normalizeAgentModelConfig(
-  value: unknown,
-): AgentModelConfig | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-
-  const config: AgentModelConfig = {};
-  if (
-    typeof value.thinkingLevel === 'string' &&
-    isThinkingLevel(value.thinkingLevel)
-  ) {
-    config.thinkingLevel = value.thinkingLevel;
-  }
-  if (isCodexSpeed(value.speed)) {
-    // A valid speed is authoritative; the boolean is re-derived so a
-    // persisted Ultra fast record can never project `fastMode: true`.
-    config.speed = value.speed;
-    config.fastMode = codexSpeedFastMode(value.speed);
-  } else if (typeof value.fastMode === 'boolean') {
-    // Legacy read: an invalid or missing speed falls back to the boolean.
-    config.fastMode = value.fastMode;
-  }
-  if (isCodexContextWindowSetting(value.contextWindow)) {
-    config.contextWindow = value.contextWindow;
-  }
-
-  return Object.keys(config).length > 0 ? config : undefined;
 }
 
 /** Serializable app-server capability root selected for a Codex thread. */

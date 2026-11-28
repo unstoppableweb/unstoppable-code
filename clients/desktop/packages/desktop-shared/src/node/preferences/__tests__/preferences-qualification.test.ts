@@ -1,10 +1,19 @@
+import type {
+  PreferencesModelFacts,
+  PreferencesModelStatus,
+} from '@canopy/protocol/preferences';
 import {
+  DEFAULT_SUMMARY_FALLBACK_MODEL,
+  DEFAULT_SUMMARY_MODEL,
+  getProviderForModel,
   initClaudeModels,
   initCodexModels,
   initOllamaModels,
   resolveKnownModel,
 } from '../../../types';
+import { DEFAULT_PREFERENCES } from '../defaults';
 import * as NormalizationEnvironment from '../normalization-environment';
+import { createCatalogPreferencesModelFacts } from '../catalog-model-facts';
 import {
   normalizeProviderDefaults,
   normalizeRuntimeLimits,
@@ -43,12 +52,14 @@ describe('preference helper qualification (CAN-4471)', () => {
         show: { capabilities: ['completion', 'tools'] },
       },
     ]);
-    NormalizationEnvironment.installPreferencesNormalizationEnvironment({
-      resolveAvailableModel: (model) =>
-        typeof model === 'string' ? (resolveKnownModel(model) ?? null) : null,
-      ollamaEnabled: () => ollamaEnabled,
-      shortcutPlatform: () => 'darwin',
-    });
+    NormalizationEnvironment.installPreferencesNormalizationEnvironment(
+      createCatalogPreferencesModelFacts({
+        status: (model) =>
+          resolveKnownModel(model) ? 'available' : 'unavailable',
+        ollamaEnabled: () => ollamaEnabled,
+        shortcutPlatform: () => 'darwin',
+      }),
+    );
   });
 
   it('throws until a host installs an environment', () => {
@@ -69,16 +80,20 @@ describe('preference helper qualification (CAN-4471)', () => {
       const environment = jest.requireActual<typeof NormalizationEnvironment>(
         '../normalization-environment',
       );
-      environment.installPreferencesNormalizationEnvironment({
-        resolveAvailableModel: () => null,
-        ollamaEnabled: () => false,
-        shortcutPlatform: () => 'darwin',
-      });
-      environment.installPreferencesNormalizationEnvironment({
-        resolveAvailableModel: () => null,
-        ollamaEnabled: () => false,
-        shortcutPlatform: () => 'win32',
-      });
+      environment.installPreferencesNormalizationEnvironment(
+        createCatalogPreferencesModelFacts({
+          status: () => 'unavailable',
+          ollamaEnabled: () => false,
+          shortcutPlatform: () => 'darwin',
+        }),
+      );
+      environment.installPreferencesNormalizationEnvironment(
+        createCatalogPreferencesModelFacts({
+          status: () => 'unavailable',
+          ollamaEnabled: () => false,
+          shortcutPlatform: () => 'win32',
+        }),
+      );
       expect(
         environment.preferencesNormalizationEnvironment().shortcutPlatform(),
       ).toBe('win32');
@@ -656,5 +671,183 @@ describe('preference helper qualification (CAN-4471)', () => {
     expect(
       mergePreferenceUpdate(second, {}, context).orgSharingNoticesSeen,
     ).toEqual(second.orgSharingNoticesSeen);
+  });
+
+  describe('model facts of the core doing the normalizing', () => {
+    const context = {
+      loadError: null,
+      migrationTimestamp: (): string => '2026-01-01T00:00:00.000Z',
+    };
+    const catalogFacts = (
+      status: (model: string) => PreferencesModelStatus,
+    ): PreferencesModelFacts =>
+      createCatalogPreferencesModelFacts({
+        status,
+        ollamaEnabled: () => false,
+        shortcutPlatform: () => 'darwin',
+      });
+    const install = (facts: PreferencesModelFacts): void => {
+      NormalizationEnvironment.installPreferencesNormalizationEnvironment(
+        facts,
+      );
+    };
+    const offlineSonnet = (model: string): PreferencesModelStatus =>
+      resolveKnownModel(model) === 'sonnet' || !resolveKnownModel(model)
+        ? 'unavailable'
+        : 'available';
+
+    it('replaces an unavailable model in the runtime view and keeps it in the persisted view', () => {
+      install(catalogFacts(offlineSonnet));
+      const saved = {
+        codeReviewModel: 'sonnet',
+        localMemoryModel: 'sonnet',
+        localMemoryModelSetByUser: true,
+        summaryModel: 'sonnet',
+        summaryModelSetByUser: true,
+      };
+      expect(normalizePreferences(saved, 'persisted')).toMatchObject(saved);
+      expect(normalizePreferences(saved, 'runtime')).toMatchObject({
+        codeReviewModel: DEFAULT_PREFERENCES.codeReviewModel,
+        // Memory keeps an unavailable choice; its runs refuse it.
+        localMemoryModel: 'sonnet',
+        localMemoryModelSetByUser: true,
+        summaryModelSetByUser: false,
+      });
+      // The catalog still registers it: availability is the facts' answer.
+      expect(resolveKnownModel('sonnet')).toBe('sonnet');
+    });
+
+    it('refuses a changed handoff model the facts call unavailable', () => {
+      install(catalogFacts(offlineSonnet));
+      const existing = normalizePreferences(undefined, 'persisted');
+      expect(() =>
+        mergePreferenceUpdate(
+          existing,
+          { handoffSummaryModel: 'sonnet' },
+          context,
+        ),
+      ).toThrow(
+        new Error(
+          'Choose an available conversation handoff model in Settings.',
+        ),
+      );
+      expect(
+        mergePreferenceUpdate(
+          existing,
+          { handoffSummaryModel: 'opus[1m]' },
+          context,
+        ).handoffSummaryModel,
+      ).toBe('opus[1m]');
+    });
+
+    it('resolves the summary default to its fallback on a core without Codex', () => {
+      initCodexModels([{ id: DEFAULT_SUMMARY_MODEL, label: 'Codex summary' }]);
+      const runtimeSummary = (): string =>
+        normalizePreferences(undefined, 'runtime').summaryModel;
+      install(catalogFacts(() => 'available'));
+      expect(runtimeSummary()).toBe(DEFAULT_SUMMARY_MODEL);
+      install({
+        ...catalogFacts(() => 'available'),
+        resolveKnownModel: (model) => {
+          const known = resolveKnownModel(model);
+          return known && getProviderForModel(known) === 'codex'
+            ? undefined
+            : known;
+        },
+      });
+      expect(runtimeSummary()).toBe(DEFAULT_SUMMARY_FALLBACK_MODEL);
+      expect(normalizePreferences(undefined, 'persisted').summaryModel).toBe(
+        DEFAULT_SUMMARY_MODEL,
+      );
+    });
+
+    it('keeps a changed model key as sent when the facts answer unknown', () => {
+      const sent = 'org-gateway/new-model';
+      const patch = {
+        codeReviewModel: sent,
+        handoffSummaryModel: sent,
+        summaryModel: sent,
+      };
+      install(catalogFacts(() => 'unknown'));
+      const existing = normalizePreferences(undefined, 'persisted');
+      expect(mergePreferenceUpdate(existing, patch, context)).toMatchObject({
+        ...patch,
+        summaryModelSetByUser: true,
+      });
+      // The same save against facts that call it unavailable, as today.
+      install(catalogFacts(() => 'unavailable'));
+      const withoutHandoff = {
+        codeReviewModel: sent,
+        summaryModel: sent,
+      };
+      expect(
+        mergePreferenceUpdate(existing, withoutHandoff, context),
+      ).toMatchObject({
+        codeReviewModel: DEFAULT_PREFERENCES.codeReviewModel,
+        summaryModelSetByUser: false,
+      });
+      expect(() => mergePreferenceUpdate(existing, patch, context)).toThrow(
+        'Choose an available conversation handoff model in Settings.',
+      );
+    });
+
+    it('asks the facts about the canonical id, and never keeps an id it cannot store', () => {
+      const canonical = 'org-gateway/new-model';
+      install({
+        ...catalogFacts((model) =>
+          model === canonical ? 'unknown' : 'unavailable',
+        ),
+        resolveModelAlias: (model) =>
+          model === 'handoff-alias' ? canonical : model,
+      });
+      const existing = normalizePreferences(undefined, 'persisted');
+      expect(
+        mergePreferenceUpdate(
+          existing,
+          { handoffSummaryModel: 'handoff-alias' },
+          context,
+        ).handoffSummaryModel,
+      ).toBe(canonical);
+      install(catalogFacts(() => 'unknown'));
+      expect(() =>
+        mergePreferenceUpdate(
+          existing,
+          { handoffSummaryModel: ' padded ' },
+          context,
+        ),
+      ).toThrow('Choose an available conversation handoff model in Settings.');
+    });
+
+    it('keeps a changed provider default as sent when the facts answer unknown', () => {
+      const discovered = {
+        model: 'ollama-discovered',
+        thinkingLevel: 'high' as const,
+      };
+      const gatewayModel = 'org-gateway/new-model';
+      install(catalogFacts(() => 'unknown'));
+      const existing = normalizePreferences(undefined, 'persisted');
+      const patch = {
+        defaultChatModelByProvider: {
+          ...existing.defaultChatModelByProvider,
+          ollama: discovered,
+        },
+        defaultWorktreeModelByProvider: {
+          ...existing.defaultWorktreeModelByProvider,
+          claude: { model: gatewayModel, thinkingLevel: 'high' as const },
+        },
+      };
+      const kept = mergePreferenceUpdate(existing, patch, context);
+      expect(kept.defaultChatModelByProvider.ollama).toEqual(discovered);
+      expect(kept.defaultWorktreeModelByProvider.claude.model).toBe(
+        gatewayModel,
+      );
+      // The same save against facts that call them unavailable, as today.
+      install(catalogFacts(() => 'unavailable'));
+      const replaced = mergePreferenceUpdate(existing, patch, context);
+      expect(replaced.defaultChatModelByProvider.ollama).toBeNull();
+      expect(replaced.defaultWorktreeModelByProvider.claude).toEqual(
+        existing.defaultWorktreeModelByProvider.claude,
+      );
+    });
   });
 });

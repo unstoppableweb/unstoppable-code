@@ -5,8 +5,8 @@ import {
   readImportState,
   type ImportState,
   type ImportStateStagedEntry,
-} from './import/ledger';
-import { isMemoryMarkdownFileName } from './memory-files';
+} from '@canopy/memory-store/import/ledger';
+import { isMemoryMarkdownFileName } from '@canopy/memory-store/memory-files';
 
 export interface PendingImport {
   fileKey: string;

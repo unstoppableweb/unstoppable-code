@@ -165,6 +165,8 @@ export interface AgentSessionSendOptions {
   userMessageId?: string;
   /** Host execution identity, independent of a reused visible prompt anchor. */
   lifecycleExecutionId?: string;
+  /** Antigravity acknowledges a seeded prompt after the native turn completes. */
+  onPromptCompleted?: () => Promise<void>;
 }
 
 /**

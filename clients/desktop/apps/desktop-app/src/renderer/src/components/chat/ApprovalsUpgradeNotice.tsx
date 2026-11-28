@@ -1,4 +1,5 @@
 import { useEffect, useState, type JSX } from 'react';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { Notice, NoticeButton } from '@canopy/ui-shared/components';
 import { brandText } from '@/lib/brand';
 import { useNavigationStore } from '@/stores/navigationStore';
@@ -21,6 +22,7 @@ import {
 export function ApprovalsUpgradeNotice(): JSX.Element | null {
   const openSettings = useNavigationStore((state) => state.openSettings);
   const [visible, setVisible] = useState(false);
+  const [settingsOpenFailed, setSettingsOpenFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -48,6 +50,25 @@ export function ApprovalsUpgradeNotice(): JSX.Element | null {
 
   if (!visible) return null;
 
+  const inOrchestrator =
+    document.body.dataset.rendererSurface === 'app-advisor';
+  const canOpenSettings =
+    !inOrchestrator || window.api.remoteControl.getContext().mode === 'local';
+
+  const handleOpenSettings = (): void => {
+    if (!inOrchestrator) {
+      openSettings('approvals');
+      return;
+    }
+    setSettingsOpenFailed(false);
+    void window.api.appAdvisor
+      .openApprovalsSettings()
+      .catch((error: unknown) => {
+        reportClientAppError(error);
+        setSettingsOpenFailed(true);
+      });
+  };
+
   const handleDismiss = (): void => {
     setVisible(false);
     void window.api
@@ -68,14 +89,22 @@ export function ApprovalsUpgradeNotice(): JSX.Element | null {
       onDismiss={handleDismiss}
       dismissLabel="Dismiss approvals upgrade notice"
       dismissTestId="approvals-upgrade-notice-dismiss"
+      announcement={settingsOpenFailed ? 'assertive' : undefined}
+      detail={
+        settingsOpenFailed
+          ? 'Couldn’t open Approvals settings. Try again.'
+          : undefined
+      }
       actions={
-        <NoticeButton
-          variant="secondary"
-          data-testid="approvals-upgrade-notice-open-settings"
-          onClick={(): void => openSettings('approvals')}
-        >
-          Open settings
-        </NoticeButton>
+        canOpenSettings ? (
+          <NoticeButton
+            variant="secondary"
+            data-testid="approvals-upgrade-notice-open-settings"
+            onClick={handleOpenSettings}
+          >
+            Open settings
+          </NoticeButton>
+        ) : undefined
       }
     >
       {`${brandText.appName} runs agent actions like editing files and running commands without checking with you first. Change this any time in Settings.`}

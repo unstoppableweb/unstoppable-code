@@ -81,6 +81,9 @@
       "path": "./packages/memory-consolidation"
     },
     {
+      "path": "./packages/memory-store"
+    },
+    {
       "path": "./packages/ui-app/test/tsconfig.json"
     },
     {

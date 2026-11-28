@@ -21,6 +21,12 @@ export interface SpawnedBy {
    * stays when the turn binds to its prompt.
    */
   toolsLoaded?: true;
+  /**
+   * Another agent session sent this one a message (Claude Code's
+   * cross-session messaging). Names neither the sender nor the message: the
+   * cause is built before the chat secret backstop runs.
+   */
+  peerMessage?: true;
 }
 
 export interface TurnBinding {
@@ -120,6 +126,7 @@ export const SpawnedBySchema = z.strictObject({
   event: z.literal(true).optional(),
   scheduled: z.literal(true).optional(),
   toolsLoaded: z.literal(true).optional(),
+  peerMessage: z.literal(true).optional(),
 });
 
 export const TurnBindingSchema = z.strictObject({

@@ -7,6 +7,7 @@ import {
   type PreferencesData,
 } from '../../../types';
 import * as NormalizationEnvironment from '../normalization-environment';
+import { createCatalogPreferencesModelFacts } from '../catalog-model-facts';
 import {
   CLIENT_LOCAL_PREFERENCES_CODEC,
   mergeClientLocalPreferences,
@@ -75,12 +76,14 @@ beforeEach((): void => {
     { id: 'sonnet', label: 'Sonnet' },
   ]);
   initCodexModels([{ id: 'gpt-6.1-sol', label: 'Codex default' }]);
-  NormalizationEnvironment.installPreferencesNormalizationEnvironment({
-    resolveAvailableModel: (model) =>
-      typeof model === 'string' ? (resolveKnownModel(model) ?? null) : null,
-    ollamaEnabled: () => false,
-    shortcutPlatform: () => 'darwin',
-  });
+  NormalizationEnvironment.installPreferencesNormalizationEnvironment(
+    createCatalogPreferencesModelFacts({
+      status: (model) =>
+        resolveKnownModel(model) ? 'available' : 'unavailable',
+      ollamaEnabled: () => false,
+      shortcutPlatform: () => 'darwin',
+    }),
+  );
 });
 
 // G2/G3 over the desktop inner codec; core-runtime runs the stand-ins.

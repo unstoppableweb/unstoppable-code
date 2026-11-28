@@ -275,4 +275,36 @@ describe('agent watcher ownership through core.initiatedWork.watcher (CAN-5994)'
       ids.filter((id) => !['own', 'other-chat', 'user-made'].includes(id)),
     ).toHaveLength(1);
   });
+
+  // The create key is per call, so a WatchCommand or ScheduleWakeup retry
+  // dedupes only by its tool_use id (CAN-4169). Once the first wakeup has
+  // fired, matching by configuration finds nothing active; only the id does.
+  it('a wakeup retried with its tool_use id after it fired returns the first watcher', async () => {
+    const adapter = createCoreWatcherAdapter();
+    const create = adapter.instructions?.['core.initiatedWork.watcher.create'];
+    if (!create) throw new Error('watcher operations are not served');
+    const wakeup = (key: string): Parameters<typeof create>[0] => ({
+      recipient: RECIPIENT,
+      request: { kind: 'wakeup', delaySeconds: 600 },
+      createdBy: 'toolu_wake',
+      _meta: { idempotencyKey: key },
+    });
+    const watcherId = (report: string): string =>
+      (JSON.parse(report) as { watcher: { id: string } }).watcher.id;
+    const first = await create(wakeup('wake-1'), context('wake-1'));
+    const firstId = watcherId(first.report);
+    // The first wakeup fires; its row stays as the call's receipt.
+    const path = join(mockDirectory, 'app-advisor-watchers.json');
+    const file = JSON.parse(await readFile(path, 'utf8')) as {
+      watchers: { id: string }[];
+    };
+    const now = new Date().toISOString();
+    const fired = file.watchers.find((watcher) => watcher.id === firstId);
+    if (!fired) throw new Error('the first wakeup was not stored');
+    Object.assign(fired, { status: 'fired', firedAt: now, updatedAt: now });
+    await writeFile(path, JSON.stringify(file));
+    const retry = await create(wakeup('wake-2'), context('wake-2'));
+    expect(watcherId(retry.report)).toBe(firstId);
+    expect(await storedIds()).toEqual(['other-chat', 'own', 'user-made']);
+  });
 });

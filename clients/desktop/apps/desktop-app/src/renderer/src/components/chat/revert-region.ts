@@ -33,6 +33,16 @@ export function computeRevertedUserMessageIds(
       if (candidate.role === 'user') {
         reverted.add(candidate.id);
       }
+      // A wake that started inside the reverted range shows as its own
+      // display group, keyed `${timer.id}:wake`; the reset covers it too.
+      const block = candidate.blocks[0];
+      if (
+        block?.type === 'turn_timer' &&
+        block.turnId !== undefined &&
+        block.spawnedBy !== undefined
+      ) {
+        reverted.add(`${candidate.id}:wake`);
+      }
     }
   }
 

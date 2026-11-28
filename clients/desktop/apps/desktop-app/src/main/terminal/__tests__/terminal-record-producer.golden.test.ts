@@ -10149,3 +10149,188 @@ it('partial successor retries preserve another drawer full-save Close token', as
   const reloaded = await store().loadWorktreeState('p', 'w');
   expect(reloaded.terminals.map(({ session }) => session.id)).toEqual(['b']);
 });
+
+describe('pending output coalescing writes what it always wrote (CAN-7859)', () => {
+  type Step = WorkerTerminalRecordOp | { flush: number };
+  const append = (
+    terminalId: string,
+    text: string,
+  ): WorkerTerminalRecordOp => ({
+    op: 'output.append',
+    terminalId,
+    text,
+  });
+  const numbered = (prefix: string, from: number, count: number): string =>
+    Array.from(
+      { length: count },
+      (_, i) => `${prefix}-${String(from + i)}\n`,
+    ).join('');
+  const burst = (terminalId: string, lines: number, perChunk: number): Step[] =>
+    Array.from({ length: Math.ceil(lines / perChunk) }, (_, i) =>
+      append(
+        terminalId,
+        numbered(
+          terminalId,
+          i * perChunk,
+          Math.min(perChunk, lines - i * perChunk),
+        ),
+      ),
+    );
+  const KIB = 1024;
+  const MIB = 1024 * KIB;
+  const corpus: Record<string, Step[]> = {
+    'a burst of small appends': burst('a', 2_000, 1),
+    'two terminals interleaved, with rename, exit and upsert between': [
+      ...burst('a', 50, 3).flatMap((step, i) => [
+        step,
+        append('b', `b${String(i)} `),
+      ]),
+      { op: 'rename', terminalId: 'a', name: 'renamed' },
+      append('a', 'after rename\n'),
+      { op: 'exit', terminalId: 'b', exitCode: 0, signal: null },
+      { op: 'session.upsert', session: session('a') },
+      append('a', 'after upsert\n'),
+      append('b', ''),
+    ],
+    'a forgetting layout save and a forget are barriers': [
+      ...burst('a', 20, 4),
+      {
+        op: 'layout.save',
+        servedIds: ['a', 'b'],
+        referencedIds: ['b'],
+        bindings: [],
+        terminalCustomNames: {},
+      },
+      ...burst('a', 20, 4),
+      {
+        op: 'layout.save',
+        servedIds: ['a', 'b'],
+        referencedIds: ['a', 'b'],
+        bindings: [],
+        terminalCustomNames: {},
+      },
+      ...burst('a', 8, 2),
+      { op: 'forget', terminalId: 'a' },
+      ...burst('a', 8, 2),
+    ],
+    'appends after a direct replace': [
+      ...burst('a', 10, 5),
+      { op: 'output.replace', terminalId: 'a', lines: ['kept', 'lines', ''] },
+      ...burst('a', 30, 3),
+    ],
+    'crossing 5,000 lines turns into a replace': [
+      ...burst('a', 6_200, 100),
+      append('b', 'other\n'),
+      ...burst('a', 300, 7),
+    ],
+    'crossing 4 MiB turns into a replace': Array.from({ length: 70 }, (_, i) =>
+      append('a', `${String(i).padStart(4, '0')}${'x'.repeat(64 * KIB)}\n`),
+    ),
+    'a line over 1 MiB is clipped': [
+      ...Array.from({ length: 5 }, (_, i) =>
+        append('a', String(i).repeat(300 * KIB)),
+      ),
+      append('a', ' end\nnext'),
+      append('a', ' line\n'),
+    ],
+    'a surrogate pair split across appends and across the wire chunk edge': [
+      append('a', 'smile \ud83d'),
+      append('a', '\ude00 done\n'),
+      // The pair's halves land at chars MIB - 1 and MIB of the merged text.
+      append('b', `${'e'.repeat(MIB - 2)}\n`),
+      append('b', '\ud83d\ude00follow\n'),
+      append('b', 'after\n'),
+    ],
+    'flushes between appends': [
+      ...burst('a', 12, 3),
+      append('b', 'b1\n'),
+      { flush: 1 },
+      ...burst('a', 12, 3),
+      { flush: 2 },
+      append('a', 'unfinished'),
+      append('a', ' still'),
+      { flush: 10 },
+      append('a', ' done\n'),
+      { op: 'exit', terminalId: 'a', exitCode: 1, signal: null },
+      append('a', 'late\n'),
+    ],
+    'an unfinished line growing chunk by chunk': Array.from(
+      { length: 400 },
+      (_, i) => append('a', i % 97 === 96 ? '\n' : `${String(i)},`),
+    ),
+  };
+  const digest = (value: unknown): string =>
+    createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const summary = (ops: WorkerTerminalRecordOp[]): string[] =>
+    ops.map((op) =>
+      op.op === 'output.append'
+        ? `append ${op.terminalId} ${String(op.text.length)}`
+        : op.op === 'output.replace'
+          ? `replace ${op.terminalId} ${String(op.lines.length)}`
+          : `${op.op} ${'terminalId' in op ? op.terminalId : ''}`.trim(),
+    );
+  // Generated from the coalescing before CAN-7859 made it linear: a digest
+  // of the whole pending list after every step, and the final list's shape.
+  const pinned: Record<string, { steps: string; final: string[] }> = {
+    'a burst of small appends': {
+      steps: 'a4477c1899b547c4e57f570e02a22f587855c7a81aac002a4564902878a8f155',
+      final: ['append a 12890'],
+    },
+    'two terminals interleaved, with rename, exit and upsert between': {
+      steps: 'e03acb186143f64eac227c700d9bed73abf6fd7bb15370d23907ec23502c0c80',
+      final: [
+        'rename a',
+        'exit b',
+        'session.upsert',
+        'append a 266',
+        'append b 58',
+      ],
+    },
+    'a forgetting layout save and a forget are barriers': {
+      steps: 'bff960b3564e917a22279f5281f9ecf8eaf0841c3aee974b9f9ae444df6fc7a7',
+      final: ['layout.save', 'layout.save', 'forget a', 'append a 32'],
+    },
+    'appends after a direct replace': {
+      steps: '0f7fe1e8dc474ea38666f3f18da1c026951f0eb02febf00e51c6afafe15b7850',
+      final: ['replace a 33'],
+    },
+    'crossing 5,000 lines turns into a replace': {
+      steps: 'd6a1978cf22608144c0eca97b8e0930e7d3407d502b4b081a0677e9639ef1746',
+      final: ['append b 6', 'replace a 5000'],
+    },
+    'crossing 4 MiB turns into a replace': {
+      steps: '062b2ef21111aa0da35b850092370ab82304c9f216523def5ac946bb973f24c0',
+      final: ['replace a 65'],
+    },
+    'a line over 1 MiB is clipped': {
+      steps: '10cf004d12d2620c649fdf09762fc51dafa0b5e24bff5bf5f6d09cf9aeaf4b04',
+      final: ['append a 1048576', 'append a 11'],
+    },
+    'a surrogate pair split across appends and across the wire chunk edge': {
+      steps: '54b78f2be17160e38b6ac49e09372649072851abaca19df07f35e1e8dadb8e42',
+      final: ['append a 14', 'append b 1048575', 'append b 15'],
+    },
+    'flushes between appends': {
+      steps: 'e23d07f40130f1c23aeadf76239c06fe4b1152763be9dcb643b1db80265f628b',
+      final: ['exit a', 'append a 11'],
+    },
+    'an unfinished line growing chunk by chunk': {
+      steps: '9aa3fa59b60d8eeaf3017ee6dc232fe6a6c2b58b43375ab0512d56d2cb772687',
+      final: ['append a 1479'],
+    },
+  };
+
+  it.each(Object.keys(corpus))('%s', (name) => {
+    const ops: WorkerTerminalRecordOp[] = [];
+    const stepDigests: string[] = [];
+    for (const step of corpus[name]) {
+      if ('flush' in step) ops.splice(0, step.flush);
+      else enqueueTerminalRecordOp(ops, step);
+      stepDigests.push(digest(ops));
+    }
+    for (const op of ops) WorkerTerminalRecordOpSchema.parse(op);
+    expect({ steps: digest(stepDigests), final: summary(ops) }).toEqual(
+      pinned[name],
+    );
+  });
+});

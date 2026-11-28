@@ -1,4 +1,9 @@
+import { filterAutomationTargets } from '@canopy/desktop-shared/lib/workflow-target';
 import { createHash } from 'node:crypto';
+import {
+  AUTOMATION_TURN_SCHEDULE_ERROR,
+  refusesAutomationTurnScheduleMutation,
+} from '../automations/schedule-mutation-policy';
 import {
   portablePipelineTriggerTypes,
   type PipelinePackageManifestV1,
@@ -90,7 +95,15 @@ import {
   scheduledUserPipelineId,
   targetsAgentHiddenPipeline,
 } from '../automations/workflow-schedules';
-import { scopeAutomationsToSelectedContext } from '../services/background-execution-context';
+import {
+  captureBackgroundExecutionContext,
+  scopeAutomationsToSelectedContext,
+} from '../services/background-execution-context';
+import {
+  assertResourceContextSnapshot,
+  resourceContextEnabled,
+  resourceContextSnapshot,
+} from '../lib/resource-context';
 import {
   ADVISOR_ACCESS_DISABLED,
   ADVISOR_ACCESS_DISABLED_MESSAGE,
@@ -1942,6 +1955,10 @@ async function automationAction(
   runtime: AgentResourceActionRuntime,
 ): Promise<AppAdvisorActionResponse | null> {
   if (!action.type.startsWith('automation.')) return null;
+  const listContext =
+    action.type === 'automation.list' && resourceContextEnabled()
+      ? await resourceContextSnapshot()
+      : undefined;
   const caller = {
     projectId: runtime.projectId,
     worktreeId: runtime.worktreeId,
@@ -2179,8 +2196,21 @@ async function automationAction(
           ),
         };
       }
+      const projected = filterAutomationTargets(
+        await service.withWorkflowTargets(
+          state,
+          callerContext
+            ? serializeWorkspaceContext(callerContext)
+            : await captureBackgroundExecutionContext(),
+        ),
+        action.targetBotId,
+      );
+      if (listContext !== undefined)
+        await assertResourceContextSnapshot(listContext);
       return ok(
-        action.includeRuns === false ? { activities: state.activities } : state,
+        action.includeRuns === false
+          ? { activities: projected.activities }
+          : projected,
       );
     }
     case 'automation.get': {
@@ -2568,6 +2598,25 @@ export async function dispatchAgentResourceAction(
   runtime: AgentResourceActionRuntime,
 ): Promise<AppAdvisorActionResponse> {
   try {
+    // Even a name-only agent update can change the automation's author and
+    // regenerate its owned workflow. Run now advances the schedule cursor.
+    const changesSchedule =
+      action.type === 'automation.create' ||
+      action.type === 'automation.update' ||
+      action.type === 'automation.disable' ||
+      action.type === 'automation.delete' ||
+      action.type === 'automation.run_now';
+    if (
+      changesSchedule &&
+      (await refusesAutomationTurnScheduleMutation(
+        runtime.authorChat ?? runtime,
+      ))
+    )
+      return {
+        requestId: '',
+        ok: false,
+        error: AUTOMATION_TURN_SCHEDULE_ERROR,
+      };
     return (
       (await skillAction(action)) ??
       (await pipelineAction(action, runtime)) ??

@@ -20,7 +20,7 @@ import {
   type ImportState,
   type ImportStateInspection,
   type ImportStateStagedEntry,
-} from './import/ledger';
+} from '@canopy/memory-store/import/ledger';
 import { listPendingInboxNotes, listPendingSources } from './pending-sources';
 import {
   listTopicFilenames,
@@ -33,8 +33,8 @@ import {
   ensureOwnerOnlyMemoryDir,
   isMemoryMarkdownFileName,
   moveWithoutReplacing,
-} from './memory-files';
-import { memoryNoteId } from './note-identity';
+} from '@canopy/memory-store/memory-files';
+import { memoryNoteId } from '@canopy/memory-store/note-identity';
 
 /** Upper bound on consolidation runs one rebuild performs. */
 export const MAX_REBUILD_CONSOLIDATION_RUNS = 100;

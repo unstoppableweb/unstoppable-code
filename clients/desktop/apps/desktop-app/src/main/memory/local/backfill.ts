@@ -5,7 +5,10 @@ import {
   isMemoryNoteFileKey,
   memoryUlidTime,
 } from '@canopy/protocol/memory-sync';
-import { inspectImportState, writeImportState } from './import/ledger';
+import {
+  inspectImportState,
+  writeImportState,
+} from '@canopy/memory-store/import/ledger';
 import {
   assertMemoryPathContained,
   assertMemoryScopeLockHeld,
@@ -16,14 +19,14 @@ import {
   moveWithoutReplacing,
   writeMemoryFileAtomically,
   type MemoryFileTimes,
-} from './memory-files';
+} from '@canopy/memory-store/memory-files';
 import {
   memoryNoteCreatedMs,
   memoryNoteFileName,
   memoryNoteId,
   memoryNoteIdAt,
   withMemoryNoteId,
-} from './note-identity';
+} from '@canopy/memory-store/note-identity';
 
 /*
  * Gives a scope written before notes had identities its version 2 shape:

@@ -15,6 +15,7 @@ import {
   type RemoteScriptTransport,
   type ScriptExecutionWorker,
 } from '@canopy/core-runtime/node/script/execution';
+import { recordScriptStopRoute } from '@canopy/desktop-shared/node/work-counters';
 import { getResolvedCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import {
   CanopyHostExecutionSchema,
@@ -23,10 +24,13 @@ import {
   type CanopyHostExecution,
   type WorkerScriptExecuteParams,
   type WorkerScriptExecuteResult,
+  type WorkerScriptExecutionStopParams,
+  type WorkerScriptExecutionStopResult,
 } from '@canopy/protocol/canopy-core';
 import {
   daemonUnreachableReason,
   markUnreachable,
+  type ElectronDaemonSession,
 } from '../canopy-runtime/electron-daemon-connection';
 import {
   getElectronDaemonConnections,
@@ -133,7 +137,9 @@ export function noteDaemonScriptFallback(error: unknown): boolean {
 const owner = new AbortController();
 
 /** Main's own script session with the daemon, under its verified authority. */
-async function client(): Promise<ElectronDaemonClient> {
+async function scriptSession(): Promise<
+  ElectronDaemonSession<ElectronDaemonClient>
+> {
   getElectronDaemonHealth().setConsumerEnabled('scripts', true);
   const { authorityId } = await getElectronDaemonFilesContext();
   const caller: CanopyCallerDescriptor = {
@@ -143,8 +149,11 @@ async function client(): Promise<ElectronDaemonClient> {
     interfaceKind: 'desktop',
     grants: [WORKER_SCRIPT_GRANTS.execute, WORKER_SCRIPT_GRANTS.read],
   };
-  return (await getElectronDaemonConnections().get(caller, owner.signal))
-    .client;
+  return getElectronDaemonConnections().get(caller, owner.signal);
+}
+
+async function client(): Promise<ElectronDaemonClient> {
+  return (await scriptSession()).client;
 }
 
 /** A call on a fresh session; one the session dropped under reads as unreachable. */
@@ -171,6 +180,117 @@ export function onDaemonScriptSession<T>(
   call: (session: ElectronDaemonClient) => Promise<T>,
 ): Promise<T> {
   return onSession(call);
+}
+
+export function scriptStopDaemonUnavailableError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'unavailable',
+    code: 'worker.script.daemonUnavailable',
+    message:
+      "The background service isn't reachable, so this run wasn't stopped. Try again.",
+    retry: { kind: 'same_idempotency_key' },
+  });
+}
+
+export function scriptStopOutcomeUnknownError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'failed_precondition',
+    code: 'worker.script.outcomeUnknown',
+    message:
+      "The background service stopped answering before this Stop's outcome was known. The run may have stopped; its status will show it.",
+    retry: { kind: 'never' },
+  });
+}
+
+/** How long a Stop's resend waits for its session to reconnect. */
+const SCRIPT_STOP_RESEND_RECONNECT_MS = 10_000;
+
+/**
+ * Resolves once the session's lease is live on a connected client. After a
+ * dropped connection, the session is reused while its lease reconnects.
+ */
+function reconnected(
+  session: ElectronDaemonSession<ElectronDaemonClient>,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let unregister: (() => void) | undefined;
+    const settle = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      session.signal.removeEventListener('abort', ended);
+      unregister?.();
+      if (error) reject(error);
+      else resolve();
+    };
+    const ended = (): void =>
+      settle(new Error('The daemon session ended before it reconnected.'));
+    const timer = setTimeout(
+      () => settle(new Error('The daemon did not reconnect in time.')),
+      SCRIPT_STOP_RESEND_RECONNECT_MS,
+    );
+    if (session.signal.aborted) {
+      ended();
+      return;
+    }
+    session.signal.addEventListener('abort', ended, { once: true });
+    // A live lease issues the registration before register returns.
+    const remove = session.lease.register(
+      `script-stop-resend:${randomUUID()}`,
+      (_lease, connected) => {
+        if (!connected.signal.aborted) settle();
+      },
+    );
+    if (settled) remove();
+    else unregister = remove;
+  });
+}
+
+// A reply lost after the send gets one resend with the same key, which the
+// daemon replays, once the session has reconnected.
+export async function stopScriptInDaemon(
+  params: WorkerScriptExecutionStopParams,
+  idempotencyKey: string,
+): Promise<WorkerScriptExecutionStopResult> {
+  const unavailable = (): CanopyOperationError => {
+    recordScriptStopRoute('daemon.unavailable');
+    return scriptStopDaemonUnavailableError();
+  };
+  if (getElectronDaemonHealth().isLatched()) throw unavailable();
+  const send = (
+    session: ElectronDaemonClient,
+  ): Promise<WorkerScriptExecutionStopResult> =>
+    session.instruction('worker.script.execution.stop', params, {
+      metadata: { idempotencyKey },
+    });
+  let session: ElectronDaemonClient;
+  try {
+    session = await client();
+  } catch {
+    throw unavailable();
+  }
+  let answer: WorkerScriptExecutionStopResult;
+  try {
+    answer = await send(session);
+  } catch (error) {
+    if (!session.signal.aborted || owner.signal.aborted) {
+      recordScriptStopRoute('daemon.refused');
+      throw error instanceof CanopyClientError
+        ? new CanopyOperationError(error.payload, error)
+        : error;
+    }
+    try {
+      const next = await scriptSession();
+      await reconnected(next);
+      answer = await send(next.client);
+    } catch {
+      recordScriptStopRoute('daemon.outcomeUnknown');
+      throw scriptStopOutcomeUnknownError();
+    }
+  }
+  recordScriptStopRoute('daemon.served');
+  return answer;
 }
 
 function transportFor(worker: ScriptExecutionWorker): RemoteScriptTransport {

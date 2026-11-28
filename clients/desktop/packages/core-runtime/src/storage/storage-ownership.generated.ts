@@ -362,6 +362,18 @@ export const STORAGE_OWNERSHIP = [
     ]
   },
   {
+    "id": "preference_outbox",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 1,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/lib/preference-outbox"
+    ]
+  },
+  {
     "id": "preferences",
     "transitionOwner": "legacy",
     "currentWriters": [

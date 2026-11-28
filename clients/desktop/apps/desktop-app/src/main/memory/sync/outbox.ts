@@ -14,7 +14,7 @@ import {
   type MemorySyncStateFile,
 } from '@canopy/protocol/memory-sync';
 import { withMemoryWriteLock } from '../local/edit-coordination';
-import { retireImportNotes } from '../local/import/ledger';
+import { retireImportNotes } from '@canopy/memory-store/import/ledger';
 import {
   assertMemoryPathContained,
   assertMemoryScopeLockHeld,
@@ -22,8 +22,8 @@ import {
   isNodeError,
   moveWithoutReplacing,
   writeMemoryFileDurably,
-} from '../local/memory-files';
-import { memoryNoteId } from '../local/note-identity';
+} from '@canopy/memory-store/memory-files';
+import { memoryNoteId } from '@canopy/memory-store/note-identity';
 import { LocalMemoryScopeLockLostError } from '../local/scope-lock';
 import { renderPulledNote } from './note-records';
 import {

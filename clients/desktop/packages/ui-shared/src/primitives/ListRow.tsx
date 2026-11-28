@@ -609,13 +609,13 @@ const LIST_ROW_FRAME_LAYOUT = {
   'workspace-header':
     'min-w-0 flex-1 rounded-md px-1.5 py-1.5 fg-primary/80 transition-colors hover:bg-subtle hover:fg-primary',
   'workspace-header-sidebar':
-    'min-w-0 flex-1 h-8 rounded-row py-0 pl-1.5 pr-1 fg-primary transition-colors duration-0 hover:bg-subtle',
+    'min-w-0 flex-1 h-8 rounded-row py-0 pl-1.5 pr-1 fg-primary transition-colors hover:bg-subtle',
   'workspace-header-sidebar-touch':
-    'min-w-0 flex-1 min-h-11 rounded-row py-0 pl-1.5 pr-1 fg-primary transition-colors duration-0 hover:bg-subtle',
+    'min-w-0 flex-1 min-h-11 rounded-row py-0 pl-1.5 pr-1 fg-primary transition-colors hover:bg-subtle',
 
   'file-overlap': 'flex flex-col gap-1 px-3 py-2.5 transition-colors',
   'sidebar-workspace':
-    'group/header group/sidebar-item relative flex h-8 items-center gap-1.5 rounded-row pl-1.5 pr-1 fg-primary transition-colors duration-150',
+    'group/header group/sidebar-item relative flex h-8 items-center gap-1.5 rounded-row pl-1.5 pr-1 fg-primary transition-colors',
   'sidebar-customize': `${SIDEBAR_NAV_ITEM_CLASSNAME} cursor-default fg-primary`,
   'harness-board':
     'group relative flex h-8 cursor-grab items-center gap-2 rounded-md px-2 text-s fg-primary/80 transition-colors',
@@ -635,7 +635,10 @@ const LIST_ROW_FRAME_LAYOUT = {
     'min-w-0 flex-1 focus-ring flex w-full items-center gap-2 overflow-hidden whitespace-nowrap rounded-row px-2 py-0 text-s font-normal fg-primary pointer-coarse:min-h-11',
   'sidebar-archive': 'group relative flex min-w-0 items-center rounded-row',
   'changed-file': 'group flex items-center gap-2 px-3 py-1',
-  'sidebar-bare': 'flex w-full min-w-0',
+  // Focusable (the worktree row's frame takes the keyboard): the shared ring
+  // on the row's own corners. Inset, because the rail clips its rows at the
+  // sides and an outside ring loses its left and right edges there.
+  'sidebar-bare': 'focus-ring focus-ring-inset flex w-full min-w-0 rounded-row',
   'sidebar-default':
     'flex w-full min-w-0 group items-center gap-2 rounded-row min-h-8 px-2 py-1.5',
   'sidebar-compact':
@@ -685,6 +688,8 @@ type CompositeListRowPresentation =
         height: 'touch' | 'two-lines' | 'single-line';
         state: 'selected' | 'archived' | 'active';
         archiving: boolean;
+        /** Its menu is open: the row keeps its hover fill, as other rows do. */
+        menuMarked?: boolean;
       };
     }
   | {
@@ -715,7 +720,7 @@ function compositeListRowClassName(
     case 'surface':
       return props.className;
     case 'standalone-chat': {
-      const { height, state, archiving } = props.appearance;
+      const { height, state, archiving, menuMarked } = props.appearance;
       const heightClass = {
         touch: 'min-h-11',
         'two-lines': 'min-h-8 py-1',
@@ -726,7 +731,7 @@ function compositeListRowClassName(
         archived: 'fg-tertiary hover:bg-subtle',
         active: 'fg-secondary hover:bg-subtle',
       }[state];
-      return `focus-ring group group/sidebar-item flex w-full min-w-0 cursor-pointer items-center ${heightClass} gap-1.5 rounded-row px-1.5 text-left text-s transition-colors ${stateClass} ${archiving ? 'pointer-events-none opacity-50' : ''}`;
+      return `focus-ring group group/sidebar-item flex w-full min-w-0 cursor-pointer items-center ${heightClass} gap-1.5 rounded-row px-1.5 text-left text-s transition-colors ${stateClass}${menuMarked && state !== 'selected' ? ' bg-subtle' : ''} ${archiving ? 'pointer-events-none opacity-50' : ''}`;
     }
     case 'work-entry': {
       const {
@@ -815,8 +820,10 @@ const LIST_ROW_LINK_FRAME_LAYOUT = {
     'group flex items-start justify-between gap-4 rounded-xl bg-card p-5 shadow-sm transition-colors hover:bg-secondary',
   'detail-inset':
     'flex flex-wrap items-center justify-between gap-3 px-4 py-3 transition-colors hover:bg-secondary',
-  'sidebar-secondary':
-    'focus-ring flex items-center gap-2 rounded-md px-3 py-2 text-s fg-secondary hover:bg-secondary hover:fg-primary',
+  // A sidebar footer link (web's Archived and deleted) is a nav row: the same
+  // geometry, hover and current-page fill as every other row in the rail, and
+  // the same 44px minimum on touch.
+  'sidebar-secondary': `${SIDEBAR_NAV_ITEM_CLASSNAME} ${SIDEBAR_ITEM_IDLE_CLASSNAME} pointer-coarse:min-h-11 aria-[current=page]:bg-muted`,
   'queue-position':
     'focus-ring grid grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-subtle',
   'queue-position-current':

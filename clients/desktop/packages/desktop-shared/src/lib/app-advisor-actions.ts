@@ -9185,6 +9185,12 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       summary:
         'List pipelines, optionally scoped to a worktree, with enablement state, available run modes, and input counts.',
       fields: [
+        field(
+          'targetBotId',
+          'string',
+          false,
+          'Only return rows targeting this Bot ID.',
+        ),
         field('projectId', 'string', false, `${appName} project/workspace id.`),
         field('worktreeId', 'string', false, `${appName} worktree id.`),
         field('query', 'string', false, 'Fuzzy name/id/description filter.'),
@@ -10246,6 +10252,12 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       summary:
         'List the user’s triggered activities, including scheduled worktree chat messages, optional If Command gates, and optionally recent run history from the Automations page.',
       fields: [
+        field(
+          'targetBotId',
+          'string',
+          false,
+          'Only return rows targeting this Bot ID.',
+        ),
         field(
           'includeRuns',
           'boolean',

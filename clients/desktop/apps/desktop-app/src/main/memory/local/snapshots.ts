@@ -27,7 +27,7 @@ import {
   ensureOwnerOnlyMemoryDir,
   isMemoryMarkdownFileName,
   readMemoryText,
-} from './memory-files';
+} from '@canopy/memory-store/memory-files';
 import { topicIdentity } from '@canopy/memory-consolidation/topic-identity';
 
 export const LOCAL_MEMORY_SNAPSHOT_RETENTION = 10;

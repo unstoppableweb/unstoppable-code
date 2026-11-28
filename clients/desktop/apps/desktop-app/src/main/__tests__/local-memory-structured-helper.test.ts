@@ -22,7 +22,7 @@ jest.mock('../ollama/helper-invocation', () => ({
 jest.mock('../memory/local/model-policy', () => ({
   isLocalMemoryModelBlockedByPolicy: jest.fn(() => Promise.resolve(false)),
 }));
-jest.mock('../memory/local/memory-files', () => ({
+jest.mock('@canopy/memory-store/memory-files', () => ({
   ensureOwnerOnlyDir: jest.fn(() => Promise.resolve()),
 }));
 jest.mock('../lib/helper-observed-task', () => ({

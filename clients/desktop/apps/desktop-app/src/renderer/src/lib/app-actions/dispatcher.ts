@@ -1,4 +1,14 @@
+import {
+  deriveWorkflowTarget,
+  workflowTargetsBot,
+  type WorkflowTarget,
+} from '@canopy/pipeline-interop/workflow-target';
+import {
+  filterAutomationTargets,
+  WORKFLOW_BOT_FILTER_UNCLASSIFIED_WARNING,
+} from '@canopy/desktop-shared/lib/workflow-target';
 import { portablePipelineTriggerTypes } from '@canopy/protocol/pipelines';
+import { isBotId } from '@canopy/protocol/chat-targets';
 import {
   inlineFailureReason,
   inlineFailureText,
@@ -136,6 +146,11 @@ import {
   CLAUDE_MAX_TURNS_MAX,
 } from '@canopy/desktop-shared/constants/preferences';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
+import {
+  canopyCloudAccountIdentity,
+  isConclusiveAccountRead,
+} from '@canopy/desktop-shared/lib/canopy-cloud-account-read';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { getSidebarScopingContext } from '@/components/sidebar/useSidebarScopingContext';
 import {
   getRendererToolRequestScopeKey,
@@ -653,6 +668,8 @@ const AGENT_PROVIDER_TYPES = new Set(['claude', 'codex', 'ollama']);
 const WORKTREE_CHAT_ACTIONS = new Set(['hand_off', 'fork', 'branch']);
 const PIPELINE_LIST_DEFAULT_LIMIT = 50;
 const PIPELINE_LIST_MAX_LIMIT = 200;
+const SHARED_PIPELINE_PAGE_SIZE = 100;
+const SHARED_PIPELINE_MAX_PAGES = 4;
 // Server contract for shared-Automation listing (web MAX_LIMIT).
 const SHARED_AUTOMATION_LIST_MAX_LIMIT = 100;
 const PIPELINE_EXECUTION_LIST_DEFAULT_LIMIT = 25;
@@ -1123,7 +1140,8 @@ function pipelineInputDetails(
 function pipelineListRow(
   pipeline: PipelineData,
   disabledPipelineIds: Set<string>,
-): PipelineListRow {
+  projectId?: string,
+): PipelineListRow & { target: WorkflowTarget } {
   return {
     id: pipeline.info.id,
     name: pipeline.info.name,
@@ -1134,6 +1152,10 @@ function pipelineListRow(
     filePath: pipeline.info.filePath ?? '',
     enabled: !disabledPipelineIds.has(pipeline.info.id),
     runModes: pipelineRunModes(pipeline),
+    target: deriveWorkflowTarget(
+      pipeline.content,
+      pipeline.info.source === 'project' && projectId ? { projectId } : {},
+    ),
   };
 }
 
@@ -3170,6 +3192,7 @@ function validateAppAdvisorAction(action: unknown): ActionValidationResult {
       return (
         validateOptionalWorktreeScope(action) ??
         optionalStrings(action, ['query']) ??
+        validateOptionalTargetBotId(action) ??
         validateOptionalRunModeArray(action, 'runModes') ??
         validateOptionalBoolean(action, 'includeDisabled') ??
         validateOptionalLimit(action, 'limit', PIPELINE_LIST_MAX_LIMIT) ??
@@ -3530,10 +3553,11 @@ function validateAppAdvisorAction(action: unknown): ActionValidationResult {
     // `window.api.automations.*`.
     // ------------------------------------------------------------------
     case 'automation.list':
-      return action.includeRuns === undefined ||
-        typeof action.includeRuns === 'boolean'
-        ? valid()
-        : invalid('includeRuns');
+      return (
+        validateOptionalTargetBotId(action) ??
+        validateOptionalBoolean(action, 'includeRuns') ??
+        valid()
+      );
     case 'automation.get':
       return requireStrings(action, ['id']) ?? valid();
     case 'automation.open_editor':
@@ -3688,6 +3712,16 @@ function validateAppAdvisorAction(action: unknown): ActionValidationResult {
         record[field] !== undefined && typeof record[field] !== 'string',
     );
     return invalidField ? invalid(invalidField) : null;
+  }
+
+  function validateOptionalTargetBotId(
+    record: Record<string, unknown>,
+  ): ActionValidationResult | null {
+    const { targetBotId } = record;
+    return targetBotId === undefined ||
+      (typeof targetBotId === 'string' && isBotId(targetBotId))
+      ? null
+      : invalid('targetBotId');
   }
 
   function optionalNonEmptyStrings(
@@ -6812,43 +6846,106 @@ async function resolvePipelineScopeCwd(action: {
   });
 }
 
-async function listSharedPipelineInfos(action: {
-  query?: string;
-}): Promise<{ infos: PipelineInfo[]; warnings: string[] }> {
+const SHARED_PIPELINE_CONTEXT_WARNING =
+  'Shared pipeline results are incomplete because account or workspace access could not be confirmed.';
+
+async function readSharedPipelineAccount(): Promise<CanopyCloudAccountPublicState | null> {
   try {
-    const account = await window.api.loadCanopyCloudAccount();
-    if (!account.hasApiKey || !account.account) {
-      return { infos: [], warnings: [] };
-    }
-    const result = await window.pipelines.listShared({
-      limit: PIPELINE_LIST_MAX_LIMIT,
-      ...(action.query ? { q: action.query } : {}),
-    });
-    if (!result.success || !result.data) {
-      return {
-        infos: [],
-        warnings: [
-          result.error ?? `Shared pipelines failed to load from ${CLOUD_NAME}.`,
-        ],
-      };
-    }
-    return {
-      infos: result.data.data.map((summary) => sharedPipelineInfo(summary)),
-      warnings: [],
-    };
-  } catch (error: unknown) {
-    return {
-      infos: [],
-      warnings: [
-        error instanceof Error
-          ? error.message
-          : 'Shared pipelines failed to load.',
-      ],
-    };
+    return await window.api.loadCanopyCloudAccount();
+  } catch (error) {
+    reportClientAppError(error);
+    return null;
   }
 }
 
+async function listSharedPipelineInfos(action: { query?: string }): Promise<{
+  infos: PipelineInfo[];
+  warnings: string[];
+  isCurrent?: () => Promise<boolean>;
+}> {
+  const { accountEpoch, appliedGeneration } =
+    useWorkspaceContextStore.getState();
+  const account = await readSharedPipelineAccount();
+  if (!account || !isConclusiveAccountRead(account)) {
+    return { infos: [], warnings: ['The cloud account could not be read.'] };
+  }
+  if (!account.hasApiKey || !account.account || account.sessionExpired) {
+    return { infos: [], warnings: [] };
+  }
+  const identity = canopyCloudAccountIdentity(account);
+  const isCurrent = async (): Promise<boolean> => {
+    const latest = await readSharedPipelineAccount();
+    const current = useWorkspaceContextStore.getState();
+    return (
+      latest !== null &&
+      isConclusiveAccountRead(latest) &&
+      !latest.sessionExpired &&
+      canopyCloudAccountIdentity(latest) === identity &&
+      latest.serverApiKeyId === account.serverApiKeyId &&
+      current.accountEpoch === accountEpoch &&
+      current.appliedGeneration === appliedGeneration
+    );
+  };
+  const infos = new Map<string, PipelineInfo>();
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+  let complete = false;
+  let failure: string | undefined;
+  try {
+    for (let page = 0; page < SHARED_PIPELINE_MAX_PAGES; page += 1) {
+      const result = await window.pipelines.listShared({
+        limit: SHARED_PIPELINE_PAGE_SIZE,
+        ...(action.query ? { q: action.query } : {}),
+        ...(cursor ? { cursor } : {}),
+      });
+      if (!result.success || !result.data) {
+        failure =
+          result.error ?? `Shared pipelines failed to load from ${CLOUD_NAME}.`;
+        break;
+      }
+      for (const summary of result.data.data) {
+        const info = sharedPipelineInfo(summary);
+        infos.set(info.id, info);
+      }
+      const next = result.data.nextCursor;
+      if (!next && infos.size <= PIPELINE_LIST_MAX_LIMIT) {
+        complete = true;
+        break;
+      }
+      if (
+        !next ||
+        infos.size >= PIPELINE_LIST_MAX_LIMIT ||
+        seenCursors.has(next)
+      )
+        break;
+      seenCursors.add(next);
+      cursor = next;
+    }
+  } catch (error: unknown) {
+    failure =
+      error instanceof Error
+        ? error.message
+        : 'Shared pipelines failed to load.';
+  }
+  if (infos.size > 0 && !(await isCurrent()))
+    return { infos: [], warnings: [SHARED_PIPELINE_CONTEXT_WARNING] };
+  const warnings = [];
+  if (!complete && (!failure || infos.size > 0))
+    warnings.push(
+      failure
+        ? 'Shared pipeline results are incomplete.'
+        : 'Shared pipeline results are incomplete. Narrow the query.',
+    );
+  if (failure) warnings.push(failure);
+  return {
+    infos: [...infos.values()].slice(0, PIPELINE_LIST_MAX_LIMIT),
+    warnings,
+    isCurrent,
+  };
+}
+
 async function loadPipelinesForScope(action: {
+  targetBotId?: string;
   projectId?: string;
   worktreeId?: string;
   query?: string;
@@ -6903,37 +7000,55 @@ async function loadPipelinesForScope(action: {
   const hydrated = await Promise.all(
     infos
       .filter((info) => info.source !== 'curated')
-      .map((info) =>
-        window.pipelines.get(buildPipelineLookupRequest(info, cwd)),
-      ),
+      .map(async (info) => ({
+        source: info.source,
+        result: await window.pipelines
+          .get(buildPipelineLookupRequest(info, cwd))
+          .catch((error: unknown): IPCResult<PipelineData> => {
+            if (info.source !== 'shared') throw error;
+            reportClientAppError(error);
+            return { success: false };
+          }),
+      })),
   );
+  // A listed summary grants no access. The detail reader reauthorizes each
+  // workflow, and a context or account change invalidates the entire batch.
+  const sharedDetails = hydrated.filter((row) => row.source === 'shared');
+  const sharedCurrent =
+    sharedDetails.length === 0 || (await sharedResult.isCurrent?.()) === true;
+  const sharedWarnings = [...sharedResult.warnings];
+  if (!sharedCurrent) sharedWarnings.push(SHARED_PIPELINE_CONTEXT_WARNING);
+  else if (
+    sharedDetails.some(({ result }) => !result.success || !result.data) &&
+    sharedWarnings.length === 0
+  ) {
+    sharedWarnings.push('Some shared workflow definitions could not be read.');
+  }
   const requestedModes = new Set(action.runModes ?? []);
-  const rows = [
-    ...hydrated.flatMap((result) =>
-      result.success && result.data
-        ? [pipelineListRow(result.data, disabledPipelineIds)]
+  const candidates = [
+    ...hydrated.flatMap(({ source, result }) =>
+      (source !== 'shared' || sharedCurrent) && result.success && result.data
+        ? [pipelineListRow(result.data, disabledPipelineIds, action.projectId)]
         : [],
     ),
     ...infos
       .filter((info) => info.source === 'curated')
-      .map(
-        (info): PipelineListRow => ({
-          id: info.id,
-          name: info.name,
-          description: info.description,
-          source: info.source,
-          readonly: true,
-          filename: info.filename,
-          filePath: '',
-          enabled: !disabledPipelineIds.has(info.id),
-          scopes: info.scopes ?? [],
-          metadataOnly: true,
-          runModes: (info.triggerTypes ?? []).map((mode) => ({
-            mode,
-            inputCount: null,
-          })),
-        }),
-      ),
+      .map((info): PipelineListRow & { target?: never } => ({
+        id: info.id,
+        name: info.name,
+        description: info.description,
+        source: info.source,
+        readonly: true,
+        filename: info.filename,
+        filePath: '',
+        enabled: !disabledPipelineIds.has(info.id),
+        scopes: info.scopes ?? [],
+        metadataOnly: true,
+        runModes: (info.triggerTypes ?? []).map((mode) => ({
+          mode,
+          inputCount: null,
+        })),
+      })),
   ]
     .filter((row) =>
       fuzzyMatchText(action.query, [row.id, row.name, row.description]),
@@ -6942,6 +7057,17 @@ async function loadPipelinesForScope(action: {
       (row) =>
         requestedModes.size === 0 ||
         row.runModes.some((mode) => requestedModes.has(mode.mode)),
+    );
+  const botFilterWarnings =
+    action.targetBotId !== undefined &&
+    candidates.some((row) => row.target === undefined)
+      ? [WORKFLOW_BOT_FILTER_UNCLASSIFIED_WARNING]
+      : [];
+  const rows = candidates
+    .filter(
+      (row) =>
+        action.targetBotId === undefined ||
+        workflowTargetsBot(row.target, action.targetBotId),
     )
     .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
   const limit = clampLimit(
@@ -6963,6 +7089,9 @@ async function loadPipelinesForScope(action: {
           : null,
       filters: {
         query: action.query ?? '',
+        ...(action.targetBotId === undefined
+          ? {}
+          : { targetBotId: action.targetBotId }),
         runModes: action.runModes ?? [],
         limit,
       },
@@ -6976,7 +7105,8 @@ async function loadPipelinesForScope(action: {
         ...(projectResult.success
           ? []
           : [projectResult.error ?? 'Project pipelines failed to load.']),
-        ...sharedResult.warnings,
+        ...sharedWarnings,
+        ...botFilterWarnings,
       ],
     },
   };
@@ -7018,7 +7148,11 @@ async function getPipelineDetailsResult(
   return {
     ok: true,
     result: {
-      pipeline: pipelineListRow(pipeline, disabledPipelineIds),
+      pipeline: pipelineListRow(
+        pipeline,
+        disabledPipelineIds,
+        action.projectId,
+      ),
       version: pipeline.content.version ?? '',
       icon: pipeline.content.icon ?? '',
       env: (pipeline.content.env ?? {}) as unknown as AppAdvisorJson,
@@ -14716,9 +14850,13 @@ async function routeAction(
         // by the same owner authority that authorizes runs, so this window
         // and the App Advisor window agree. Unchanged while org projects are
         // off. `automation.get` stays unscoped.
-        const snapshot = await window.api.automations.list({
-          scope: 'selected-context',
-        });
+        const snapshot = filterAutomationTargets(
+          await window.api.automations.list({
+            scope: 'selected-context',
+            includeWorkflowTargets: true,
+          }),
+          action.targetBotId,
+        );
         const result =
           action.includeRuns === false
             ? { activities: snapshot.activities }

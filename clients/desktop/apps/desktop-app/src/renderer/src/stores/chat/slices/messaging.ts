@@ -1281,14 +1281,18 @@ export const createMessagingSlice: StateCreator<
         options?.watcherFired !== undefined
           ? 'automation'
           : undefined);
-      const terminalPromptText =
-        terminalPresentationSource === 'automation' ||
+      const terminalInputId =
+        options?.acceptedInputId ??
+        (terminalPresentationSource === 'automation' ||
         terminalPresentationSource === 'hook'
-          ? terminalPresentationPrompt(
-              unmarkedTerminalPromptText,
-              options?.userMessageId ?? nextMsgId(),
-            )
-          : unmarkedTerminalPromptText;
+          ? (options?.userMessageId ?? nextMsgId())
+          : undefined);
+      const terminalPromptText = terminalInputId
+        ? terminalPresentationPrompt(
+            unmarkedTerminalPromptText,
+            terminalInputId,
+          )
+        : unmarkedTerminalPromptText;
       const watcherTerminalMessageIds = watcherDeliveryId
         ? {
             userMessageId: `watcher-${watcherDeliveryId}`,
@@ -4378,7 +4382,7 @@ export const createMessagingSlice: StateCreator<
         reportRejection();
         return;
       }
-      const fromAcceptedInput = event.acceptedInputId !== undefined;
+      const fromAgent = event.agentSent !== undefined;
       await get().sendMessage(
         event.text,
         event.fileReferences,
@@ -4389,8 +4393,8 @@ export const createMessagingSlice: StateCreator<
         },
         event.inputMode ?? 'typed',
         {
-          ...(!fromAcceptedInput ? { initiationSource: 'automation' } : {}),
-          ...(!fromAcceptedInput && event.automationName
+          ...(!fromAgent ? { initiationSource: 'automation' } : {}),
+          ...(!fromAgent && event.automationName
             ? { automationName: event.automationName }
             : {}),
           userMessageId: event.userMessageId,

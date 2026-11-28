@@ -376,7 +376,7 @@ describe('portal protocol contract', () => {
       approvalsUpgradeNoticeDismissed: false,
     } satisfies RemoteControlAppAdvisorSettings;
     const legacySavePayload: RemoteControlAppAdvisorSettingsSavePayload = {
-      instructions: 'Keep my existing settings.',
+      archiveRetentionDays: 7,
     };
 
     expect(legacySettings).not.toHaveProperty('projectAgentAccess');

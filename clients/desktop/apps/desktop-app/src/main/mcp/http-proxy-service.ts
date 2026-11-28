@@ -996,6 +996,9 @@ export class McpHttpProxyService {
       return;
     }
 
+    // Read once, before the body: a re-initialize that lands while this call
+    // is still arriving or running must not re-key it.
+    const fallbackNonce = this.tools.routeNonce(route);
     let payload: unknown;
     try {
       const raw = await readRequestBody(req);
@@ -1075,7 +1078,9 @@ export class McpHttpProxyService {
 
     let response: Record<string, unknown> | null;
     try {
-      response = await this.handleCanopyMcpJsonRpc(route, payload, uiServer);
+      response = await this.handleCanopyMcpJsonRpc(route, payload, uiServer, {
+        fallbackNonce,
+      });
     } catch (error) {
       response = jsonRpcInternalError(getJsonRpcId(payload), error);
     }
@@ -1095,6 +1100,7 @@ export class McpHttpProxyService {
         route,
         toolRequestId,
         params?._meta,
+        fallbackNonce,
       );
       try {
         route.nativeToolResultDelivery({
@@ -1132,7 +1138,12 @@ export class McpHttpProxyService {
           worktreeId: route.worktreeId,
           chatId: route.chatId,
         },
-        this.tools.routeToolUseId(route, toolRequestId, params?._meta),
+        this.tools.routeToolUseId(
+          route,
+          toolRequestId,
+          params?._meta,
+          fallbackNonce,
+        ),
       );
     }
   }
@@ -1263,6 +1274,8 @@ export class McpHttpProxyService {
     }
 
     if (method === 'initialize') {
+      // The UI server shares this route and never keys by the nonce.
+      if (!uiServer) this.tools.resetRouteNonce(route);
       return {
         jsonrpc: '2.0',
         id,

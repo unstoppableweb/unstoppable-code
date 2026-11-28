@@ -384,13 +384,29 @@ export function isElectronW5HandoffPending(): boolean {
 
 type Endpoint = Parameters<ElectronDaemonHost['connect']>[0]['endpoint'];
 
+/** Keyed by each connection's own identity, which a session's fenced client passes through. */
+const verifiedEndpoints = new WeakMap<
+  ElectronDaemonClient['identity'],
+  Endpoint
+>();
+
+/**
+ * The endpoint a connection reached after both runtime checks passed, so a
+ * window admitted on it connects where main did (CAN-8068). Trusted main only.
+ */
+export function verifiedDaemonEndpoint(
+  client: Pick<ElectronDaemonClient, 'identity'>,
+): Endpoint | undefined {
+  return verifiedEndpoints.get(client.identity);
+}
+
 /** Connects and initializes; never leases. */
-function connectTrusted(
+async function connectTrusted(
   trusted: ElectronDaemonHost,
   endpoint: Endpoint,
   setup: { readonly timeoutMs: number; readonly signal: AbortSignal },
 ): Promise<ElectronDaemonClient> {
-  return trusted.connect({
+  const client = await trusted.connect({
     endpoint,
     ...setup,
     clientName: 'desktop',
@@ -403,6 +419,8 @@ function connectTrusted(
     ],
     definitions: ELECTRON_DAEMON_DEFINITIONS,
   });
+  verifiedEndpoints.set(client.identity, endpoint);
+  return client;
 }
 
 /** The record port the daemon-backed W5 store calls, at these versions. */

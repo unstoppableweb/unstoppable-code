@@ -19,12 +19,16 @@ import {
   matchCodexSpeedCatalogModel,
   type CodexSpeedRouteFacts,
 } from './codex-speed-availability';
-import type { CodexContextWindowSetting } from '@canopy/protocol/agent-model-config';
+import {
+  CODEX_CONTEXT_WINDOW_FLOOR,
+  type CodexContextWindowSetting,
+} from '@canopy/protocol/agent-model-config';
 
+export {
+  CODEX_CONTEXT_WINDOW_FLOOR,
+  isCodexContextWindowSetting,
+} from '@canopy/protocol/agent-model-config';
 export type { CodexContextWindowSetting } from '@canopy/protocol/agent-model-config';
-
-/** The smallest custom window Canopy sends. Codex itself sets none. */
-export const CODEX_CONTEXT_WINDOW_FLOOR = 128_000;
 
 /**
  * Requests with more input than this are billed at OpenAI's long-context
@@ -38,19 +42,6 @@ export const CODEX_LONG_CONTEXT_THRESHOLD = 272_000;
 const CODEX_AUTO_COMPACT_PERCENT = 90;
 /** Codex's default `effective_context_window_percent`. */
 const CODEX_DEFAULT_USABLE_PERCENT = 95;
-
-export function isCodexContextWindowSetting(
-  value: unknown,
-): value is CodexContextWindowSetting {
-  return (
-    value === 'model-default' ||
-    value === 'standard-pricing' ||
-    value === 'maximum' ||
-    (typeof value === 'number' &&
-      Number.isSafeInteger(value) &&
-      value >= CODEX_CONTEXT_WINDOW_FLOOR)
-  );
-}
 
 export interface CodexContextWindowBounds {
   /** The window Codex uses when Canopy sends no override. */

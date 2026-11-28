@@ -32,6 +32,7 @@ export {
 } from './preserve-stored-keys';
 export {
   storedClientLocalValues,
+  type ClientLocalPreferences,
   type DomainPreferencesData,
   type StoredDomainPreferences,
 } from './domain-preferences';

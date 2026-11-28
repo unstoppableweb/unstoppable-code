@@ -12,6 +12,7 @@ import type {
   CanopyStreamDefinitionMap,
   CoreRuntimeInitializeResult,
   CoreClientLeaseEvicted,
+  CoreClientWindowTicket,
 } from '@canopy/protocol/canopy-core';
 
 export interface CanopyClientDefinitions<
@@ -52,6 +53,12 @@ export interface CanopyClientOptions<
    * Trusted main composition only; never from renderer, Portal or remote input.
    */
   readonly desktopPeerProof?: (connectionId: string) => string;
+  /**
+   * A renderer window's single-use ticket from its host (CAN-8039), sent as
+   * `client.windowTicket`: the daemon serves this connection as that window,
+   * or closes it when the ticket is refused. Never beside an owner proof.
+   */
+  readonly windowTicket?: CoreClientWindowTicket;
   /** Aborting closes the client and the connection. */
   readonly signal?: AbortSignal;
   /**

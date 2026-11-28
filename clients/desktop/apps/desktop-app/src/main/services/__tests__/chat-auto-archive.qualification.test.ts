@@ -73,6 +73,8 @@ let warnings: string[];
 let locked: boolean;
 let closeBlocked: boolean;
 let inFlight: boolean;
+let awaitingWatcher: boolean;
+let watcherChecks: number;
 let refuseArchive: boolean;
 let conflictsLeft: number;
 let sequence = 0;
@@ -92,6 +94,10 @@ function host(
     closeBlocked: () => closeBlocked,
     locked: () => locked,
     dispatchInFlight: () => inFlight,
+    awaitsWatcher: () => {
+      watcherChecks += 1;
+      return Promise.resolve(awaitingWatcher);
+    },
     dispatch: (request): Promise<ChatCommandResult> => {
       if (conflictsLeft > 0 && request.command.type === 'chat.archive_tab') {
         conflictsLeft -= 1;
@@ -277,6 +283,8 @@ beforeEach(async () => {
   locked = false;
   closeBlocked = false;
   inFlight = false;
+  awaitingWatcher = false;
+  watcherChecks = 0;
   refuseArchive = false;
   conflictsLeft = 0;
   await fixture.createChat(SCOPE);
@@ -549,6 +557,25 @@ describe('main archives auto-archive chats at a completed turn (CAN-6014)', () =
     );
     expect(instructions).not.toContain('core.chat.archive');
   }, 30_000);
+
+  it("never archives a chat an active watcher notifies; the notification's turn drops the marker, so the chat stays open", async () => {
+    // An unmarked chat never lists watchers.
+    await turn('t-unmarked', 'completed');
+    expect(watcherChecks).toBe(0);
+    awaitingWatcher = true;
+    await mark();
+    await turn('t-ack', 'completed');
+    expect(watcherChecks).toBe(1);
+    expect(await state()).toEqual({
+      live: [{ id: 'chat-1', autoArchive: true }],
+      archived: [],
+    });
+    // The watcher fires: its message starts a newer turn in the open chat.
+    awaitingWatcher = false;
+    await turn('t-result', 'completed');
+    expect(await state()).toEqual({ live: [{ id: 'chat-1' }], archived: [] });
+    expect(instructions).not.toContain('core.chat.archive');
+  });
 
   it(`a refused archive keeps the marker, warns, retries at the next committed idle and stops after ${String(AUTO_ARCHIVE_MAX_ATTEMPTS)} tries`, async () => {
     archiver.stop();

@@ -357,6 +357,25 @@ export function recordScriptReadRoute(
   counters.route.add(`scripts.${operation}.${outcome}`, 1);
 }
 
+/** Where a user's Stop of an orphaned script run ran. */
+export type ScriptStopRouteOutcome =
+  | 'daemon.served'
+  | 'daemon.refused'
+  | 'daemon.unavailable'
+  | 'daemon.outcomeUnknown'
+  | 'direct';
+
+/**
+ * Where one script Stop ran, counted once per Stop:
+ * `daemon.served` when the daemon answered, `daemon.refused` when a reached
+ * daemon refused it, `daemon.unavailable` when nothing was sent,
+ * `daemon.outcomeUnknown` when the reply was lost after the send and its
+ * resend, and `direct` when Electron main ran it in process.
+ */
+export function recordScriptStopRoute(outcome: ScriptStopRouteOutcome): void {
+  counters.route.add(`scripts.stop.${outcome}`, 1);
+}
+
 /** A `worker.pipeline.execution` read Electron main routes (CAN-7874). */
 export type PipelineReadRouteOperation = 'get';
 

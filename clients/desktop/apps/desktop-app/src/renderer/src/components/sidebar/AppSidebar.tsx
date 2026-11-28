@@ -256,6 +256,12 @@ interface StickyViewportMetrics {
   chatsStackHeight: number;
   workspaceHeaderTop: number | null;
   selectedPinBottomClip: number;
+  /** A host-rendered Projects header's height under the band, else 0. */
+  externalProjectsHeaderHeight: number;
+  /** The selected-row pin group's height while it shows, else 0. */
+  selectedPinTopHeight: number;
+  /** The workspace slot keeps its row (the CSS `2rem` fallback). */
+  workspacesSlotReserved: boolean;
 }
 
 const stickyViewportMetrics = new WeakMap<HTMLElement, StickyViewportMetrics>();
@@ -270,10 +276,46 @@ function getStickyViewportMetrics(
       chatsStackHeight: 0,
       workspaceHeaderTop: null,
       selectedPinBottomClip: 0,
+      externalProjectsHeaderHeight: 0,
+      selectedPinTopHeight: 0,
+      workspacesSlotReserved: true,
     };
     stickyViewportMetrics.set(viewport, metrics);
   }
   return metrics;
+}
+
+/**
+ * Reserves the whole sticky stack on the viewport, so programmatic scrolls
+ * (pending-worktree reveal, selected-row restore) land below it rather than
+ * under it. The stack is the band plus the same three layers the occlusion
+ * clip and the row fade add under it (`globals.css`,
+ * `sidebar-workspace-flow-clip`): a host-rendered Projects header, the
+ * selected-row pin group and the workspace slot. Reserving the band alone
+ * parked a revealed row inside the fade, where it was invisible.
+ *
+ * Those layers publish their heights as custom properties on the band and the
+ * rows container, which are descendants of the viewport: a `var()` here would
+ * only ever resolve to its fallback. The padding is built from the measured
+ * values instead.
+ */
+function syncViewportScrollPadding(viewport: HTMLElement): void {
+  const metrics = getStickyViewportMetrics(viewport);
+  if (metrics.workspaceHeaderTop === null) return;
+  const stackPx =
+    metrics.workspaceHeaderTop +
+    metrics.externalProjectsHeaderHeight +
+    metrics.selectedPinTopHeight;
+  // The slot's own height is the CSS `2rem` default while it is reserved.
+  const scrollPadding = metrics.workspacesSlotReserved
+    ? `calc(${stackPx}px + 2rem)`
+    : `${stackPx}px`;
+  // Compare against what was written: the browser may serialize the calc()
+  // differently when read back from `style.scrollPaddingTop`.
+  if (viewport.dataset.sidebarScrollPadding !== scrollPadding) {
+    viewport.dataset.sidebarScrollPadding = scrollPadding;
+    viewport.style.scrollPaddingTop = scrollPadding;
+  }
 }
 
 function setStylePropertyIfChanged(
@@ -576,11 +618,8 @@ function applyStickyWorkspaceHeaderOffset(
     EXTERNAL_PROJECTS_HEADER_HEIGHT_VAR,
     externalProjectsHeight,
   );
-  // Reserve the whole stack so programmatic scrolls (pending-worktree reveal,
-  // selected-row restore) land below it rather than under it.
-  if (viewport.style.scrollPaddingTop !== value) {
-    viewport.style.scrollPaddingTop = value;
-  }
+  metrics.externalProjectsHeaderHeight = projectsHeaderHeight;
+  syncViewportScrollPadding(viewport);
 }
 
 /**
@@ -1115,7 +1154,10 @@ function resetStickySelectedPin(viewport: HTMLElement): void {
   }
   if (viewport.dataset.sidebarSelectedPinApplied !== 'true') return;
   delete viewport.dataset.sidebarSelectedPinApplied;
-  getStickyViewportMetrics(viewport).selectedPinBottomClip = 0;
+  const resetMetrics = getStickyViewportMetrics(viewport);
+  resetMetrics.selectedPinBottomClip = 0;
+  resetMetrics.selectedPinTopHeight = 0;
+  syncViewportScrollPadding(viewport);
   const stickyControls = viewport.querySelector<HTMLElement>(
     STICKY_CONTROLS_SELECTOR,
   );
@@ -1170,8 +1212,10 @@ function applyStickySelectedPin(
   if (viewport.dataset.sidebarSelectedPinApplied !== 'true') {
     viewport.dataset.sidebarSelectedPinApplied = 'true';
   }
-  getStickyViewportMetrics(viewport).selectedPinBottomClip =
-    band.bottomClipExtension;
+  const pinMetrics = getStickyViewportMetrics(viewport);
+  pinMetrics.selectedPinBottomClip = band.bottomClipExtension;
+  pinMetrics.selectedPinTopHeight = Math.max(0, band.topGroupHeight);
+  syncViewportScrollPadding(viewport);
   setPinLengthVar(
     pin.stickyControls,
     SELECTED_PIN_TOP_HEIGHT_VAR,
@@ -2340,6 +2384,10 @@ function syncStickyWorkspaceRail(
         firstSlotRow !== null &&
         firstSlotRow.isConnected;
   syncWorkspacesSlotHeightVar(layout.workspacesContent, reserveSlotHeight);
+  if (viewportMetrics.workspacesSlotReserved !== reserveSlotHeight) {
+    viewportMetrics.workspacesSlotReserved = reserveSlotHeight;
+    syncViewportScrollPadding(viewport);
+  }
   const nextIncomingFlowHeader =
     slotActive && layout.incomingStickySlotRow && incomingSection
       ? incomingSection.header

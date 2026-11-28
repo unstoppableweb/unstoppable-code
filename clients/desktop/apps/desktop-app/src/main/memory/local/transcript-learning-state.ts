@@ -5,7 +5,7 @@ import { withMemoryWriteLock } from './edit-coordination';
 import {
   assertMemoryPathContained,
   writeMemoryFileAtomically,
-} from './memory-files';
+} from '@canopy/memory-store/memory-files';
 
 export const CHAT_LEARNING_INTERVAL_MS = 6 * 60 * 60_000;
 export const CHAT_LEARNING_DAILY_CAP_USD = 1;

@@ -62,6 +62,8 @@ export const DESKTOP_SUBSCRIPTION_SOURCES = ['claude', 'codex'] as const;
 export type DesktopSubscriptionSource =
   (typeof DESKTOP_SUBSCRIPTION_SOURCES)[number];
 
+type DesktopRecoverySource = DesktopSubscriptionSource | 'antigravity';
+
 export function isDesktopSubscriptionSource(
   source: ProviderSourceId,
 ): source is DesktopSubscriptionSource {
@@ -97,13 +99,15 @@ export interface DesktopAccountSourcesInput {
   >;
   /** Each provider whose usage limit is reached, with its reset time. */
   readonly limited: DesktopUsageLimits;
+  /** The connected Antigravity account's policy-allowed default model. */
+  readonly antigravityModel?: DesktopChoiceModel;
   /** Each provider's own default model, when it has one. */
   readonly defaultModelFor: (
     provider: DesktopSubscriptionSource,
   ) => DesktopChoiceModel | undefined;
   /** Why the chat can't move to a provider now, when it can't. */
   readonly blockedReasonFor?: (
-    provider: DesktopSubscriptionSource,
+    provider: DesktopRecoverySource,
   ) => string | undefined;
   /**
    * The provider's own route for the chat's model under another id (a chat
@@ -163,27 +167,37 @@ export function accountUsageLimits(
   return limits;
 }
 
-/** The subscription rows' facts. Pure, so the resolver input stays testable. */
+/** Desktop account sources for the recovery dialog. */
 export function buildDesktopAccountSources({
   modelProvider,
   modelRunsNatively,
   availability,
   limited,
+  antigravityModel,
   defaultModelFor,
   blockedReasonFor,
   equivalentModelFor,
 }: DesktopAccountSourcesInput): ProviderSourceFacts<DesktopChoiceModel>[] {
-  return DESKTOP_SUBSCRIPTION_SOURCES.map((source) => {
-    const defaultModel = defaultModelFor(source);
+  const sources: readonly DesktopRecoverySource[] =
+    antigravityModel !== undefined
+      ? [...DESKTOP_SUBSCRIPTION_SOURCES, 'antigravity']
+      : DESKTOP_SUBSCRIPTION_SOURCES;
+  return sources.map((source) => {
+    const subscription = isDesktopSubscriptionSource(source);
+    const defaultModel = subscription
+      ? defaultModelFor(source)
+      : antigravityModel;
     const blockedReason = blockedReasonFor?.(source);
-    const equivalentModel = equivalentModelFor?.(source);
+    const equivalentModel = subscription
+      ? equivalentModelFor?.(source)
+      : undefined;
     return {
       source,
       connection: desktopProviderConnection(
         availability[source],
         limited[source] ?? null,
       ),
-      connectable: true,
+      connectable: subscription,
       runsTargetModel: modelRunsNatively && modelProvider === source,
       ...(defaultModel !== undefined ? { defaultModel } : {}),
       ...(equivalentModel !== undefined ? { equivalentModel } : {}),

@@ -1747,6 +1747,13 @@ export function getAppAdvisorSettingsFilePath(): string {
   );
 }
 
+export function getAppAdvisorInstructionSaveFilePath(): string {
+  return join(
+    getAppManagedChatWorkspaceDir(APP_ADVISOR_PROJECT_ID),
+    'instruction-save.json',
+  );
+}
+
 /**
  * Writable home directory for the embedded Pipeline Editor assistant. Durable
  * app-managed metadata stays in the parent directory so the agent cannot

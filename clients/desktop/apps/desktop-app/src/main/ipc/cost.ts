@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
   BrowserWindow,
-  ipcMain,
   type IpcMainEvent,
   type IpcMainInvokeEvent,
 } from 'electron';
@@ -45,7 +44,7 @@ import {
   watchCostScope,
 } from '../cost-index/events';
 import type { DesktopIpcCallerResolver } from './file-tree';
-import { registerIpcHandler } from './register';
+import { onIpcMessage, registerIpcHandler } from './register';
 
 type CostDispatcher = Pick<DesktopCanopyDispatcher, 'query' | 'instruction'>;
 
@@ -391,12 +390,12 @@ export function registerCostHandlers(
     const scope = validateWatchEvent(event, resolveCaller, scopeValue);
     if (scope !== null) watchManager.unwatch(event.sender, scope);
   };
-  ipcMain.on(IPC_CHANNELS.costWatchScope, onWatch);
-  ipcMain.on(IPC_CHANNELS.costUnwatchScope, onUnwatch);
+  const stopListening: Array<() => void> = [];
+  stopListening.push(onIpcMessage(IPC_CHANNELS.costWatchScope, onWatch));
+  stopListening.push(onIpcMessage(IPC_CHANNELS.costUnwatchScope, onUnwatch));
 
   const dispose = (): void => {
-    ipcMain.removeListener(IPC_CHANNELS.costWatchScope, onWatch);
-    ipcMain.removeListener(IPC_CHANNELS.costUnwatchScope, onUnwatch);
+    for (const stop of stopListening) stop();
     watchManager.dispose();
     if (disposeActiveCostScopeWatchHandlers === dispose) {
       disposeActiveCostScopeWatchHandlers = undefined;

@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 27,
+  "protocolVersion": 28,
   "tunneledChannels": [
     "account-proxy:changed",
     "account-proxy:connect",

@@ -25,9 +25,15 @@ import {
   createCanopyOwnerProofVerifier,
   serveCanopyDaemonControlPlane,
   type CanopyControlConnectionIdentity,
+  type CanopyControlWindowIdentity,
+  type CanopyDaemonControlPlaneOptions,
   type CanopyOwnerProofVerifier,
+  type CanopyWindowTicketVerifier,
 } from '@canopy/core-runtime/node';
-import { decodeCanopyError } from '@canopy/protocol/canopy-core';
+import {
+  decodeCanopyError,
+  type CanopyOperationName,
+} from '@canopy/protocol/canopy-core';
 import { createPlatformEndpointServices } from '@canopy/core-platform';
 
 const posix = process.platform === 'win32' ? describe.skip : describe;
@@ -97,7 +103,13 @@ async function startedKernel(): Promise<Kernel> {
   return runtime;
 }
 
-async function controlPlane(ownerProof?: CanopyOwnerProofVerifier): Promise<{
+async function controlPlane(
+  ownerProof?: CanopyOwnerProofVerifier,
+  windows: Pick<
+    CanopyDaemonControlPlaneOptions,
+    'windowTickets' | 'operationsFor'
+  > = {},
+): Promise<{
   path: string;
   identities: CanopyControlConnectionIdentity[];
 }> {
@@ -120,6 +132,7 @@ async function controlPlane(ownerProof?: CanopyOwnerProofVerifier): Promise<{
       };
     },
     ...(ownerProof && { ownerProof }),
+    ...windows,
     buildVersion: '0.0.0-test',
     idleGrace: { graceMs: 30_000 },
     onIdle: () => undefined,
@@ -436,5 +449,258 @@ posix('desktop peer proof (CAN-7201)', () => {
     expect(
       seen.includes(proof) || seen.includes(hex) || seen.includes(encoded),
     ).toBe(false);
+  });
+});
+
+/** One raw request's response; notifications in between are skipped. */
+async function requestOn(
+  connection: CanopyFramedConnection,
+  id: number,
+  method: CanopyOperationName,
+  params: Record<string, unknown>,
+): Promise<{ result?: unknown; error?: ReturnType<typeof decodeCanopyError> }> {
+  await connection.send({ jsonrpc: '2.0', id, method, params });
+  for (;;) {
+    const message = await connection.receive();
+    if (!('id' in message) || 'method' in message || message.id !== id)
+      continue;
+    return 'error' in message
+      ? { error: decodeCanopyError(message.error) }
+      : { result: message.result };
+  }
+}
+
+function operationsOf(result: unknown): unknown {
+  if (typeof result !== 'object' || result === null) return undefined;
+  const capabilities: unknown = Reflect.get(result, 'capabilities');
+  if (typeof capabilities !== 'object' || capabilities === null)
+    return undefined;
+  const operations: unknown = Reflect.get(capabilities, 'operations');
+  return Array.isArray(operations)
+    ? operations.filter((name) => typeof name === 'string').sort()
+    : operations;
+}
+
+posix('desktop window ticket (CAN-8039)', () => {
+  const secret = randomBytes(32);
+  const verifier = (): CanopyOwnerProofVerifier =>
+    createCanopyOwnerProofVerifier({
+      secret,
+      dataRootHash: AUTH.dataRootHash,
+    });
+  const WINDOW_REFUSED = {
+    kind: 'unauthenticated',
+    message: 'The window ticket was refused.',
+  };
+  /** Single-use tickets the test issues, and the window ends it reports. */
+  const ticketsFor = (): CanopyWindowTicketVerifier & {
+    issue(ticket: string, window: CanopyControlWindowIdentity): void;
+    end(windowInstanceId: string): void;
+    readonly presented: unknown[];
+  } => {
+    const issued = new Map<string, CanopyControlWindowIdentity>();
+    const ended = new Set<(windowInstanceId: string) => void>();
+    const presented: unknown[] = [];
+    return {
+      presented,
+      issue: (ticket, window) => void issued.set(ticket, window),
+      end: (windowInstanceId) =>
+        ended.forEach((listener) => listener(windowInstanceId)),
+      redeem: (ticket) => {
+        presented.push(ticket);
+        if (typeof ticket !== 'string') return null;
+        const window = issued.get(ticket) ?? null;
+        issued.delete(ticket);
+        return window;
+      },
+      onWindowEnded: (listener) => {
+        ended.add(listener);
+        return () => void ended.delete(listener);
+      },
+    };
+  };
+  const WINDOW = { windowInstanceId: 'window-1', issuerLeaseId: 'lease-1' };
+  const ONLY_HEALTH: ReadonlySet<string> = new Set(['core.runtime.health.get']);
+  const windowsOnly = (
+    identity: CanopyControlConnectionIdentity,
+  ): ReadonlySet<string> | undefined =>
+    identity.window ? ONLY_HEALTH : undefined;
+  const identitiesOf = (
+    daemon: { identities: CanopyControlConnectionIdentity[] },
+    connectionId: string,
+  ): CanopyControlConnectionIdentity[] =>
+    daemon.identities.filter(
+      (identity) => identity.connectionId === connectionId,
+    );
+
+  it('a ticket admits its window once; a replayed, unknown or malformed ticket is refused and closes the connection', async () => {
+    const tickets = ticketsFor();
+    const daemon = await controlPlane(verifier(), {
+      windowTickets: tickets,
+      operationsFor: windowsOnly,
+    });
+    tickets.issue('ticket-1', WINDOW);
+    const admitted = await rawConnection(daemon.path);
+    const outcome = await initializeWithClient(admitted, {
+      windowTicket: 'ticket-1',
+    });
+    expect(outcome.error).toBeUndefined();
+    const seen = identitiesOf(daemon, admitted.connectionId);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(
+      seen.every(
+        (identity) =>
+          !identity.owner &&
+          identity.window?.windowInstanceId === WINDOW.windowInstanceId &&
+          identity.window.issuerLeaseId === WINDOW.issuerLeaseId,
+      ),
+    ).toBe(true);
+    for (const claim of ['ticket-1', 'never-issued', 42, null, {}]) {
+      const raw = await rawConnection(daemon.path);
+      expect(
+        await initializeWithClient(raw, { windowTicket: claim }),
+      ).toMatchObject({ error: WINDOW_REFUSED });
+      expect(await closed(raw)).toBe(true);
+      expect(
+        identitiesOf(daemon, raw.connectionId).some(
+          (identity) => identity.window !== null,
+        ),
+      ).toBe(false);
+    }
+  });
+
+  it('a daemon without a ticket verifier refuses every ticket', async () => {
+    const daemon = await controlPlane(verifier());
+    const raw = await rawConnection(daemon.path);
+    expect(
+      await initializeWithClient(raw, { windowTicket: 'ticket-1' }),
+    ).toMatchObject({ error: WINDOW_REFUSED });
+    expect(await closed(raw)).toBe(true);
+  });
+
+  it('an owner proof beside a window ticket closes the connection, and spends the ticket', async () => {
+    const tickets = ticketsFor();
+    const daemon = await controlPlane(verifier(), { windowTickets: tickets });
+    tickets.issue('ticket-1', WINDOW);
+    const raw = await rawConnection(daemon.path);
+    expect(
+      await initializeWithClient(raw, {
+        ownerProof: createCanopyOwnerProof(
+          secret,
+          raw.connectionId,
+          AUTH.dataRootHash,
+        ),
+        windowTicket: 'ticket-1',
+      }),
+    ).toMatchObject({ error: WINDOW_REFUSED });
+    expect(await closed(raw)).toBe(true);
+    expect(
+      identitiesOf(daemon, raw.connectionId).some(
+        (identity) => identity.owner || identity.window !== null,
+      ),
+    ).toBe(false);
+    // Spent: the same ticket admits nothing afterwards.
+    const again = await rawConnection(daemon.path);
+    expect(
+      await initializeWithClient(again, { windowTicket: 'ticket-1' }),
+    ).toMatchObject({ error: WINDOW_REFUSED });
+  });
+
+  it('a peer proof beside a window ticket gets only the window allowlist, never more than the peer alone', async () => {
+    const tickets = ticketsFor();
+    const daemon = await controlPlane(verifier(), {
+      windowTickets: tickets,
+      operationsFor: windowsOnly,
+    });
+    const peerOnly = await rawConnection(daemon.path);
+    const peer = await initializeWithClient(peerOnly, {
+      desktopPeerProof: createCanopyDesktopPeerProof(
+        secret,
+        peerOnly.connectionId,
+        AUTH.dataRootHash,
+      ),
+    });
+    tickets.issue('ticket-1', WINDOW);
+    const raw = await rawConnection(daemon.path);
+    const window = await initializeWithClient(raw, {
+      desktopPeerProof: createCanopyDesktopPeerProof(
+        secret,
+        raw.connectionId,
+        AUTH.dataRootHash,
+      ),
+      windowTicket: 'ticket-1',
+    });
+    expect(window.error).toBeUndefined();
+    const seen = identitiesOf(daemon, raw.connectionId);
+    expect(seen.every((identity) => identity.peer && identity.window)).toBe(
+      true,
+    );
+    expect(operationsOf(window.result)).toEqual(['core.runtime.health.get']);
+    expect(operationsOf(peer.result)).toEqual(
+      expect.arrayContaining([
+        'core.runtime.health.get',
+        'core.runtime.manifest.get',
+        'core.client.lease.acquire',
+      ]),
+    );
+    // Outside the allowlist is permission_denied, never served as the peer.
+    for (const [method, params] of [
+      ['core.runtime.manifest.get', {}],
+      ['core.client.lease.release', { reason: 'normal_shutdown' }],
+    ] as const)
+      expect(await requestOn(raw, 2, method, params)).toMatchObject({
+        error: { kind: 'permission_denied' },
+      });
+    expect(
+      await requestOn(raw, 3, 'core.runtime.health.get', {}),
+    ).toHaveProperty('result');
+    expect(raw.signal.aborted).toBe(false);
+  });
+
+  it("closes a window connection when its issuing lease ends, or its window ends, and nobody else's", async () => {
+    const tickets = ticketsFor();
+    const daemon = await controlPlane(verifier(), { windowTickets: tickets });
+    const issuer = await rawConnection(daemon.path);
+    await initializeWithClient(issuer, {});
+    const acquired = await requestOn(issuer, 2, 'core.client.lease.acquire', {
+      clientInstanceId: 'electron-main',
+      interfaceKind: 'desktop',
+      label: 'Desktop',
+      interactive: true,
+      foreground: true,
+      renewalIntervalMs: 15_000,
+      _meta: { idempotencyKey: 'acquire-1' },
+    });
+    const leaseId: unknown =
+      typeof acquired.result === 'object' && acquired.result !== null
+        ? Reflect.get(acquired.result, 'leaseId')
+        : undefined;
+    if (typeof leaseId !== 'string') throw new Error('No lease.');
+    const windowOn = async (
+      ticket: string,
+      windowInstanceId: string,
+    ): Promise<CanopyFramedConnection> => {
+      tickets.issue(ticket, { windowInstanceId, issuerLeaseId: leaseId });
+      const raw = await rawConnection(daemon.path);
+      expect(
+        (await initializeWithClient(raw, { windowTicket: ticket })).error,
+      ).toBeUndefined();
+      return raw;
+    };
+    const first = await windowOn('ticket-1', 'window-1');
+    const second = await windowOn('ticket-2', 'window-2');
+    const bystander = await rawConnection(daemon.path);
+    await initializeWithClient(bystander, {});
+
+    tickets.end('window-1');
+    expect(await closed(first)).toBe(true);
+    expect(second.signal.aborted).toBe(false);
+
+    await requestOn(issuer, 3, 'core.client.lease.release', {
+      reason: 'normal_shutdown',
+    });
+    expect(await closed(second)).toBe(true);
+    expect(bystander.signal.aborted).toBe(false);
+    expect(issuer.signal.aborted).toBe(false);
   });
 });

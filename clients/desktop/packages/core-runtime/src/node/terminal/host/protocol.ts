@@ -27,6 +27,11 @@ export interface TerminalHostLaunch {
    * host reports its bytes. Every terminal reports first output and offsets.
    */
   persist?: boolean;
+  /**
+   * A Claude terminal (Q-D, CAN-8038): the host reads its live output for
+   * the user-interrupted status line and reports each match.
+   */
+  watchInterrupt?: boolean;
 }
 
 export type TerminalHostRequest =
@@ -128,13 +133,15 @@ export type TerminalHostEvent = { lifetimeId?: number } & (
 /**
  * What a terminal host tells its worker about output outside any attachment
  * (CAN-7051): the bytes of a persisted terminal, in order and before its
- * exit; a terminal's first live output (never its restored replay); and its
- * output offset, coalesced.
+ * exit; a terminal's first live output (never its restored replay); its
+ * output offset, coalesced; and a watched terminal's user-interrupted status
+ * line, once per match (CAN-8038).
  */
 export type TerminalHostReport = { lifetimeId?: number } & (
   | { type: 'output'; terminalId: string; toOffset: number; data: Uint8Array }
   | { type: 'firstOutput'; terminalId: string; at: number }
   | { type: 'offset'; terminalId: string; outputOffset: number }
+  | { type: 'interruptText'; terminalId: string }
 );
 
 /** Worker to host. */

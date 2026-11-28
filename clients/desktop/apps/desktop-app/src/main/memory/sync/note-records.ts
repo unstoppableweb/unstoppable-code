@@ -9,7 +9,7 @@ import {
   type MemoryNoteOrigin,
   type MemoryNoteRecord,
 } from '@canopy/protocol/memory-sync';
-import { readMemoryNoteFrontMatter } from '../local/note-identity';
+import { readMemoryNoteFrontMatter } from '@canopy/memory-store/note-identity';
 import { sha256Hex } from './replica-files';
 
 /*

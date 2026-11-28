@@ -5,6 +5,7 @@ import type {
 } from '@canopy/execution-engine/types/observability';
 import type {
   AccountProxyConnection,
+  AccountProxyErrorCode,
   AccountProxyRoutingStrategy,
 } from '@canopy/protocol/preferences';
 // Account proxy (CLIProxyAPI) contracts shared by main, preload, and the
@@ -14,6 +15,7 @@ export { ACCOUNT_PROXY_ROUTING_STRATEGIES } from '@canopy/protocol/preferences';
 export type {
   AccountProxyConnection,
   AccountProxyConnectionKind,
+  AccountProxyErrorCode,
   AccountProxyRoutingStrategy,
 } from '@canopy/protocol/preferences';
 
@@ -76,23 +78,6 @@ export interface AccountProxyAccount {
   /** Detailed provider usage, if a live or passive observation is available. */
   readonly usage?: AccountProxyUsageSnapshot;
 }
-
-export type AccountProxyErrorCode =
-  | 'invalid-url'
-  | 'insecure-url'
-  | 'unreachable'
-  | 'not-proxy'
-  | 'too-old'
-  | 'unauthorized'
-  | 'blocked'
-  | 'management-disabled'
-  | 'remote-management-disabled'
-  | 'storage-unavailable'
-  /** No proxy release is published for this platform. */
-  | 'local-unsupported'
-  /** The proxy on this device could not be downloaded or started. */
-  | 'local-failed'
-  | 'unexpected';
 
 export interface AccountProxyError {
   readonly secureStorageFailure?: SecureStorageFailure;

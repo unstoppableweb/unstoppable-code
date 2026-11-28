@@ -20,7 +20,7 @@ import {
   webCoreRelayNarrowParams,
   webCoreRelayRefuseParams,
 } from '../web-core-relay-definitions';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
   parseEgressAllowedHosts,
@@ -1584,5 +1584,30 @@ describe('web core authority on the canopy-core:relay channel (CAN-4185 PR-C)', 
     expect(webCoreBinding).not.toHaveBeenCalled();
     local.dispose();
     webCore.dispose();
+  });
+});
+
+describe("an orphaned run's Stop reaches main only through the relay (CAN-7586)", () => {
+  it("is named only by the relay allowlist, the worker.script adapter, the daemon stop route and main's daemon client definitions, and the relay is blocked for Remote Control", () => {
+    const mainRoot = resolve(__dirname, '../../..');
+    const senders = readdirSync(mainRoot, { recursive: true })
+      .map(String)
+      .filter(
+        (file) =>
+          /\.tsx?$/.test(file) &&
+          !file.split(/[\\/]/).includes('__tests__') &&
+          readFileSync(resolve(mainRoot, file), 'utf8').includes(
+            "'worker.script.execution.stop'",
+          ),
+      )
+      .map((file) => file.split(/[\\/]/).join('/'))
+      .sort();
+    expect(senders).toEqual([
+      'canopy-runtime/electron-daemon-host.ts',
+      'canopy-runtime/renderer-relay/interface-allowlist.generated.ts',
+      'canopy-runtime/worker-script-adapter.ts',
+      'lib/daemon-script-route.ts',
+    ]);
+    expect(IPC_REMOTE_DISPOSITIONS.canopyCoreRelay).toBe('blocked');
   });
 });

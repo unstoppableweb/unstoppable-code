@@ -75,6 +75,7 @@ export * from './runtime/runtime';
 export * from './client/leases';
 export * from './client/capabilities';
 export * from './client/tools';
+export * from './client/window';
 export * from './events/events';
 
 export * from './vaultMigration/registry';

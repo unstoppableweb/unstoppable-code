@@ -511,20 +511,24 @@ export function useScriptsSectionHostModel({
       throw new Error('This run changed. Refresh the list and try again.');
     return { projectId, worktreeId, scriptKey, executionId };
   };
+  /** Records the persisted run `target` names as lost: its process is gone. */
+  const settleLost = (target: ScriptRunTarget): void =>
+    settlePersistedRun(
+      projectId,
+      worktreeId,
+      target.scriptKey,
+      target.executionId,
+      'lost',
+    );
   const stopOrphan: ScriptsSectionBodyProps['onStopOrphan'] = async (
     scriptKey,
     request,
   ) => {
     const target = persistedRun(scriptKey);
-    const outcome = await stopOrphanedScriptRun(target, request);
-    if (outcome === 'stopped' || outcome === 'gone')
-      settlePersistedRun(
-        projectId,
-        worktreeId,
-        scriptKey,
-        target.executionId,
-        'lost',
-      );
+    const outcome = await stopOrphanedScriptRun(target, request, () =>
+      settleLost(target),
+    );
+    if (outcome === 'stopped' || outcome === 'gone') settleLost(target);
     return outcome;
   };
   const listOrphanGroup: ScriptsSectionBodyProps['onListOrphanGroup'] = (
@@ -533,16 +537,13 @@ export function useScriptsSectionHostModel({
   const forceStopOrphanGroup: ScriptsSectionBodyProps['onForceStopOrphanGroup'] =
     async (scriptKey, members) => {
       const target = persistedRun(scriptKey);
-      const result = await forceStopOrphanedScriptRunGroup(target, members);
+      const result = await forceStopOrphanedScriptRunGroup(
+        target,
+        members,
+        () => settleLost(target),
+      );
       // The whole group is gone: the run is recorded lost.
-      if (result.outcome === 'stopped')
-        settlePersistedRun(
-          projectId,
-          worktreeId,
-          scriptKey,
-          target.executionId,
-          'lost',
-        );
+      if (result.outcome === 'stopped') settleLost(target);
       return result;
     };
   const removeRun = async (scriptKey: string): Promise<void> => {

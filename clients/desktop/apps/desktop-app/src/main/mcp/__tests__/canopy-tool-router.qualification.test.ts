@@ -1,6 +1,7 @@
 import { createServer, type AddressInfo } from 'node:net';
 import type { BrowserWindow } from 'electron';
 import type { CanopyInjectedToolRuntime } from '../../canopy-tools/core';
+import type * as IntegrationHttp from '../integration-http';
 
 jest.mock('../../canopy-tools/core', () => ({
   executeCanopyInjectedTool: jest.fn(),
@@ -18,6 +19,13 @@ jest.mock('../../lib/window-send', () => ({
     throw new Error('window touched');
   },
 }));
+// Pass-through, so a test can hold a request while its body is read.
+jest.mock('../integration-http', () => {
+  const actual = jest.requireActual<typeof IntegrationHttp>(
+    '../integration-http',
+  );
+  return { ...actual, readRequestBody: jest.fn(actual.readRequestBody) };
+});
 jest.mock('../../lib/main-process-logging', () => ({
   logMainProcessError: jest.fn(),
 }));
@@ -47,6 +55,7 @@ import {
 import { toMcpToolResult } from '../canopy-route-tools';
 import type { InterfaceToolRequests } from '../interface-tool-requests';
 import { McpHttpProxyService } from '../http-proxy-service';
+import { readRequestBody } from '../integration-http';
 import { canopyRouteFixtures } from './helpers/canopy-route-fixtures';
 
 const sentinelWindow = { sentinel: true } as unknown as BrowserWindow;
@@ -392,6 +401,249 @@ describe('Canopy tool router (CAN-4125)', () => {
       expect(ids.slice(0, 3)).toEqual(['toolu_a', 'toolu_b', 'toolu_a']);
       expect(ids[3]).toMatch(/^[0-9a-f-]+:1$/);
     },
+  );
+
+  const postMcp = (
+    service: McpHttpProxyService,
+    route: CanopyWorktreeSessionRoute,
+    body: unknown,
+    ui = false,
+  ): Promise<Response> =>
+    fetch(
+      ui
+        ? service.getCanopyWorktreeUiMcpUrl(route.sessionKey)
+        : service.getCanopyWorktreeMcpUrl(route.sessionKey),
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          authorization: `Bearer ${route.authToken}`,
+        },
+        body: JSON.stringify(body),
+      },
+    );
+  const initialize = { jsonrpc: '2.0', id: 1, method: 'initialize' };
+
+  // Initialize, then a keyed write with no provider tool_use id (CAN-4169).
+  const keyedWriteSession = async (
+    service: McpHttpProxyService,
+    route: CanopyWorktreeSessionRoute,
+    { ui = false, callId = 2 } = {},
+  ): Promise<Response> => {
+    const initialized = await postMcp(service, route, initialize, ui);
+    await postMcp(service, route, {
+      jsonrpc: '2.0',
+      id: callId,
+      method: 'tools/call',
+      params: {
+        name: displayName('dispatch_action'),
+        arguments: { action: { type: 'pipeline.run', pipelineId: 'p' } },
+      },
+    }).then((response) => response.text());
+    return initialized;
+  };
+  const keyedToolUseIds = (): (string | undefined)[] =>
+    execute.mock.calls.map(([, , , context]) => context?.toolUseId);
+
+  it('a re-initialized session restarts its request ids under a new key, so a repeated write is not replayed (CAN-4169)', async () => {
+    execute.mockResolvedValue({ text: 'ok' });
+    const service = new McpHttpProxyService();
+    await service.ensureStarted(await freePort());
+    try {
+      const route = fixture('native-sdk-full');
+      await service.registerCanopyWorktreeSessionRoute(route);
+      await keyedWriteSession(service, route);
+      await keyedWriteSession(service, route);
+      const ids = keyedToolUseIds();
+      expect(ids).toHaveLength(2);
+      expect(ids[0]).toMatch(/^[0-9a-f-]+:2$/);
+      expect(ids[1]).toMatch(/^[0-9a-f-]+:2$/);
+      expect(ids[1]).not.toBe(ids[0]);
+    } finally {
+      await service.shutdown();
+    }
+  }, 60_000);
+
+  it('the UI server initializing on the shared route keeps the main server key (CAN-4169)', async () => {
+    execute.mockResolvedValue({ text: 'ok' });
+    const service = new McpHttpProxyService();
+    await service.ensureStarted(await freePort());
+    try {
+      const route = fixture('native-sdk-full');
+      await service.registerCanopyWorktreeSessionRoute(route);
+      await keyedWriteSession(service, route);
+      const uiInitialized = await keyedWriteSession(service, route, {
+        ui: true,
+        callId: 3,
+      });
+      expect(uiInitialized.status).toBe(200);
+      expect(await uiInitialized.text()).toMatch(
+        /"serverInfo":\{"name":"[^"]+_ui"/,
+      );
+      const ids = keyedToolUseIds();
+      expect(ids).toHaveLength(2);
+      expect(ids[0]).toMatch(/^[0-9a-f-]+:2$/);
+      expect(ids[1]).toBe(String(ids[0]).replace(/:2$/, ':3'));
+    } finally {
+      await service.shutdown();
+    }
+  }, 60_000);
+
+  it('a call whose body is still arriving when the session re-initializes keeps the nonce it arrived with (CAN-4169)', async () => {
+    execute.mockResolvedValue({ text: 'ok' });
+    const { readRequestBody: read } = jest.requireActual<
+      typeof IntegrationHttp
+    >('../integration-http');
+    let reading = (): void => {};
+    const bodyReading = new Promise<void>((resolve) => {
+      reading = resolve;
+    });
+    let arrive = (): void => {};
+    const arrived = new Promise<void>((resolve) => {
+      arrive = resolve;
+    });
+    const service = new McpHttpProxyService();
+    await service.ensureStarted(await freePort());
+    try {
+      const route = fixture('native-sdk-full');
+      await service.registerCanopyWorktreeSessionRoute(route);
+      await keyedWriteSession(service, route);
+      // Hold the next request, the call, while its body is read.
+      jest.mocked(readRequestBody).mockImplementationOnce(async (req) => {
+        reading();
+        await arrived;
+        return read(req);
+      });
+      const call = postMcp(service, route, {
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: {
+          name: displayName('dispatch_action'),
+          arguments: { action: { type: 'pipeline.run', pipelineId: 'p' } },
+        },
+      }).then((response) => response.text());
+      await bodyReading;
+      expect((await postMcp(service, route, initialize)).status).toBe(200);
+      arrive();
+      await call;
+      const ids = keyedToolUseIds();
+      expect(ids).toHaveLength(2);
+      expect(ids[0]).toMatch(/^[0-9a-f-]+:2$/);
+      expect(ids[1]).toBe(String(ids[0]).replace(/:2$/, ':3'));
+    } finally {
+      await service.shutdown();
+    }
+  }, 60_000);
+
+  it('a watcher call retried after a re-initialize keeps its Claude tool_use id, so it dedupes (CAN-4169)', async () => {
+    execute.mockResolvedValue({ text: 'ok' });
+    const service = new McpHttpProxyService();
+    await service.ensureStarted(await freePort());
+    try {
+      const route = fixture('native-sdk-full');
+      await service.registerCanopyWorktreeSessionRoute(route);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await postMcp(service, route, initialize).then((r) => r.text());
+        await postMcp(service, route, {
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'tools/call',
+          params: {
+            name: displayName('watch_command'),
+            arguments: { command: 'true', intervalSeconds: 5, maxAttempts: 1 },
+            _meta: { 'claudecode/toolUseId': 'toolu_watch' },
+          },
+        }).then((r) => r.text());
+      }
+      expect(keyedToolUseIds()).toEqual(['toolu_watch', 'toolu_watch']);
+    } finally {
+      await service.shutdown();
+    }
+  }, 60_000);
+
+  it.each([
+    [
+      'App Advisor',
+      'advisor-claude',
+      'StartForkedAgent',
+      { followUpInstruction: 'go' },
+    ],
+    ['Pipeline Editor', 'pipeline-editor', 'CreatePipeline', {}],
+  ] as const)(
+    'on a %s route, a call still running when the session re-initializes delivers its result under the id it was dispatched with (CAN-4169)',
+    async (_kind, name, tool, args) => {
+      const delivered: string[] = [];
+      const dispatched: (string | undefined)[] = [];
+      let release = (): void => {};
+      let onStart = (): void => {};
+      const hold = (): Promise<unknown> =>
+        new Promise((resolve) => {
+          release = (): void => resolve({ ok: true });
+          onStart();
+        });
+      // Resolves when the call reaches the held tool; fails with its answer if
+      // the call is answered first (an unknown tool or runtime error).
+      const reachesTool = (call: Promise<string>): Promise<void> =>
+        Promise.race([
+          new Promise<void>((resolve) => {
+            onStart = resolve;
+          }),
+          call.then((text) => {
+            throw new Error(`answered before running: ${text}`);
+          }),
+        ]);
+      const route = fixture(name, {
+        appAdvisorRuntime: {
+          rememberInterfaceTools: (): void => undefined,
+          startForkedAgent: hold,
+        } as unknown as CanopyWorktreeSessionRoute['appAdvisorRuntime'],
+        pipelineEditorRuntime: {
+          dispatchEditorAction: (
+            _action: unknown,
+            toolUseId?: string,
+          ): Promise<unknown> => {
+            dispatched.push(toolUseId);
+            return hold();
+          },
+        } as unknown as CanopyWorktreeSessionRoute['pipelineEditorRuntime'],
+        nativeToolResultDelivery: ({ toolUseId }) => {
+          delivered.push(toolUseId);
+        },
+      });
+      const service = new McpHttpProxyService();
+      await service.ensureStarted(await freePort());
+      const call = (id: number): Promise<string> =>
+        postMcp(service, route, {
+          jsonrpc: '2.0',
+          id,
+          method: 'tools/call',
+          params: { name: tool, arguments: args },
+        }).then((response) => response.text());
+      try {
+        await service.registerCanopyWorktreeSessionRoute(route);
+        await postMcp(service, route, initialize).then((r) => r.text());
+        const first = call(2);
+        await reachesTool(first);
+        release();
+        await first;
+        const second = call(3);
+        await reachesTool(second);
+        // The session re-initializes while the second call is still running.
+        expect((await postMcp(service, route, initialize)).status).toBe(200);
+        release();
+        await second;
+        expect(delivered).toHaveLength(2);
+        expect(delivered[0]).toMatch(/^[0-9a-f-]+:2$/);
+        expect(delivered[1]).toBe(String(delivered[0]).replace(/:2$/, ':3'));
+        // Only the editor hands its dispatch id to the runtime.
+        expect(dispatched).toEqual(name === 'pipeline-editor' ? delivered : []);
+      } finally {
+        await service.shutdown();
+      }
+    },
+    60_000,
   );
 
   it.each([['worker-rw-pipeline-agent'], ['ledger-subprocess-pipeline-agent']])(

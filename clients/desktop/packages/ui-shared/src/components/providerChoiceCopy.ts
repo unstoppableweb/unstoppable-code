@@ -24,6 +24,7 @@ export type ProviderChoiceSourceKey =
   | 'codex'
   | 'cursor'
   | 'copilot'
+  | 'antigravity'
   | 'gateway'
   | 'ollama'
   | 'credits';
@@ -331,6 +332,7 @@ const RUNS_ON_NAMES: Readonly<Record<ProviderChoiceSourceKey, string>> = {
   codex: 'Codex',
   cursor: 'Cursor',
   copilot: 'Copilot',
+  antigravity: 'Antigravity',
   gateway: 'your AI gateway',
   ollama: 'Ollama',
   credits: 'credits',
@@ -363,6 +365,7 @@ export const PROVIDER_ROW_DESCRIPTIONS: Readonly<
   codex: 'Use your ChatGPT subscription.',
   cursor: 'Use your Cursor subscription.',
   copilot: 'Use your GitHub Copilot subscription.',
+  antigravity: 'Use your Google account.',
   gateway: GATEWAY_ROW_DESCRIPTION,
   ollama: 'Run open models on this computer.',
 };

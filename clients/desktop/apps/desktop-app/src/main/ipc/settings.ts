@@ -2810,7 +2810,10 @@ export function registerSettingsHandlers(runtime: {
     async (_event, value?: unknown): Promise<NativeAiCreditsAvailability> => {
       const scope = parseAiCreditsScopeRequest(value);
       const owner = scope ? await resolveAiCreditsScopeOwner(scope) : undefined;
-      return loadNativeAiCreditsAvailability(owner);
+      const availability = await loadNativeAiCreditsAvailability(owner);
+      return scope?.kind === 'work' && owner
+        ? { ...availability, workOwner: owner }
+        : availability;
     },
   );
 

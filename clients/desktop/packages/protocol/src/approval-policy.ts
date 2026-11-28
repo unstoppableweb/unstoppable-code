@@ -241,3 +241,124 @@ export function createFailClosedApprovalDefaults(): ApprovalDefaults {
   }
   return defaults;
 }
+
+/** Type guard for {@link ApprovalMode}. */
+export function isApprovalMode(value: unknown): value is ApprovalMode {
+  return (
+    typeof value === 'string' && APPROVAL_MODES.some((mode) => mode === value)
+  );
+}
+
+const VALID_BEHAVIORS: ReadonlySet<string> = new Set(['allow', 'deny']);
+const VALID_ORIGINS: ReadonlySet<string> = new Set([
+  'prompt',
+  'settings',
+  'canopy-json',
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isApprovalRuleBehavior(
+  value: unknown,
+): value is ApprovalRule['behavior'] {
+  return typeof value === 'string' && VALID_BEHAVIORS.has(value);
+}
+
+function isApprovalRuleOrigin(value: unknown): value is ApprovalRuleOrigin {
+  return typeof value === 'string' && VALID_ORIGINS.has(value);
+}
+
+function normalizeApprovalRuleTarget(
+  value: unknown,
+): ApprovalRuleTarget | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const kind = value.kind;
+  if (kind === 'command') {
+    return typeof value.pattern === 'string'
+      ? { kind: 'command', pattern: value.pattern }
+      : undefined;
+  }
+  if (kind === 'file-write') {
+    return typeof value.path === 'string'
+      ? { kind: 'file-write', path: value.path }
+      : undefined;
+  }
+  if (kind === 'mcp') {
+    if (typeof value.server !== 'string') {
+      return undefined;
+    }
+    if (value.tool !== undefined && typeof value.tool !== 'string') {
+      return undefined;
+    }
+    if (value.tool === undefined) {
+      return { kind: 'mcp', server: value.server };
+    }
+    return { kind: 'mcp', server: value.server, tool: value.tool };
+  }
+  if (kind === 'network') {
+    return typeof value.host === 'string'
+      ? { kind: 'network', host: value.host }
+      : undefined;
+  }
+  if (kind === 'tool') {
+    return typeof value.toolName === 'string'
+      ? { kind: 'tool', toolName: value.toolName }
+      : undefined;
+  }
+  if (kind === 'browser-upload') {
+    if (typeof value.origin !== 'string') return undefined;
+    if (value.path === undefined)
+      return { kind: 'browser-upload', origin: value.origin };
+    return typeof value.path === 'string'
+      ? { kind: 'browser-upload', origin: value.origin, path: value.path }
+      : undefined;
+  }
+  return undefined;
+}
+
+function normalizeApprovalRule(value: unknown): ApprovalRule | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  if (!isApprovalRuleBehavior(value.behavior)) {
+    return undefined;
+  }
+  const target = normalizeApprovalRuleTarget(value.target);
+  if (!target) {
+    return undefined;
+  }
+  const id = typeof value.id === 'string' ? value.id : '';
+  const createdAt = typeof value.createdAt === 'string' ? value.createdAt : '';
+  const origin = isApprovalRuleOrigin(value.origin) ? value.origin : 'settings';
+  return {
+    id,
+    behavior: value.behavior,
+    target,
+    createdAt,
+    origin,
+  };
+}
+
+/**
+ * Leniently validates and normalizes unknown persisted/imported input into
+ * an array of {@link ApprovalRule}. Invalid entries are dropped rather than
+ * throwing; missing `origin` coerces to `'settings'` and missing
+ * `createdAt` coerces to `''`.
+ */
+export function normalizeApprovalRules(value: unknown): ApprovalRule[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const result: ApprovalRule[] = [];
+  for (const entry of value) {
+    const rule = normalizeApprovalRule(entry);
+    if (rule) {
+      result.push(rule);
+    }
+  }
+  return result;
+}

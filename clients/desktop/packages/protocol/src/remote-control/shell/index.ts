@@ -16,6 +16,7 @@ import type { WorktreeRecoveryRequest } from './worktree-recovery';
 import type { CoworkFolderMissing } from '../../canopy-core/core/workspace/cowork-folder';
 import type { BotId } from '../../chat-targets';
 import { z } from 'zod';
+import { classifyError } from '../../app-errors/classification';
 import type { ClaudeConnectorAvailability } from './claude-connector-availability';
 export * from './claude-connector-availability';
 import type { UsageLimitsSnapshot } from '../../provider-usage';
@@ -2659,6 +2660,33 @@ export interface RemoteControlAppAdvisorProjectAgentAccessOwnerOption {
   unavailable?: boolean;
 }
 
+/** A save refused because the settings editor must load a new revision. */
+export class OrchestratorInstructionsConflictError extends Error {
+  // Reopening loads the latest instructions and releases the stale draft.
+  static readonly copy = {
+    title: 'The instructions changed.',
+    description: 'Copy your draft, then reopen settings.',
+  };
+
+  constructor(cause?: Error) {
+    super(cause?.message ?? OrchestratorInstructionsConflictError.copy.title);
+    Object.defineProperty(this, 'cause', {
+      value: cause,
+      configurable: true,
+      writable: true,
+    });
+    classifyError(this, 'input.not_accepted', {
+      copy: OrchestratorInstructionsConflictError.copy,
+    });
+  }
+}
+
+/** Instruction text paired with the revision it was read from. */
+export interface OrchestratorInstructionsDraft {
+  readonly content: string;
+  readonly revision: string;
+}
+
 /**
  * Browser-safe projection of the desktop App Advisor settings modal. The
  * catalog fields let the portal render the same model/plugin choices without
@@ -2669,6 +2697,8 @@ export interface RemoteControlAppAdvisorSettings {
   thinkingLevel: ThinkingLevel;
   pluginSelections: RemoteControlChatTabPluginSelections;
   instructions: string;
+  /** Absent on hosts that do not support revision-checked instruction saves. */
+  instructionsRevision?: string;
   archiveRetentionDays: number | null;
   autoArchiveDays: number | null;
   availableModels: ModelCatalog;
@@ -2690,7 +2720,7 @@ export interface RemoteControlAppAdvisorSettingsSavePayload {
   model?: string;
   thinkingLevel?: ThinkingLevel;
   pluginSelections?: RemoteControlChatTabPluginSelections;
-  instructions?: string;
+  instructions?: OrchestratorInstructionsDraft;
   archiveRetentionDays?: number | null;
   autoArchiveDays?: number | null;
   approvalsUpgradeNoticeDismissed?: boolean;
@@ -8241,7 +8271,8 @@ export interface RemoteControlChatTurnGroup {
    * turn started it and the tool call that started it, when the transcript
    * holds them; `event` when the task reported an event and keeps running;
    * `scheduled` when a scheduled prompt (a cron job) fired; `toolsLoaded`
-   * when the agent continued after Canopy restarted it to load tools.
+   * when the agent continued after Canopy restarted it to load tools;
+   * `peerMessage` when another agent session sent it a message.
    */
   wake?: {
     taskLabel?: string;
@@ -8250,6 +8281,7 @@ export interface RemoteControlChatTurnGroup {
     event?: true;
     scheduled?: true;
     toolsLoaded?: true;
+    peerMessage?: true;
   };
   /** Assistant message ids the renderer collapses behind a summary chip. */
   intermediateMessageIds: string[];

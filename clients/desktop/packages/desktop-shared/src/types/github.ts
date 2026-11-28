@@ -1576,17 +1576,11 @@ export {
   isPrReadyToMerge,
 } from '@canopy/protocol/pull-requests';
 
-export const MERGE_QUEUE_AGENT_HANDLING_VALUES: readonly MergeQueueAgentHandling[] =
-  ['always', 'when_hook_absent', 'never'];
-
-export const DEFAULT_MERGE_QUEUE_AGENT_HANDLING: MergeQueueAgentHandling =
-  'when_hook_absent';
-
-export function isMergeQueueAgentHandling(
-  value: unknown,
-): value is MergeQueueAgentHandling {
-  return MERGE_QUEUE_AGENT_HANDLING_VALUES.some((mode) => mode === value);
-}
+export {
+  DEFAULT_MERGE_QUEUE_AGENT_HANDLING,
+  MERGE_QUEUE_AGENT_HANDLING_VALUES,
+  isMergeQueueAgentHandling,
+} from '@canopy/protocol/preferences';
 
 /**
  * Pure merge-route decision shared by the renderer's Merge button and the

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type {
   TerminalExitEvent,
-  TerminalOutputEvent,
+  TerminalOutputProgressEvent,
   TerminalRunningChangedEvent,
 } from '@canopy/desktop-shared/types';
 
@@ -18,7 +18,8 @@ interface TerminalDrawerAttentionState {
   worktrees: Record<string, WorktreeAttention>;
   setCollapsed(worktreeKey: string, collapsed: boolean): void;
   applyRunning(event: TerminalRunningChangedEvent): void;
-  applyOutput(event: TerminalOutputEvent): void;
+  /** Output bytes or, for a terminal this window reads itself, their progress. */
+  applyOutput(event: TerminalOutputProgressEvent): void;
   applyExit(event: TerminalExitEvent): void;
   remove(worktreeKey: string, terminalId: string): void;
   reconcileSessions(

@@ -146,7 +146,11 @@ import { RunCommentsButton } from './RunCommentsButton';
 import { StickyTurnHeaderSlotContext } from './sticky-turn-header-slot';
 import { CleanToolStepGroup } from './ToolStepGroup';
 import { TurnDiffSummary } from './TurnDiffSummary';
-import { continuationPromptId } from './continuation-transcript-turns';
+import {
+  continuationPromptId,
+  EVIDENCE_MESSAGE_ID,
+  type SpanTurnFiles,
+} from './continuation-transcript-turns';
 import { hasForkableAssistantContent } from './incremental-turn-groups';
 import { TurnFeedbackSlot } from './TurnFeedbackHosts';
 import { TurnTimer } from './TurnTimer';
@@ -220,6 +224,139 @@ const activeScrollTravel = new WeakMap<HTMLElement, () => void>();
  * still applied over several frames, without easing. A wheel scroll of the
  * reader's own outranks the travel. Returns a cancel function.
  */
+/**
+ * Where Fork and Branch cut the transcript for a group: after the selected
+ * execution, up to the next prompt or autonomous execution. A wake's head is
+ * display-only, so its timer anchors the cut. A compacted prompt turn holds
+ * the peer wakes folded into it and shows their replies, so its cut follows
+ * its owning timer, the group's last execution (a folded wake, or a Resume
+ * after one); everything before that timer is kept too.
+ */
+export function forkCutPoint(group: TurnGroup, compacted: boolean): string {
+  if (group.userMessage.role !== 'user') return group.timerMessage.id;
+  const owner = group.timerMessage.blocks[0];
+  return compacted && owner?.type === 'turn_timer' && owner.turnId !== undefined
+    ? group.timerMessage.id
+    : group.userMessage.id;
+}
+
+/** The evidence entries whose key names one of the rows, in one pass. */
+function ownEvidence<Entry extends { readonly key: string }>(
+  evidence: readonly Entry[],
+  ownRowIds: readonly string[],
+): Entry[] {
+  const ownRows = new Set(ownRowIds.map((id) => JSON.stringify(id)));
+  return evidence.filter((file) => {
+    const encodedId = EVIDENCE_MESSAGE_ID.exec(file.key)?.[1];
+    return encodedId !== undefined && ownRows.has(encodedId);
+  });
+}
+
+/**
+ * The prompts a wake group's later runs ran under (a Resume of an earlier
+ * prompt joins the wake's group): their rows are the wake's, but the approval
+ * service names the prompt on their receipts. Every run counts, so a newer
+ * run joining the group never drops an earlier one's receipts.
+ */
+export function resumedRunPromptIds(
+  head: TurnGroup['userMessage'],
+  receiptOwnerId: string,
+  runPromptIds: readonly string[] | undefined,
+): readonly string[] {
+  if (head.role === 'user' || runPromptIds === undefined) return NO_PROMPT_IDS;
+  return runPromptIds.filter((id) => id !== receiptOwnerId);
+}
+const NO_PROMPT_IDS: readonly string[] = [];
+/**
+ * The run that owns a group, and how it ended. The head's record is the
+ * turn's end: main writes it, keyed by the prompt, and can record a run as
+ * failed where its timer says completed (an empty provider completion). It
+ * describes the prompt's latest run, so it applies only to the group that
+ * run owns: a later run with no prompt owning the turn, or a Resume of the
+ * prompt that runs in a later wake's group, leaves the prompt's group its own
+ * timer's outcome, and that wake's group takes the record instead.
+ */
+export function recordedTurnEnd(
+  group: TurnGroup,
+  turnOutcome: TurnTimerOutcome | undefined,
+  /** A later run of this group's prompt shows in a wake's group. */
+  promptRunsLater = false,
+  /** A wake group owned by its prompt's latest run: the record's prompt. */
+  recordPromptId?: string,
+): { ownerIsHeadRun: boolean; recordedOutcome: TurnTimerOutcome | undefined } {
+  const block = group.timerMessage.blocks[0];
+  const owner =
+    group.timerMessage.blocks.length === 1 &&
+    block?.type === 'turn_timer' &&
+    block.turnId !== undefined
+      ? block
+      : null;
+  if (owner === null)
+    return { ownerIsHeadRun: true, recordedOutcome: turnOutcome };
+  const ownerIsHeadRun =
+    group.userMessage.role === 'user'
+      ? owner.userMessageId === group.userMessage.id && !promptRunsLater
+      : group.userMessage.id === `${group.timerMessage.id}:wake` ||
+        (recordPromptId !== undefined &&
+          owner.userMessageId === recordPromptId);
+  return {
+    ownerIsHeadRun,
+    recordedOutcome: ownerIsHeadRun
+      ? (turnOutcome ?? owner.outcome)
+      : owner.outcome,
+  };
+}
+type TurnTimerOutcome = 'completed' | 'cancelled' | 'failed';
+/**
+ * The files a turn shows. A compacted turn (rows still unloaded before its
+ * history cursor) keeps the files its unloaded rows showed from the index,
+ * whose span can include wakes folded into the turn. A fully loaded group
+ * reads its own rows, plus the indexed files whose evidence names one of
+ * them (a row's blocks can still be paged out), so a wake split out of the
+ * prompt's span shows its files once, in its own group. `spanFiles` is the
+ * file list of the indexed turn whose span holds this group: its own, or
+ * for a wake, its prompt's.
+ */
+export function turnFilesForGroup(
+  transcriptTurn: TranscriptTurnSummary | undefined,
+  groupComplete: boolean,
+  messages: Parameters<typeof collectTurnFiles>[0],
+  spanFiles: TranscriptTurnSummary['files'] = transcriptTurn?.files,
+  /** The group's transcript rows, paged-out ones included. */
+  ownRowIds: readonly string[] = messages.map((message) => message.id),
+  /** The span's evidence by encoded row id, built once per page of turns. */
+  spanEvidenceByRow?: SpanTurnFiles['evidenceByRow'],
+): ReturnType<typeof collectTurnFiles> {
+  if (transcriptTurn?.before !== undefined) {
+    return transcriptTurn.files && transcriptTurn.complete && groupComplete
+      ? transcriptTurn.files
+      : collectTurnFiles(messages, transcriptTurn.files);
+  }
+  const withEvidence = spanFiles?.find((file) => file.evidence);
+  if (withEvidence?.evidence === undefined) {
+    // An older index without evidence can't attribute files to rows.
+    return transcriptTurn?.files && transcriptTurn.complete && groupComplete
+      ? transcriptTurn.files
+      : collectTurnFiles(messages, transcriptTurn?.files);
+  }
+  // An evidence key is the JSON array [message id, origin, ordinal]: read
+  // its encoded message id once and look it up among this group's rows.
+  const evidence = spanEvidenceByRow
+    ? ownRowIds.flatMap((id) => spanEvidenceByRow.get(JSON.stringify(id)) ?? [])
+    : ownEvidence(withEvidence.evidence, ownRowIds);
+  // The group's own indexed files, as retained records, with their evidence.
+  const records = evidence.map((file) => {
+    const { key, ...record } = file;
+    void key;
+    return record;
+  });
+  const [first, ...rest] = records;
+  return collectTurnFiles(
+    messages,
+    first === undefined ? [] : [{ ...first, evidence }, ...rest],
+  );
+}
+
 function startScrollTravel(
   scroller: HTMLElement,
   measure: () => number,
@@ -565,6 +702,13 @@ function RevertedTurnWrapper({
 
 export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   transcriptTurn,
+  spanFiles,
+  ownRowIds,
+  runPromptIds,
+  indexedRunDenials,
+  promptRunsLater = false,
+  recordPromptId,
+  spanEvidenceByRow,
   historyTurn,
   hideTurnDiffSummary = false,
   resetTurnId,
@@ -602,6 +746,26 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   revealRequest,
 }: {
   transcriptTurn?: TranscriptTurnSummary;
+  /**
+   * Files of the indexed turn whose span holds a wake's group (its prompt's
+   * turn); a group with its own indexed turn reads that turn's files.
+   */
+  spanFiles?: TranscriptTurnSummary['files'];
+  /** The group's transcript rows, including rows grouping drops while paged out. */
+  ownRowIds?: readonly string[];
+  /** The prompts this group's runs ran under, from their timers. */
+  runPromptIds?: readonly string[];
+  /** Those prompts' indexed denials, for receipts on a page not loaded yet. */
+  indexedRunDenials?: readonly string[];
+  /** A later run of this prompt (a Resume after a wake) shows in a wake's group. */
+  promptRunsLater?: boolean;
+  /**
+   * For a wake group whose owning run is a prompt's latest (a Resume after
+   * the wake), the prompt its recorded end and restart mark are filed under.
+   */
+  recordPromptId?: string;
+  /** A wake's span evidence by encoded row id (see `spanTurnFiles`). */
+  spanEvidenceByRow?: SpanTurnFiles['evidenceByRow'];
   /**
    * The indexed turn whose span holds this group when it has none of its own
    * (a tools-loaded continuation, in its prompt's span). Pages only.
@@ -709,14 +873,21 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   const forkTab = useChatStore((s) => s.forkTab);
   const turnFiles = useMemo(
     () =>
-      transcriptTurn?.files && transcriptTurn.complete && group.isComplete
-        ? transcriptTurn.files
-        : collectTurnFiles(group.assistantMessages, transcriptTurn?.files),
+      turnFilesForGroup(
+        transcriptTurn,
+        group.isComplete,
+        group.assistantMessages,
+        spanFiles ?? transcriptTurn?.files,
+        ownRowIds,
+        spanEvidenceByRow,
+      ),
     [
-      transcriptTurn?.files,
-      transcriptTurn?.complete,
+      transcriptTurn,
       group.isComplete,
       group.assistantMessages,
+      spanFiles,
+      ownRowIds,
+      spanEvidenceByRow,
     ],
   );
   const branchTab = useChatStore((s) => s.branchTab);
@@ -765,17 +936,19 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
       ? tab?.autoRoutedModels?.[group.userMessage.id]
       : undefined,
   );
+  // Main files a run's end and restart mark by its prompt.
+  const recordKey = recordPromptId ?? group.userMessage.id;
   const turnOutcome = useChatTabRenderState(
     chatTarget,
     ({ tab }) =>
-      tab?.turnEnds?.[group.userMessage.id]?.outcome ??
-      tab?.unacceptedTurnEnds?.[group.userMessage.id],
+      tab?.turnEnds?.[recordKey]?.outcome ??
+      tab?.unacceptedTurnEnds?.[recordKey],
   );
   // Main records each turn a restart cut off, keyed by its own prompt, so a
   // turn that resumed or started afterwards never inherits it.
   const turnInterrupted = useChatTabRenderState(
     chatTarget,
-    ({ tab }) => tab?.interruptedTurns?.[group.userMessage.id] !== undefined,
+    ({ tab }) => tab?.interruptedTurns?.[recordKey] !== undefined,
   );
   const [showChoosingModel, setShowChoosingModel] = useState(false);
 
@@ -1013,6 +1186,28 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   // newer live denials still apply. Without those IDs, retain the projection;
   // a sparse page also needs its full-turn counts. Missing metadata is unknown.
   const projectedDeniedToolUseIds = transcriptTurn?.deniedToolUseIds;
+  const resumedPromptIds = useMemo(
+    () => resumedRunPromptIds(group.userMessage, receiptOwnerId, runPromptIds),
+    [group.userMessage, receiptOwnerId, runPromptIds],
+  );
+  const deniedToolUseIds = useMemo(
+    () =>
+      resumedPromptIds.length === 0
+        ? projectedDeniedToolUseIds
+        : [
+            ...(projectedDeniedToolUseIds ?? []),
+            ...(indexedRunDenials ?? []),
+            ...resumedPromptIds.flatMap((promptId) =>
+              getTurnSafetyDeniedToolUseIds(group.assistantMessages, promptId),
+            ),
+          ],
+    [
+      projectedDeniedToolUseIds,
+      indexedRunDenials,
+      group.assistantMessages,
+      resumedPromptIds,
+    ],
+  );
   const cleanDeniedToolUseIds = useMemo(
     () =>
       new Set([
@@ -1020,9 +1215,9 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
           group.assistantMessages,
           receiptOwnerId,
         ),
-        ...(projectedDeniedToolUseIds ?? []),
+        ...(deniedToolUseIds ?? []),
       ]),
-    [group.assistantMessages, receiptOwnerId, projectedDeniedToolUseIds],
+    [group.assistantMessages, receiptOwnerId, deniedToolUseIds],
   );
   // Settled only on an authoritative completion stamp; a turn that merely
   // went quiet keeps its unresolved calls pending.
@@ -1053,7 +1248,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
             [...intermediateMessages, ...trailingToolMessages],
             group.assistantMessages,
             receiptOwnerId,
-            projectedDeniedToolUseIds,
+            deniedToolUseIds,
             outcomeEvidence,
           ),
     [
@@ -1062,7 +1257,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
       trailingToolMessages,
       group.assistantMessages,
       receiptOwnerId,
-      projectedDeniedToolUseIds,
+      deniedToolUseIds,
       outcomeEvidence,
     ],
   );
@@ -1079,7 +1274,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
             [...intermediateMessages, ...trailingToolMessages],
             group.assistantMessages,
             receiptOwnerId,
-            projectedDeniedToolUseIds,
+            deniedToolUseIds,
             outcomeEvidence,
           ),
     [
@@ -1089,7 +1284,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
       trailingToolMessages,
       group.assistantMessages,
       receiptOwnerId,
-      projectedDeniedToolUseIds,
+      deniedToolUseIds,
       outcomeEvidence,
     ],
   );
@@ -1102,7 +1297,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
       [...intermediateMessages, ...trailingToolMessages],
       group.assistantMessages,
       receiptOwnerId,
-      projectedDeniedToolUseIds,
+      deniedToolUseIds,
       outcomeEvidence,
     );
     const requested =
@@ -1150,7 +1345,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     outcomes,
     receiptOwnerId,
     usesProjectedOutcomes,
-    projectedDeniedToolUseIds,
+    deniedToolUseIds,
     outcomeEvidence,
   ]);
   const landingMessageId = landingStep?.messageId;
@@ -1483,8 +1678,13 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     (turnDiff?.treeRefs?.length ?? 0) > 0 &&
     (turnDiff?.files.length ?? 0) > 0 &&
     !isReverted;
+  // Reset to point restores a prompt's start and cuts the transcript after
+  // it, so it needs a prompt: a wake's turn (its head is the wake's display
+  // row, not a user message) has none unless it continues one.
+  const hasResetTarget =
+    group.userMessage.role === 'user' || resetTurnId !== undefined;
   const userResetHandler =
-    !readOnly && onResetToPoint && turnEligibleForReset
+    !readOnly && onResetToPoint && turnEligibleForReset && hasResetTarget
       ? onResetToPoint
       : undefined;
   // The clean changes card's Undo asks first, like the prompt's Revert.
@@ -1605,23 +1805,15 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   // reply, including a background wake, gets its own snapshot actions.
   const promptHead = group.userMessage.role === 'user';
   // One resolved end for the summary, header and footer, so none of them
-  // says "Completed" for a turn the others call interrupted.
-  // The head's record is the turn's end: main writes it, and can record a
-  // run as failed where its timer says completed (an empty provider
-  // completion); the run's own timer outcome fills in when there is none. A
-  // later execution with no prompt that owns the turn (a continuation another
-  // chat's reply started) never reaches the head's record, so its own timer's
-  // outcome is the turn's end instead. A wake's head row is built from its
-  // own timer (`${timer.id}:wake`).
+  // says "Completed" for a turn the others call interrupted (see
+  // `recordedTurnEnd`).
   const canonicalOwner = timerBlock?.turnId !== undefined ? timerBlock : null;
-  const ownerIsHeadRun =
-    canonicalOwner === null ||
-    (promptHead
-      ? canonicalOwner.userMessageId === group.userMessage.id
-      : group.userMessage.id === `${group.timerMessage.id}:wake`);
-  const recordedOutcome = ownerIsHeadRun
-    ? (turnOutcome ?? canonicalOwner?.outcome)
-    : canonicalOwner.outcome;
+  const { ownerIsHeadRun, recordedOutcome } = recordedTurnEnd(
+    group,
+    turnOutcome,
+    promptRunsLater,
+    recordPromptId,
+  );
   // A restart that cut off the head's run marks the head interrupted; it
   // says nothing about a later continuation that owns the turn.
   const ownerInterrupted = ownerIsHeadRun && turnInterrupted;
@@ -1655,7 +1847,9 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
       ? group.isComplete && !forksActiveTurn && isLastForkableTurnGroup
       : chatTabFork === true &&
         (forksActiveTurn
-          ? promptHead &&
+          ? // A prompt's run, including a Resume that runs in a wake's turn
+            // (its timer is the prompt's); an autonomous wake's run isn't.
+            (promptHead || canonicalOwner?.userMessageId !== undefined) &&
             sourceSdkSessionId !== undefined &&
             !suppressActiveForkAction
           : group.isComplete &&
@@ -1686,9 +1880,10 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   // the store cuts up to the next reply boundary.
   // Wake heads are display-only. Their persisted timer anchors the selected
   // execution; the store stops before the next prompt or autonomous execution.
-  const forkAfterUserMessageId = promptHead
-    ? group.userMessage.id
-    : group.timerMessage.id;
+  const forkAfterUserMessageId = forkCutPoint(
+    group,
+    transcriptTurn?.before !== undefined,
+  );
 
   // Watcher (eye) button next to the active-turn fork action. Only shown for a
   // real worktree chat while its turn is active — a chat-completion watcher can

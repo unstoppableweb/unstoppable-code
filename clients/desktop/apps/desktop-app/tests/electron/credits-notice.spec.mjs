@@ -504,6 +504,21 @@ test.describe('Credits notice', () => {
       const { window, app, externalOpen } = fixture;
       await signIn(window, CONTACT_ADMIN_KEY);
       const panel = await showWorktree(window, app);
+      // The settings:load-native-ai-credits-availability reply gives recovery
+      // the chat's owner even when the workspace is opened from Personal.
+      const availability = await window.evaluate(
+        (scope) => window.api.loadNativeAiCreditsAvailability(scope),
+        {
+          kind: 'work',
+          projectId: WORKSPACE_ID,
+          worktreeId: WORKTREE_ID,
+          chatId: 'credits-notice-org-member-chat',
+        },
+      );
+      expect(availability.workOwner).toEqual({
+        kind: 'organization',
+        organizationId: CONTACT_ADMIN_ORG_ID,
+      });
       const notice = panel.getByTestId('chat-input-no-billing-source-banner');
       await expect(notice).toBeVisible({ timeout: 30_000 });
       await expect(notice).not.toContainText('Buy credits');

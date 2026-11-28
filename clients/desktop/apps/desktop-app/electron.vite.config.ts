@@ -202,6 +202,7 @@ const aliases = {
     repoRoot,
     'packages/memory-consolidation/src',
   ),
+  '@canopy/memory-store': resolve(repoRoot, 'packages/memory-store/src'),
   '@canopy/plugin-interop': resolve(repoRoot, 'packages/plugin-interop/src'),
   '@canopy/pipeline-interop': resolve(
     repoRoot,

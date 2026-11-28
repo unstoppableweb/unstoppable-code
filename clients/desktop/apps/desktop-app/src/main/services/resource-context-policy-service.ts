@@ -13,7 +13,10 @@ import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { getFeatureFlagService } from '../feature-flags';
 
 export interface ResourceContextPolicyService {
-  decide(input: ResourceContextInput): Promise<ResourceContextDecision>;
+  decide(
+    input: ResourceContextInput,
+    options?: { recordDenial?: boolean },
+  ): Promise<ResourceContextDecision>;
 }
 
 /**
@@ -23,6 +26,7 @@ export interface ResourceContextPolicyService {
  */
 async function decide(
   input: ResourceContextInput,
+  { recordDenial = true }: { recordDenial?: boolean } = {},
 ): Promise<ResourceContextDecision> {
   // CAN-2960: with the rollout flag off the policy plane is inert. Every
   // landed caller is gated separately; this keeps a stray call from reading
@@ -110,7 +114,7 @@ async function decide(
         subject: { ...input.resource.subject, name: subjectName },
       };
   }
-  if (!result.allow) {
+  if (!result.allow && recordDenial) {
     getObservabilityService().recordSessionDiagnostic({
       version: 1,
       timestamp: new Date().toISOString(),

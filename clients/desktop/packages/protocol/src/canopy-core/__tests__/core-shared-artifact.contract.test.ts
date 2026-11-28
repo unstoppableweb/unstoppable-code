@@ -26,6 +26,8 @@ import {
   SHARED_ARTIFACT_MEDIA_TYPES,
   SHARED_ARTIFACT_ORGANIZATION_QUOTA_BYTES,
   SHARED_ARTIFACT_PERSONAL_QUOTA_BYTES,
+  SHARED_ARTIFACT_MEDIA_TYPE_HEADER,
+  SHARED_ARTIFACT_REPORT_PATH,
   SHARED_ARTIFACT_REPORT_REASONS,
   SHARED_ARTIFACT_SHARE_SCOPES,
   isSharedArtifactMediaTypeForKind,
@@ -87,6 +89,7 @@ const artifact = {
     canSetPublic: true,
     canUnshare: true,
     canViewAnalytics: true,
+    canTakedown: false,
   },
   publicSharingAllowed: true,
 };
@@ -663,6 +666,14 @@ describe('core.sharedArtifact contract (CAN-8015)', () => {
     );
     expect(sharedArtifactUploadPath('a/b')).toBe(
       '/api/v1/shared-artifacts/uploads/a%2Fb',
+    );
+    // The signed-out report route and the content route's media type header
+    // (CAN-8016) are shared strings, so shared UI and the routes agree.
+    expect(SHARED_ARTIFACT_REPORT_PATH).toBe(
+      '/api/v1/shared-artifacts/reports',
+    );
+    expect(SHARED_ARTIFACT_MEDIA_TYPE_HEADER).toBe(
+      'x-canopy-artifact-media-type',
     );
   });
 

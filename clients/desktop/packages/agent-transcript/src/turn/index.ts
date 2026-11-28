@@ -132,12 +132,14 @@ function mergeSpawnedBy(
   const event = incoming.event ?? existing?.event;
   const scheduled = incoming.scheduled ?? existing?.scheduled;
   const toolsLoaded = incoming.toolsLoaded ?? existing?.toolsLoaded;
+  const peerMessage = incoming.peerMessage ?? existing?.peerMessage;
   return {
     ...(taskId === undefined ? {} : { taskId }),
     ...(toolUseId === undefined ? {} : { toolUseId }),
     ...(event === true ? { event } : {}),
     ...(scheduled === true ? { scheduled } : {}),
     ...(toolsLoaded === true ? { toolsLoaded } : {}),
+    ...(peerMessage === true ? { peerMessage } : {}),
   };
 }
 
@@ -658,6 +660,7 @@ function copySpawnedBy(spawnedBy: SpawnedBy): SpawnedBy {
     ...(spawnedBy.event === true ? { event: spawnedBy.event } : {}),
     ...(spawnedBy.scheduled === true ? { scheduled: spawnedBy.scheduled } : {}),
     ...(spawnedBy.toolsLoaded === true ? { toolsLoaded: true } : {}),
+    ...(spawnedBy.peerMessage === true ? { peerMessage: true } : {}),
   };
 }
 
@@ -740,6 +743,7 @@ function parseSpawnedBy(value: unknown): SpawnedBy | undefined {
     ...(event === true ? { event } : {}),
     ...(scheduled === true ? { scheduled } : {}),
     ...(value.toolsLoaded === true ? { toolsLoaded: true } : {}),
+    ...(value.peerMessage === true ? { peerMessage: true } : {}),
   };
 }
 

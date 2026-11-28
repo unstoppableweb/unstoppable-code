@@ -1,4 +1,8 @@
 import {
+  AUTOMATION_TURN_SCHEDULE_ERROR,
+  refusesAutomationTurnScheduleMutation,
+} from '../automations/schedule-mutation-policy';
+import {
   defineAgentActionFamily,
   type AgentActionCall,
   type AgentActionDispatchOutput,
@@ -59,6 +63,14 @@ async function dispatchDesktopLegacyAction(
   // run's outcome and id).
   let preArmedRunNowWatchers: InlineAutomationWatcherSetup | undefined;
   if (action.type === 'automation.run_now' && action.watchers?.length) {
+    if (
+      await refusesAutomationTurnScheduleMutation(runtime.worktreeActionRuntime)
+    )
+      return {
+        requestId: context?.toolUseId ?? '',
+        ok: false,
+        error: AUTOMATION_TURN_SCHEDULE_ERROR,
+      };
     const hasWatcherDestination = worktreeWatcherDestination(runtime) !== null;
     if (!hasWatcherDestination) {
       // No watcher capability exists on this surface at all, so arming was

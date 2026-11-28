@@ -224,8 +224,11 @@ import { getDesktopChatWaits } from '../chat-waits/desktop-chat-waits';
 import { normalizeAccountMcpSelections } from '../mcp/account-catalog';
 import { getChatStateService } from '../services/chat-state-service';
 import {
+  assertChatPairingAuthorized,
+  ChatSendAuthorizationRevokedError,
   consumeDispatchAuthorization,
   type AuthorizedChatDispatch,
+  type ChatPairingCheck,
 } from '../services/chat-dispatch-authorization';
 import { reservePromptBindingSlot } from '../services/chat-turn-binding-slots';
 import {
@@ -252,6 +255,7 @@ import { CanopyOperationError } from '@canopy/core-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import type { DesktopCanopyRuntimeAccessors } from './index';
 import type {
+  ChatCommandExecutionOptions,
   ChatCommandRequest,
   ChatCommandResult,
   ChatStateCommandPort,
@@ -426,6 +430,7 @@ import {
   projectQueueEdit,
   projectQueueEditLock,
   projectQueueForce,
+  type QueueCommandDispatch,
 } from './chat-queue-projections';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 
@@ -447,19 +452,25 @@ async function standaloneChatOwner(
 
 export function dispatchCanonicalChatCommand(
   request: ChatCommandRequest,
+  executionOptions?: ChatCommandExecutionOptions,
 ): Promise<ChatCommandResult> {
-  if (!chatCommandRuntime) return getChatStateService().command(request);
+  if (!chatCommandRuntime) {
+    const state = getChatStateService();
+    return executionOptions
+      ? state.command(request, executionOptions)
+      : state.command(request);
+  }
   const port = getChatStateService();
-  return dispatchTrustedChatCommand(
-    request,
-    createChatCommandDispatchOptions(port, chatCommandRuntime.dispatcher, {
+  return dispatchTrustedChatCommand(request, {
+    ...createChatCommandDispatchOptions(port, chatCommandRuntime.dispatcher, {
       principalId: 'local-desktop-user',
       clientInstanceId: 'desktop-main-chat',
       authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
       interfaceKind: 'desktop',
       grants: ['core.chat.write'],
     }),
-  );
+    ...(executionOptions ? { executionOptions } : {}),
+  });
 }
 const codexCapabilityTransitionLocks = new Map<string, Promise<void>>();
 const modelChangeLocks = new Map<string, Promise<void>>();
@@ -1855,14 +1866,13 @@ async function changeChatModelLocked(
   });
   // A started chat switches between these providers in place, carrying its
   // history (CAN-6445); only other pairs stay locked to the chat's harness.
+  const previousProvider =
+    previousTab?.providerType ??
+    (previousTab?.model ? getProviderForModel(previousTab.model) : undefined);
+  const selectedProvider = getProviderForChatModel(model, selectedHarness);
   const switchesInPlace = canSwitchProviderInPlace(
-    previousTab
-      ? (previousTab.providerType ??
-          (previousTab.model
-            ? getProviderForModel(previousTab.model)
-            : undefined))
-      : undefined,
-    getProviderForChatModel(model, selectedHarness),
+    previousProvider,
+    selectedProvider,
   );
   const lockedHarness =
     req.lockedHarness ??
@@ -1957,11 +1967,17 @@ async function changeChatModelLocked(
     return false;
   }
   const selectedProviderType =
-    getProviderForChatModel(model, selectedHarness) ??
-    requireProviderForModel(model);
+    selectedProvider ?? requireProviderForModel(model);
   const settings = previousTab
     ? await normalizeCanonicalModelSelection(req, previousTab, model, options)
     : undefined;
+  if (
+    switchesInPlace &&
+    (previousProvider === 'antigravity' ||
+      selectedProviderType === 'antigravity') &&
+    sessionHasActiveTurnOrNativeWork(req.projectId, req.worktreeId, req.chatId)
+  )
+    return false;
   const committed = await commitCanonicalModelChange(
     req.projectId,
     req.worktreeId,
@@ -2056,6 +2072,7 @@ type ChatSendMessageHandler = (
   request: ChatSendMessageRequest,
   /** Host-only queue capability; IPC never supplies it. */
   authorization?: AuthorizedChatDispatch,
+  canCommit?: ChatPairingCheck,
 ) => Promise<ChatSendMessageResult>;
 
 const autoRoutingNotices = new Map<string, string>();
@@ -2077,6 +2094,20 @@ function autoRoutingTurnKey(
   return `${autoRoutingKey(request)}\u0000${request.userMessageId}`;
 }
 
+/**
+ * Captures the live pairing guard synchronously at IPC entry before any await
+ * so closing a remote bridge mid-call can never fall back to local authority.
+ */
+function captureRemotePairingGuard(
+  event: IpcMainInvokeEvent | undefined,
+  explicit?: ChatPairingCheck,
+): ChatPairingCheck | undefined {
+  const canCommit =
+    explicit ?? (event ? remoteBridgeCommitGuard(event.sender) : undefined);
+  assertChatPairingAuthorized(canCommit);
+  return canCommit;
+}
+
 function withChatScopeActivity(
   handler: ChatSendMessageHandler,
   options: { allowMainOwnedAgentInput?: boolean } = {},
@@ -2089,7 +2120,12 @@ function withChatScopeActivity(
     event,
     request,
     authorization,
+    canCommit,
   ): Promise<ChatSendMessageResult> => {
+    const resolvedCanCommit = captureRemotePairingGuard(
+      event,
+      canCommit ?? authorization?.canDispatch,
+    );
     if (options.allowMainOwnedAgentInput !== true) {
       assertUntrustedChatInput(request);
     }
@@ -2098,12 +2134,13 @@ function withChatScopeActivity(
     // send neither migrates nor touches its stored transcript.
     assertChatScopeAcceptsTurns(request.projectId);
     await assertCoworkChatRootPresent(request.projectId, request.worktreeId);
+    assertChatPairingAuthorized(resolvedCanCommit);
     return getChatStateService().runWithScopeActivity(
       {
         projectId: request.projectId,
         worktreeId: request.worktreeId,
       },
-      () => handler(event, request, authorization),
+      () => handler(event, request, authorization, resolvedCanCommit),
     );
   };
 }
@@ -2316,6 +2353,19 @@ function installDesktopChatAutoArchiver(
         : false;
     },
     dispatchInFlight: (target) => chatState.isDispatchInFlight(target),
+    // A completion watcher's notification can't reach an archived chat, so a
+    // Slack tab that promised a result stays open until it arrives.
+    awaitsWatcher: async (target) => {
+      const { getAppAdvisorWatcherService } =
+        await import('../app-advisor/watchers');
+      const watchers = await getAppAdvisorWatcherService().list(
+        target,
+        'autoArchive',
+      );
+      return watchers.some(
+        (watcher) => watcher.status === 'active' || watcher.status === 'firing',
+      );
+    },
     dispatch: (request) =>
       runtime
         ? dispatchTrustedChatCommand(
@@ -2497,11 +2547,16 @@ export function registerChatHandlers(
   );
 
   const dispatchChatMessageNowBody = async (
-    _event: IpcMainInvokeEvent | undefined,
+    event: IpcMainInvokeEvent | undefined,
     req: ChatSendMessageRequest,
     authorization: AuthorizedChatDispatch | undefined,
     allowMainOwnedAgentInput: boolean,
+    explicitCanCommit?: ChatPairingCheck,
   ): Promise<ChatSendMessageResult> => {
+    const canCommit = captureRemotePairingGuard(
+      event,
+      explicitCanCommit ?? authorization?.canDispatch,
+    );
     if (!allowMainOwnedAgentInput) assertUntrustedChatInput(req);
     const {
       projectId,
@@ -2903,17 +2958,11 @@ export function registerChatHandlers(
         resourceGuard =
           await getResourceMonitorService().reserveChatTurnStart();
         const chatStateService = getChatStateService();
-        await chatStateService.ensureChatForTrustedSend(req);
-        const promptCommitted = await chatStateService.ingestProviderEvent({
-          projectId,
-          worktreeId,
-          chatId,
-          data: buildTrustedUserPromptEvent(req),
-          mutationId: `${chatId}:${userMessageId}:user-prompt`,
-          providerType: effectiveProviderType,
-          turnUserMessageId: userMessageId,
-        });
-        if (!promptCommitted) {
+        await chatStateService.ensureChatForTrustedSend(req, canCommit);
+        let commitDeferredCoworkPromptOnce: (() => Promise<void>) | undefined;
+        let deferredCoworkPromptCommitPromise: Promise<void> | undefined;
+        let coworkTurnHandoffAccepted = false;
+        if (canCommit) {
           const accepted = await chatStateService.hasMutation(
             { projectId, worktreeId },
             `${chatId}:${userMessageId}:accepted`,
@@ -2921,6 +2970,49 @@ export function registerChatHandlers(
           if (accepted) {
             await clearUsageLimitedChat({ projectId, worktreeId, chatId });
             return { disposition: 'already_accepted' };
+          }
+          commitDeferredCoworkPromptOnce = (): Promise<void> => {
+            if (!deferredCoworkPromptCommitPromise) {
+              const attempt = (async (): Promise<void> => {
+                await chatStateService.commitAutomationStartBanner(req);
+                await chatStateService.ingestProviderEvent({
+                  projectId,
+                  worktreeId,
+                  chatId,
+                  data: buildTrustedUserPromptEvent(req),
+                  mutationId: `${chatId}:${userMessageId}:user-prompt`,
+                  providerType: effectiveProviderType,
+                  turnUserMessageId: userMessageId,
+                });
+              })();
+              deferredCoworkPromptCommitPromise = attempt;
+              void attempt.catch(() => {
+                if (deferredCoworkPromptCommitPromise === attempt) {
+                  deferredCoworkPromptCommitPromise = undefined;
+                }
+              });
+            }
+            return deferredCoworkPromptCommitPromise;
+          };
+        } else {
+          const promptCommitted = await chatStateService.ingestProviderEvent({
+            projectId,
+            worktreeId,
+            chatId,
+            data: buildTrustedUserPromptEvent(req),
+            mutationId: `${chatId}:${userMessageId}:user-prompt`,
+            providerType: effectiveProviderType,
+            turnUserMessageId: userMessageId,
+          });
+          if (!promptCommitted) {
+            const accepted = await chatStateService.hasMutation(
+              { projectId, worktreeId },
+              `${chatId}:${userMessageId}:accepted`,
+            );
+            if (accepted) {
+              await clearUsageLimitedChat({ projectId, worktreeId, chatId });
+              return { disposition: 'already_accepted' };
+            }
           }
         }
         const messageText = buildSubmittedMessageText({
@@ -3293,6 +3385,17 @@ export function registerChatHandlers(
               ) {
                 markPersistenceSettled?.();
                 return;
+              }
+
+              if (coworkTurnHandoffAccepted && commitDeferredCoworkPromptOnce) {
+                await commitDeferredCoworkPromptOnce().catch(
+                  (error: unknown) => {
+                    logMainProcessWarn(
+                      '[chat-ipc] Failed to commit deferred cowork prompt before provider event',
+                      error,
+                    );
+                  },
+                );
               }
 
               const ingestResult =
@@ -3725,48 +3828,6 @@ export function registerChatHandlers(
           ),
           joinHiddenBlocks(memory?.renderedBlock, localMemory?.renderedBlock),
         );
-        getExecutionObservabilityIngest().startChatTurn({
-          projectId,
-          worktreeId,
-          chatId,
-          provider: runtimeProviderType,
-          model: runtimeModel,
-          requestedModel: model ?? runtimeModel,
-          modelSource: effectiveModelSource,
-          executionHarness: effectiveExecutionHarness,
-          serviceTier:
-            effectiveExecutionHarness === 'codex'
-              ? codexServiceTierForModelConfig(effectiveModelConfig)
-              : undefined,
-          aiCreditsRouted: isSessionAiCreditsRouted(
-            projectId,
-            worktreeId,
-            chatId,
-          ),
-          accountProxyRouted: isSessionAccountProxyRouted(
-            projectId,
-            worktreeId,
-            chatId,
-          ),
-          ...(req.modelRouting ? { modelRouting: req.modelRouting } : {}),
-          sdkSessionId,
-          originalUserText: text,
-          submittedText,
-          orgMemoryBlock: memory?.renderedBlock,
-          fileReferences,
-          planMode: planMode === true,
-          systemPromptAppend: observedSystemPromptAppend,
-          userMessageId,
-          isStandalone: true,
-          standaloneProjectId,
-          initiationSource: validatedInitiationSource,
-          // Matches the skill usage eligibility of this dispatch below.
-          skillSuggestionEligible:
-            (validatedInitiationSource === 'user' ||
-              validatedInitiationSource === 'portal') &&
-            !req.hiddenContext,
-        });
-
         if (typeof planMode === 'boolean') {
           await session.setPlanMode(planMode);
         }
@@ -3803,7 +3864,7 @@ export function registerChatHandlers(
         await applyAgentSessionCodexSpeed(session, effectiveModelConfig.speed);
         await session.setContextWindow?.(effectiveModelConfig.contextWindow);
 
-        if (req.startsNewTrackedChat) {
+        if (!canCommit && req.startsNewTrackedChat) {
           await notifyCanonicalChatStarted(
             { projectId, worktreeId, chatId },
             userMessageId,
@@ -3814,14 +3875,63 @@ export function registerChatHandlers(
         await assertCoworkChatRootPresent(projectId, worktreeId);
         const dispatchStartedAt = Date.now();
         try {
+          assertChatPairingAuthorized(canCommit);
           turnRun.signal.throwIfAborted();
           reservePromptBindingSlot(
             { projectId, worktreeId, chatId },
             userMessageId,
           );
+          getExecutionObservabilityIngest().startChatTurn({
+            projectId,
+            worktreeId,
+            chatId,
+            provider: runtimeProviderType,
+            model: runtimeModel,
+            requestedModel: model ?? runtimeModel,
+            modelSource: effectiveModelSource,
+            executionHarness: effectiveExecutionHarness,
+            serviceTier:
+              effectiveExecutionHarness === 'codex'
+                ? codexServiceTierForModelConfig(effectiveModelConfig)
+                : undefined,
+            aiCreditsRouted: isSessionAiCreditsRouted(
+              projectId,
+              worktreeId,
+              chatId,
+            ),
+            accountProxyRouted: isSessionAccountProxyRouted(
+              projectId,
+              worktreeId,
+              chatId,
+            ),
+            ...(req.modelRouting ? { modelRouting: req.modelRouting } : {}),
+            sdkSessionId,
+            originalUserText: text,
+            submittedText,
+            orgMemoryBlock: memory?.renderedBlock,
+            fileReferences,
+            planMode: planMode === true,
+            systemPromptAppend: observedSystemPromptAppend,
+            userMessageId,
+            isStandalone: true,
+            standaloneProjectId,
+            initiationSource: validatedInitiationSource,
+            // Matches the skill usage eligibility of this dispatch below.
+            skillSuggestionEligible:
+              (validatedInitiationSource === 'user' ||
+                validatedInitiationSource === 'portal') &&
+              !req.hiddenContext,
+          });
           turnRun.executeSync(() => {
             session.sendMessage(submittedText, {
               userMessageId,
+              ...(effectiveExecutionHarness === 'antigravity' &&
+              providerSwitchSeed
+                ? {
+                    onPromptCompleted: (): Promise<void> =>
+                      providerSwitchSeed.delivered('antigravity'),
+                  }
+                : {}),
               ...((effectiveExecutionHarness === 'opencode' ||
                 effectiveExecutionHarness === 'antigravity') &&
               !req.hiddenContext &&
@@ -3846,9 +3956,11 @@ export function registerChatHandlers(
             );
           });
           turnRun.accepted();
+          coworkTurnHandoffAccepted = true;
           if (session.isDisposed?.() !== true) {
             await migrationNotice?.delivered();
-            await providerSwitchSeed?.delivered();
+            if (effectiveExecutionHarness !== 'antigravity')
+              await providerSwitchSeed?.delivered();
           }
         } catch (error) {
           if (memory?.facts.length && memory.searchId) {
@@ -3859,6 +3971,22 @@ export function registerChatHandlers(
             );
           }
           throw error;
+        }
+        if (commitDeferredCoworkPromptOnce) {
+          await commitDeferredCoworkPromptOnce().catch((error: unknown) => {
+            logMainProcessWarn(
+              '[chat-ipc] Failed to commit deferred cowork prompt after turn acceptance',
+              error,
+            );
+          });
+          if (req.startsNewTrackedChat && session.isDisposed?.() !== true) {
+            await notifyCanonicalChatStarted(
+              { projectId, worktreeId, chatId },
+              userMessageId,
+              watcherAcceptedAt,
+              watcherContext,
+            ).catch(() => undefined);
+          }
         }
         if (memory?.facts.length) {
           const disposed = session.isDisposed?.() === true;
@@ -3995,7 +4123,10 @@ export function registerChatHandlers(
     // re-hitting the usage limit (which it can do before this line runs).
     const dispatchStartedAt = Date.now();
     try {
-      await dispatchLocalWorktreeChatMessage(req);
+      assertChatPairingAuthorized(canCommit);
+      await (canCommit
+        ? dispatchLocalWorktreeChatMessage(req, canCommit)
+        : dispatchLocalWorktreeChatMessage(req));
     } catch (error) {
       if (isModelGatewayRefusal(error))
         return {
@@ -4019,23 +4150,24 @@ export function registerChatHandlers(
     };
   };
   const dispatchChatMessageNow = withChatScopeActivity(
-    (event, req, authorization) =>
-      dispatchChatMessageNowBody(event, req, authorization, false),
+    (event, req, authorization, canCommit) =>
+      dispatchChatMessageNowBody(event, req, authorization, false, canCommit),
   );
   // Only the main-owned special-native dispatcher reaches this entry. The
   // caller revalidates captured sender provenance before dispatch; renderer
   // and Portal paths use the guarded public wrapper above.
   const dispatchMainOwnedAgentChatMessageNow = withChatScopeActivity(
-    (event, req, authorization) =>
-      dispatchChatMessageNowBody(event, req, authorization, true),
+    (event, req, authorization, canCommit) =>
+      dispatchChatMessageNowBody(event, req, authorization, true, canCommit),
     { allowMainOwnedAgentInput: true },
   );
   setSpecialNativeChatDispatcher(
-    async (request, authorization): Promise<void> => {
+    async (request, authorization, canCommit): Promise<void> => {
       const result = await dispatchMainOwnedAgentChatMessageNow(
         undefined,
         request,
         authorization,
+        canCommit ?? authorization?.canDispatch,
       );
       if (result.modelRoutingNotice) {
         autoRoutingNotices.set(
@@ -4057,7 +4189,7 @@ export function registerChatHandlers(
   );
   registerIpcHandler<[ChatSendMessageRequest], ChatSendMessageResult>(
     IPC_CHANNELS.chatSendMessage,
-    withChatScopeActivity(async (event, req) => {
+    withChatScopeActivity(async (event, req, _authorization, canCommit) => {
       assertUntrustedChatInput(req);
       if (
         req.watcherFired?.kind === DELEGATION_NOTICE_KIND &&
@@ -4073,6 +4205,7 @@ export function registerChatHandlers(
       try {
         if (req.watcherFired && req.watcherDeliveryId)
           await assertWatcherDeliveryIngress(req);
+        assertChatPairingAuthorized(canCommit);
         // This handler receives composer sends. Internal services must opt in
         // explicitly so agent-authored messages cannot inherit user eligibility.
         // `agentSent` is main-owned provenance from a validated Portal origin
@@ -4083,12 +4216,16 @@ export function registerChatHandlers(
           autoResume: _autoResume,
           agentSent: _agentSent,
           admittedApproval: _admitted,
+          consolidatedWatcherUserMessageIds: _consolidatedWatcherIds,
+          watcherPartSnapshots: _watcherPartSnapshots,
           ...composerReq
         } = req;
         void _resumes;
         void _autoResume;
         void _agentSent;
         void _admitted;
+        void _consolidatedWatcherIds;
+        void _watcherPartSnapshots;
         req = {
           ...composerReq,
           initiationSource: isUsageInitiationSource(req.initiationSource)
@@ -4119,12 +4256,16 @@ export function registerChatHandlers(
             `${req.chatId}:${req.userMessageId}:accepted`,
           );
           if (alreadyAccepted) return { disposition: 'already_accepted' };
-          await dispatchLocalWorktreeChatMessage({
+          assertChatPairingAuthorized(canCommit);
+          const localSendReq = {
             ...req,
             ...(req.projectId === PIPELINE_EDITOR_PROJECT_ID
               ? { assistantMode: 'pipeline-editor' as const }
               : {}),
-          });
+          };
+          await (canCommit
+            ? dispatchLocalWorktreeChatMessage(localSendReq, canCommit)
+            : dispatchLocalWorktreeChatMessage(localSendReq));
           const modelRoutingNotice = autoRoutingNotices.get(
             autoRoutingTurnKey(req),
           );
@@ -4134,7 +4275,7 @@ export function registerChatHandlers(
             ...(modelRoutingNotice ? { modelRoutingNotice } : {}),
           };
         }
-        return await dispatchChatMessageNow(event, req);
+        return await dispatchChatMessageNow(event, req, undefined, canCommit);
       } catch (error) {
         if (error instanceof WatcherDeliveryHeldError)
           return {
@@ -4309,52 +4450,67 @@ export function registerChatHandlers(
     },
   );
 
+  const queueCommandDispatchFor = (
+    event: IpcMainInvokeEvent | undefined,
+  ): QueueCommandDispatch => {
+    const canCommit = captureRemotePairingGuard(event);
+    if (!canCommit) return dispatchCanonicalChatCommand;
+    return async (command) => {
+      const result = await dispatchCanonicalChatCommand(command, {
+        canCommitSend: canCommit,
+      });
+      if (result.outcome === 'rejected' && !canCommit())
+        throw new ChatSendAuthorizationRevokedError();
+      return result;
+    };
+  };
+
   registerIpcHandler<[ChatQueueEditRequest], void>(
     IPC_CHANNELS.chatQueueEdit,
-    async (_event, request) => {
+    async (event, request) => {
       assertUntrustedChatInput(request);
       assertWritableScope(request.projectId);
       validateId(request.projectId, 'projectId');
       validateId(request.worktreeId, 'worktreeId');
       validateId(request.chatId, 'chatId');
       validateId(request.entryId, 'entryId');
-      await projectQueueEdit(request, dispatchCanonicalChatCommand);
+      await projectQueueEdit(request, queueCommandDispatchFor(event));
     },
   );
 
   registerIpcHandler<[ChatQueueEntryRequest], void>(
     IPC_CHANNELS.chatQueueCancel,
-    async (_event, request) => {
+    async (event, request) => {
       assertWritableScope(request.projectId);
       validateId(request.projectId, 'projectId');
       validateId(request.worktreeId, 'worktreeId');
       validateId(request.chatId, 'chatId');
       validateId(request.entryId, 'entryId');
-      await projectQueueCancel(request, dispatchCanonicalChatCommand);
+      await projectQueueCancel(request, queueCommandDispatchFor(event));
     },
   );
 
   registerIpcHandler<[ChatQueueEntryRequest], void>(
     IPC_CHANNELS.chatQueueForce,
-    async (_event, request) => {
+    async (event, request) => {
       assertWritableScope(request.projectId);
       validateId(request.projectId, 'projectId');
       validateId(request.worktreeId, 'worktreeId');
       validateId(request.chatId, 'chatId');
       validateId(request.entryId, 'entryId');
-      await projectQueueForce(request, dispatchCanonicalChatCommand);
+      await projectQueueForce(request, queueCommandDispatchFor(event));
     },
   );
 
   registerIpcHandler<[ChatQueueSetEditLockRequest], void>(
     IPC_CHANNELS.chatQueueSetEditLock,
-    async (_event, request) => {
+    async (event, request) => {
       assertWritableScope(request.projectId);
       validateId(request.projectId, 'projectId');
       validateId(request.worktreeId, 'worktreeId');
       validateId(request.chatId, 'chatId');
       validateId(request.entryId, 'entryId');
-      await projectQueueEditLock(request, dispatchCanonicalChatCommand);
+      await projectQueueEditLock(request, queueCommandDispatchFor(event));
     },
   );
 

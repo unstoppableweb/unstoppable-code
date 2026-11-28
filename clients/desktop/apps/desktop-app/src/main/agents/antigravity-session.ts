@@ -877,6 +877,10 @@ export class AntigravityProvider implements AgentProvider {
           if (inheritedContext)
             await forkContext.delivered(profile, nativeSessionId);
           if (recovery !== undefined) await publishSession();
+          if (send?.onPromptCompleted) {
+            assertCurrent();
+            await send.onPromptCompleted();
+          }
         }
         for (const event of projection.finish()) await buffer.push(event);
         const proposal =

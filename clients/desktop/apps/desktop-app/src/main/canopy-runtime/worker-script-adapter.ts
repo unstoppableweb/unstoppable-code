@@ -4,17 +4,31 @@ import type {
   WorkerScriptHandlers,
 } from '@canopy/core-runtime/node/script/execution';
 import { randomUUID } from 'node:crypto';
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import { KeyedOutcomes } from '@canopy/core-runtime/node/operations';
 import {
   createWorkerScriptHandlers,
   idempotencyKeyReusedError,
 } from '@canopy/core-runtime/node/script/execution';
-import type { WorkerScriptExecutionClearResult } from '@canopy/protocol/canopy-core';
+import { recordScriptStopRoute } from '@canopy/desktop-shared/node/work-counters';
+import type {
+  WorkerScriptExecutionClearResult,
+  WorkerScriptExecutionStopResult,
+} from '@canopy/protocol/canopy-core';
 import { recordDaemonRoute } from './daemon-route-telemetry';
 import {
   currentDaemonScriptRoute,
   isDaemonScriptRunEligible,
+  isDaemonScriptStopPlatform,
 } from '../lib/daemon-script-route-context';
+
+function hostPlatform(): ReturnType<typeof hostPlatformOperatingSystem> | null {
+  try {
+    return hostPlatformOperatingSystem();
+  } catch {
+    return null;
+  }
+}
 
 /*
  * Registers `worker.script.*` on the desktop dispatcher (CAN-4143) over this
@@ -45,6 +59,13 @@ export function createWorkerScriptAdapter(
   // separate outcomes, so a retry after the route changes would miss its own.
   // A rejection is not kept, so a retry sends the same key again.
   const clears = new KeyedOutcomes<WorkerScriptExecutionClearResult>({
+    reusedError: idempotencyKeyReusedError,
+    forget: (): boolean => true,
+  });
+  // A served Stop leaves the run no longer orphaned, so a repeat with the same
+  // key would route to this process; it replays the first outcome instead.
+  // A rejection is not kept, so a retry sends the same key again.
+  const stops = new KeyedOutcomes<WorkerScriptExecutionStopResult>({
     reusedError: idempotencyKeyReusedError,
     forget: (): boolean => true,
   });
@@ -152,11 +173,26 @@ export function createWorkerScriptAdapter(
               ),
           );
         }),
-      'worker.script.execution.stop': async (params, context) =>
-        (await handlers()).instructions['worker.script.execution.stop'](
-          params,
-          context,
-        ),
+      // This read only routes; each host refuses a run it may not end.
+      'worker.script.execution.stop': (params, context) =>
+        stops.run(context, params, async () => {
+          if (isDaemonScriptStopPlatform(hostPlatform())) {
+            const spawner = await (await loadWorker())
+              .orphanSpawner(params)
+              .catch(() => null);
+            if (spawner === 'daemon') {
+              const daemon = await import('../lib/daemon-script-route');
+              return daemon.stopScriptInDaemon(
+                params,
+                context.metadata.idempotencyKey ?? randomUUID(),
+              );
+            }
+          }
+          recordScriptStopRoute('direct');
+          return (await handlers()).instructions[
+            'worker.script.execution.stop'
+          ](params, context);
+        }),
     },
     observe: async (executionId, observer) =>
       (await loadWorker()).observe(executionId, observer),

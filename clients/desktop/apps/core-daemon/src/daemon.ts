@@ -43,6 +43,7 @@ import {
   type CanopyRuntime,
   type PlatformOperatingSystem,
   type PlatformServices,
+  type RuntimeInstructionGuard,
   type RuntimeModule,
   type RuntimeProfileGraph,
   type RuntimeService,
@@ -106,6 +107,8 @@ import {
 import {
   CANOPY_IN_PROCESS_WORKER_TARGET_ID,
   CLOUD_ACCOUNT_TRUSTED_CONNECTION_GRANT,
+  CORE_CLIENT_WINDOW_GRANTS,
+  CORE_CLIENT_WINDOW_INSTRUCTION_DEFINITIONS,
   CORE_MUTATION_FENCE_INSTRUCTION_DEFINITIONS,
   CORE_TRANSPORT_QUERY_DEFINITIONS,
   CORE_WORKSPACE_METADATA_GRANTS,
@@ -164,6 +167,11 @@ import {
   DAEMON_EXECUTION_CALLER_GRANTS,
 } from './execution';
 import { createClosureGate, type ClosureGate } from './closure-gate';
+import {
+  createDaemonWindowAdmission,
+  windowConnectionCaller,
+  WINDOW_OPERATIONS,
+} from './window-admission';
 import {
   createDaemonWakeLock,
   createKeepAwakePreferenceSource,
@@ -243,6 +251,8 @@ const REPOSITORY_PROBE_TIMEOUT_MS = 30_000;
  * desktop window and the CLI hold them: a same-user peer can already read
  * and write the definition files. Never `core.pipeline.ownerRead`. No
  * production build composes it.
+ * Every peer gets `core.client.window.issue` (CAN-8039): a ticket admits a
+ * window narrower than the peer that issued it, so it escalates nothing.
  */
 function connectionCaller(
   { connectionId, lease }: CanopyControlConnectionIdentity,
@@ -279,6 +289,7 @@ function connectionCaller(
     grants: [
       'core.runtime.read',
       'core.client.manage',
+      CORE_CLIENT_WINDOW_GRANTS.issue,
       // D-V6-3: every token holder gets metadata reads, never vault writes.
       'core.vault.read',
       // q-20: every daemon token holder may save integration credentials.
@@ -539,6 +550,8 @@ export interface StartCanopyDaemonOptions extends CanopyDaemonArguments {
   readonly workerCommand?: DaemonWorkerCommand;
   /** Split only: test seam for the worker restart budget. */
   readonly workerRestart?: DaemonWorkerRestartPolicy;
+  /** Test seam for how long a window ticket can be presented (CAN-8039). */
+  readonly windowTicketTtlMs?: number;
 }
 
 export interface RunningCanopyDaemon {
@@ -924,6 +937,20 @@ async function startOwnedDaemon(
       lookupWorktreeRoot,
     });
     const mutationFenceModule = createMutationFenceModule(mutationFence);
+    // CAN-8039: window tickets and grants; the guard checks window callers only.
+    const windowAdmission = createDaemonWindowAdmission({
+      ...(options.windowTicketTtlMs !== undefined && {
+        ticketTtlMs: options.windowTicketTtlMs,
+      }),
+    });
+    const instructionGuard: RuntimeInstructionGuard = (
+      operation,
+      params,
+      context,
+    ) => {
+      windowAdmission.instructionGuard(operation, params, context);
+      return mutationFenceGuard(operation, params, context);
+    };
     checkStartup();
     await prepareCanopyDaemonRuntimeDirectory(canonicalDataRoot, platform);
     checkStartup();
@@ -1139,7 +1166,9 @@ async function startOwnedDaemon(
         vault: vaultModule,
         credentials: credentialsModule,
         mutationFence: mutationFenceModule,
-        instructionGuard: mutationFenceGuard,
+        windowAdmission: windowAdmission.module,
+        instructionGuard,
+        streamGuard: windowAdmission.streamGuard,
         ...(cloudAccountModule && { cloudAccount: cloudAccountModule }),
         services: [...services, supervisor.service],
       });
@@ -1356,7 +1385,9 @@ async function startOwnedDaemon(
         vault: vaultModule,
         credentials: credentialsModule,
         mutationFence: mutationFenceModule,
-        instructionGuard: mutationFenceGuard,
+        windowAdmission: windowAdmission.module,
+        instructionGuard,
+        streamGuard: windowAdmission.streamGuard,
         ...(cloudAccountModule && { cloudAccount: cloudAccountModule }),
         filesystem: {
           os,
@@ -1465,26 +1496,35 @@ async function startOwnedDaemon(
       binding: publication,
       dispatcher: runtime.dispatcher,
       operations: runtime.operations,
-      callerFor: (identity) =>
-        identity.owner
-          ? ownerConnectionCaller(
-              identity,
-              authorityId,
-              pipelines ? WORKER_PIPELINE_OWNER_GRANTS : [],
-            )
-          : connectionCaller(
-              identity,
-              authorityId,
-              w5Grants(w5),
-              terminals ? WORKER_TERMINAL_CALLER_GRANTS : [],
-              codeGraph ? WORKER_CODE_GRAPH_CALLER_GRANTS : [],
-              scripts ? WORKER_SCRIPT_CALLER_GRANTS : [],
-              pipelines ? WORKER_PIPELINE_CALLER_GRANTS : [],
-              execution ? DAEMON_EXECUTION_CALLER_GRANTS : [],
-              operations ? CORE_OPERATION_CALLER_GRANTS : [],
-              pipelineDefinitions ? CORE_PIPELINE_DEFINITION_CALLER_GRANTS : [],
-              cloudAccountGrants,
-            ),
+      // Owner > window > peer > ordinary. A window is its peer or ordinary
+      // caller narrowed, never widened (CAN-8039).
+      callerFor: (identity) => {
+        if (identity.owner)
+          return ownerConnectionCaller(
+            identity,
+            authorityId,
+            pipelines ? WORKER_PIPELINE_OWNER_GRANTS : [],
+          );
+        const caller = connectionCaller(
+          identity,
+          authorityId,
+          w5Grants(w5),
+          terminals ? WORKER_TERMINAL_CALLER_GRANTS : [],
+          codeGraph ? WORKER_CODE_GRAPH_CALLER_GRANTS : [],
+          scripts ? WORKER_SCRIPT_CALLER_GRANTS : [],
+          pipelines ? WORKER_PIPELINE_CALLER_GRANTS : [],
+          execution ? DAEMON_EXECUTION_CALLER_GRANTS : [],
+          operations ? CORE_OPERATION_CALLER_GRANTS : [],
+          pipelineDefinitions ? CORE_PIPELINE_DEFINITION_CALLER_GRANTS : [],
+          cloudAccountGrants,
+        );
+        return identity.window
+          ? windowConnectionCaller(caller, identity.window)
+          : caller;
+      },
+      operationsFor: (identity) =>
+        identity.window ? WINDOW_OPERATIONS : undefined,
+      windowTickets: windowAdmission.tickets,
       ...(ownerProof && { ownerProof }),
       // Generation and read reports reach only clients that decode them
       // (CAN-5627, CAN-5691).
@@ -1507,6 +1547,11 @@ async function startOwnedDaemon(
             // CAN-4730 E2-G: each fence set belongs to its publishing lease.
             Object.prototype.hasOwnProperty.call(
               CORE_MUTATION_FENCE_INSTRUCTION_DEFINITIONS,
+              name,
+            ) ||
+            // CAN-8039: tickets and grants belong to the issuing lease.
+            Object.prototype.hasOwnProperty.call(
+              CORE_CLIENT_WINDOW_INSTRUCTION_DEFINITIONS,
               name,
             ) ||
             CORE_PIPELINE_DEFINITION_OPERATIONS.includes(name),
@@ -1534,9 +1579,11 @@ async function startOwnedDaemon(
     undo.push(() => controlPlane.close());
     // An ended owner lease keeps its fences until a live owner publishes;
     // only the lease that published a set ends it.
-    const offFenceOwners = controlPlane.leases.onEnd((lease) =>
-      mutationFence.ownerLeaseEnded(lease.leaseId),
-    );
+    const offFenceOwners = controlPlane.leases.onEnd((lease) => {
+      mutationFence.ownerLeaseEnded(lease.leaseId);
+      // CAN-8039: a lease's tickets and the windows it issued end with it.
+      windowAdmission.leaseEnded(lease.leaseId);
+    });
     undo.push(() => Promise.resolve(offFenceOwners()));
     if (options.migration) {
       migration = await options.migration(controlPlane.obligations);

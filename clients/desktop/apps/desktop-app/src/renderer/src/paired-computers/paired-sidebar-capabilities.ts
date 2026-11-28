@@ -15,6 +15,23 @@ import type { CanopyCapabilities } from '@canopy/app-core';
 export function pairedSidebarRowCapabilities(
   base: CanopyCapabilities,
 ): CanopyCapabilities {
+  // One object per base, so a paired row's capabilities keep their identity
+  // across renders and an unchanged row can be reused (CAN-8047).
+  const cached = pairedCapabilitiesByBase.get(base);
+  if (cached) return cached;
+  const derived = derivePairedSidebarRowCapabilities(base);
+  pairedCapabilitiesByBase.set(base, derived);
+  return derived;
+}
+
+const pairedCapabilitiesByBase = new WeakMap<
+  CanopyCapabilities,
+  CanopyCapabilities
+>();
+
+function derivePairedSidebarRowCapabilities(
+  base: CanopyCapabilities,
+): CanopyCapabilities {
   const {
     worktreeRetention: _retention,
     workspaceRetention: _workspaceRetention,

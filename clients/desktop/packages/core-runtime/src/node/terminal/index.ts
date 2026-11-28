@@ -7,3 +7,4 @@ export * from './running-detector';
 export * from './shells';
 export * from './settings';
 export * from './remote';
+export * from './interrupt-detection';

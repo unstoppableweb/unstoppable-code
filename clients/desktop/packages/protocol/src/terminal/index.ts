@@ -274,6 +274,12 @@ export interface TerminalSpawnRequest {
 
 export interface TerminalAttachRequest {
   terminalId: string;
+  /**
+   * The `seq` this caller already holds (CAN-8069). A host may then replay
+   * only the bytes after it; one that ignores it replays its whole window,
+   * which callers trim by `seq` as before.
+   */
+  fromSeq?: number;
 }
 
 export interface TerminalAttachResponse {

@@ -76,6 +76,7 @@ import {
   ClaudeTurnBindingTracker,
   getClaudeTurnLifecycleProducer,
   isClaudeTaskEventResult,
+  readClaudePeerWakeCause,
   readClaudeStartedCommandUuid,
   readClaudeWakeCause,
   releaseClaudeTurnLifecycleProducer,
@@ -1316,9 +1317,12 @@ export class ClaudeCodeProvider implements AgentProvider {
                 ? { resultIndex: readClaudeLifecycleResultIndex(data) }
                 : {}),
             },
-        !fallback && isClaudeTaskEventResult(data)
-          ? eventTasks?.eventCause()
-          : undefined,
+        fallback
+          ? undefined
+          : (readClaudePeerWakeCause(data) ??
+              (isClaudeTaskEventResult(data)
+                ? eventTasks?.eventCause()
+                : undefined)),
       );
       if (!binding) return undefined;
       publishResultFallbackState(turn?.id ?? binding.turnId);
@@ -1337,9 +1341,9 @@ export class ClaudeCodeProvider implements AgentProvider {
           stopTerminalWaiters.some((waiter) =>
             fenceTargetsTurn(waiter.fence, turn, undefined),
           ));
-      // An event wake's cause, or one held while a send could still bind the
-      // turn, arrives at its result, and the reducer takes a cause from a
-      // binding update, not from the turn's end.
+      // An event or peer-message wake's cause, or one held while a send could
+      // still bind the turn, arrives at its result, and the reducer takes a
+      // cause from a binding update, not from the turn's end.
       if (binding.spawnedBy !== undefined && causeBeforeSeal === undefined)
         publishLifecycleTurnStarted(binding, 'binding-update');
       lifecycleProducer.turnEnded({

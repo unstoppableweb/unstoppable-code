@@ -25,7 +25,8 @@ function userTurns(tab: PersistedChatTab): number | undefined {
  * Moves the tab's active session to a provider switch's outcome, on `next`.
  *
  * - The outgoing provider's session is parked under its provider, with the
- *   user-turn count it had answered.
+ *   user-turn count it had answered. An Antigravity session still awaiting
+ *   its handoff does not count as having answered those turns.
  * - Switching to a provider whose parked session has answered every user turn
  *   so far resumes it: nothing ran on another provider since it was parked.
  * - Otherwise the next turn starts a fresh session, and the tab is marked so
@@ -47,7 +48,9 @@ export function applyProviderSwitchToSession(
     ...tab.providerSessions,
   };
   const turns = userTurns(tab);
-  if (from !== undefined && tab.sdkSessionId) {
+  const awaitingAntigravityHandoff =
+    from === 'antigravity' && tab.providerSwitchSeedPending === true;
+  if (from !== undefined && tab.sdkSessionId && !awaitingAntigravityHandoff) {
     parked[from] = {
       sdkSessionId: tab.sdkSessionId,
       ...(tab.globalInstructionsSnapshot !== undefined

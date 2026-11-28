@@ -43,10 +43,13 @@ import type {
  * CAN-7926 document operations the daemon's module serves (CAN-7956). Not
  * selected: `selectDomainPreferences` still answers in process.
  *
- * Reads come from a cache the daemon's commit events keep current. A write
- * runs its updater here on the cached document, diffs the patch down to the
- * keys it changes and sends it with the cached revision; a revision conflict
- * re-reads and runs the updater again, a bounded number of times.
+ * Reads come from a cache the daemon's commit events keep current. It holds
+ * the stored record, the persisted view; the runtime view is projected here
+ * with this process's own catalog (CAN-8045), so the daemon's facts only
+ * shape how it validates a save. A write runs its updater here on the cached
+ * stored record, diffs the patch down to the keys it changes and sends it
+ * with the cached revision; a revision conflict re-reads and runs the
+ * updater again, a bounded number of times.
  */
 
 /** One daemon commit event, or `resync` after the subscription missed some. */
@@ -117,8 +120,14 @@ export type DaemonPreferencesHooks<T> = Pick<
 
 export interface DaemonPreferencesClientOptions<T extends object> {
   readonly route: PreferencesDocumentRoute;
-  /** Decodes the daemon's value; `defaults` answers an unreadable authority read. */
-  readonly codec: Pick<PreferencesCodec<T>, 'defaults' | 'normalize'>;
+  /**
+   * Decodes the daemon's stored record and projects its runtime view here;
+   * `defaults` answers an unreadable authority read.
+   */
+  readonly codec: Pick<
+    PreferencesCodec<T>,
+    'defaults' | 'normalize' | 'project'
+  >;
   readonly hooks?: DaemonPreferencesHooks<T>;
   /** Wired to `applyForeignPreferenceCommit`; its rejection is reported, not retried. */
   readonly applyForeignCommit?: (
@@ -133,7 +142,7 @@ export interface DaemonPreferencesClient<
   T extends object,
 > extends PreferencesPort<T> {
   /** Stops following the daemon's events. */
-  close(): void;
+  dispose(): void;
 }
 
 /** Updater runs per save: the first, plus re-runs after a revision conflict. */
@@ -156,7 +165,8 @@ let foreignCommitSequence = 0;
 
 interface Snapshot<T> {
   readonly revision: string;
-  readonly value: T;
+  /** The stored record (the persisted view); the runtime view projects it. */
+  readonly stored: T;
   readonly loadError: ConfigDocumentLoadError | null;
   readonly legacy: ConfigLegacyClientLocalGetResult;
   /** A primary or last-good copy exists, so authority reads are `ok`. */
@@ -281,8 +291,11 @@ export function createDaemonPreferencesClient<T extends object>(
     return run;
   }
 
+  // The stored record, never the daemon's projection: its fallbacks for facts
+  // it lacks, saved back, would overwrite stored choices (CAN-8045). A daemon
+  // that omits it serves its projection only.
   const decode = (document: ConfigDocumentGetResult): T =>
-    codec.normalize(document.value, 'persisted');
+    codec.normalize(document.stored ?? document.value, 'persisted');
 
   async function fetchSnapshot(): Promise<Snapshot<T>> {
     const [document, legacy] = await Promise.all([
@@ -291,7 +304,7 @@ export function createDaemonPreferencesClient<T extends object>(
     ]);
     return {
       revision: document.revision,
-      value: decode(document),
+      stored: decode(document),
       loadError: document.loadError,
       legacy,
       persisted: legacy.kind !== 'missing',
@@ -302,14 +315,14 @@ export function createDaemonPreferencesClient<T extends object>(
     const before = snapshot;
     snapshot = next;
     if (before === null) return;
-    const keys = changedKeys(before.value, next.value);
+    const keys = changedKeys(before.stored, next.stored);
     if (origin === 'own') {
       // The own save's hooks settle these keys; the foreign commit must not.
       for (const key of keys) discovered?.keys.delete(key);
       return;
     }
     if (keys.length === 0) return;
-    discovered ??= { previous: before.value, keys: new Set() };
+    discovered ??= { previous: before.stored, keys: new Set() };
     for (const key of keys) discovered.keys.add(key);
   }
 
@@ -329,7 +342,7 @@ export function createDaemonPreferencesClient<T extends object>(
     const apply = options.applyForeignCommit;
     if (found === null || found.keys.size === 0) return;
     if (snapshot === null || apply === undefined) return;
-    const next = snapshot.value;
+    const next = snapshot.stored;
     const previous: T = { ...next };
     for (const key of found.keys) {
       if (Object.prototype.hasOwnProperty.call(found.previous, key))
@@ -441,8 +454,8 @@ export function createDaemonPreferencesClient<T extends object>(
         route.update(openParams, callOptions);
     }
     const predicted: PreferencesChange<T> = {
-      previous: base.value,
-      next: predictNext(base.value, patch),
+      previous: base.stored,
+      next: predictNext(base.stored, patch),
     };
     await hooks.beforeSave?.(predicted);
     let uncertain = false;
@@ -483,7 +496,7 @@ export function createDaemonPreferencesClient<T extends object>(
         }
         throw error;
       }
-      const change = { previous: base.value, next: decode(document) };
+      const change = { previous: base.stored, next: decode(document) };
       if (document.revision !== base.revision) {
         pendingEchoes = [...pendingEchoes, document.revision].slice(
           -MAX_PENDING_ECHOES,
@@ -492,7 +505,7 @@ export function createDaemonPreferencesClient<T extends object>(
       adopt(
         {
           revision: document.revision,
-          value: change.next,
+          stored: change.next,
           loadError: document.loadError,
           legacy: base.legacy,
           persisted: true,
@@ -543,7 +556,7 @@ export function createDaemonPreferencesClient<T extends object>(
     for (let attempt = 1; ; attempt += 1) {
       if (base.legacy.kind === 'pending')
         throw new DaemonPreferencesRecoveryRequiredError();
-      const previous = base.value;
+      const previous = base.stored;
       const patch = await updater(previous);
       if (patch === null && updateOptions.isClientOnly?.() === true)
         return { previous, next: previous };
@@ -610,9 +623,12 @@ export function createDaemonPreferencesClient<T extends object>(
       writesTail = run.then(noop, noop);
       return run;
     },
-    read: async () => {
+    // Projected on each read with this process's live catalog, as the
+    // repository projects on each read in process.
+    read: async (view) => {
       await writesTail;
-      return (await loaded()).value;
+      const { stored } = await loaded();
+      return view === 'runtime' ? codec.project(stored) : stored;
     },
     readAuthority: async (readOptions = {}) => {
       await writesTail;
@@ -628,10 +644,11 @@ export function createDaemonPreferencesClient<T extends object>(
         // An unreachable daemon proves nothing.
         return unreadable(codec.defaults);
       }
-      if (state.legacy.kind === 'pending') return unreadable(state.value);
+      if (state.legacy.kind === 'pending')
+        return unreadable(codec.project(state.stored));
       if (!state.persisted)
         return { preferences: codec.defaults, authority: 'absent' };
-      return { preferences: state.value, authority: 'ok' };
+      return { preferences: codec.project(state.stored), authority: 'ok' };
     },
     hasPersistedState: async () => (await loaded()).persisted,
     // Raw stored bytes never cross the protocol: a persisted document reads
@@ -700,6 +717,6 @@ export function createDaemonPreferencesClient<T extends object>(
         return 'unconfirmed';
       }
     },
-    close: () => unsubscribe(),
+    dispose: () => unsubscribe(),
   };
 }

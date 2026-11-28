@@ -35,6 +35,7 @@ import {
   WORKER_TERMINAL_RECORD_QUERY_DEFINITIONS,
   WORKER_TERMINAL_RECORD_WATERMARK_KEY_MAX_LENGTH,
   WORKER_TERMINAL_SCHEMA_REVISIONS,
+  WORKER_TERMINAL_EVENTS_STREAM_DEFINITIONS,
   WORKER_TERMINAL_SESSION_INSTRUCTION_DEFINITIONS,
   WORKER_TERMINAL_STREAM_DEFINITIONS,
 } from '@canopy/protocol/canopy-core';
@@ -56,7 +57,7 @@ export const DAEMON_TERMINAL_HOST_BUDGET: ExecutionHostBudget = {
 
 /**
  * Every `worker.terminal.*` operation the daemon serves (CAN-5088), with
- * the worktree terminal record (CAN-7051).
+ * the worktree terminal record (CAN-7051) and the events stream (CAN-8038).
  */
 export const DAEMON_TERMINAL_DEFINITIONS = {
   queries: {
@@ -69,7 +70,10 @@ export const DAEMON_TERMINAL_DEFINITIONS = {
     ...WORKER_TERMINAL_RECORD_LIFECYCLE_INSTRUCTION_DEFINITIONS,
     ...WORKER_TERMINAL_RECORD_INSTRUCTION_DEFINITIONS,
   },
-  streams: WORKER_TERMINAL_STREAM_DEFINITIONS,
+  streams: {
+    ...WORKER_TERMINAL_STREAM_DEFINITIONS,
+    ...WORKER_TERMINAL_EVENTS_STREAM_DEFINITIONS,
+  },
 };
 
 export interface DaemonTerminalOptions {

@@ -1,6 +1,7 @@
 /** @jest-environment jsdom */
 import '../../../cloud-chats/__tests__/jsdom-globals';
 import { act } from 'react';
+import type { OrchestratorInstructionsDraft } from '@canopy/protocol/remote-control/shell';
 import { createAppError } from '@canopy/protocol/app-errors';
 import { createRoot, type Root } from 'react-dom/client';
 import { AppAdvisorSettingsModal } from '../AppAdvisorSettingsModal';
@@ -15,7 +16,10 @@ declare global {
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-const saveClaudeMd = jest.fn<Promise<void>, [string]>();
+const saveClaudeMd = jest.fn<
+  Promise<string>,
+  [OrchestratorInstructionsDraft]
+>();
 
 function ipcRejection(message: string): Error {
   return new Error(
@@ -43,7 +47,8 @@ describe('AppAdvisorSettingsModal save failure (CAN-5117)', () => {
       value: {
         loadPreferences: () => Promise.reject(new Error('not needed')),
         appAdvisor: {
-          loadClaudeMd: () => Promise.resolve('Be brief.'),
+          loadClaudeMd: () =>
+            Promise.resolve({ content: 'Be brief.', revision: 'loaded' }),
           saveClaudeMd,
           settingsLoad: () => Promise.resolve({}),
           settingsSave: jest.fn(),
@@ -101,7 +106,10 @@ describe('AppAdvisorSettingsModal save failure (CAN-5117)', () => {
       ipcRejection("ENOSPC: no space left on device, write '/data/CLAUDE.md'"),
     );
     const banner = await saveEditedInstructions();
-    expect(saveClaudeMd).toHaveBeenCalledWith('Be brief. Keep replies short.');
+    expect(saveClaudeMd).toHaveBeenCalledWith({
+      content: 'Be brief. Keep replies short.',
+      revision: 'loaded',
+    });
     expect(banner.textContent).toContain("There isn't enough disk space.");
     expect(banner.textContent).not.toContain('Error invoking remote method');
   });

@@ -798,6 +798,7 @@ posix('daemon control plane over a Unix socket', () => {
             'core.client.lease.renew',
             'core.client.lease.release',
             'core.client.capabilities.register',
+            'core.events.unsubscribe',
           ],
         },
       });
@@ -1809,6 +1810,7 @@ posix('lease-bound operations', () => {
             'core.client.lease.renew',
             'core.client.lease.release',
             'core.client.capabilities.register',
+            'core.events.unsubscribe',
           ],
         },
       });
@@ -2313,6 +2315,7 @@ posix('one admitted control stream', () => {
             'core.client.lease.renew',
             'core.client.lease.release',
             'core.client.capabilities.register',
+            'core.events.unsubscribe',
           ],
           channels: ['session.hold'],
         },

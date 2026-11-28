@@ -1,6 +1,6 @@
 import { IPC_PRIVATE_CHANNELS } from './channel-policy';
 import { toIpcRejection } from './app-error-rejection';
-import { ipcMain, type IpcMainInvokeEvent } from 'electron';
+import { ipcMain, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
 import {
@@ -72,7 +72,7 @@ export function registerIpcHandler<Args extends unknown[], Result>(
     recordIpcInvoke(channel);
     let settled: Promise<Result>;
     try {
-      refusePairedComputerIds(args);
+      refusePairedComputerIds(channel, args);
       settled = Promise.resolve(
         runWithW5Caller(channel, () => handler(event, ...args)),
       );
@@ -99,4 +99,28 @@ export function registerIpcHandler<Args extends unknown[], Result>(
       context: { channel },
     });
   });
+}
+
+/**
+ * Listens for a one-way message from a renderer. A message whose arguments
+ * address a paired computer is dropped, as `registerIpcHandler` refuses such
+ * a call (CAN-8065): nothing awaits a message, so there is no one to tell.
+ * Returns a function that stops listening.
+ */
+export function onIpcMessage<Args extends unknown[]>(
+  channel: string,
+  listener: (event: IpcMainEvent, ...args: Args) => void,
+): () => void {
+  const guarded = (event: IpcMainEvent, ...args: Args): void => {
+    try {
+      refusePairedComputerIds(channel, args);
+    } catch {
+      return;
+    }
+    listener(event, ...args);
+  };
+  ipcMain.on(channel, guarded);
+  return (): void => {
+    ipcMain.removeListener(channel, guarded);
+  };
 }

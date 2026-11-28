@@ -36,6 +36,7 @@
     "./terminal-core": "./src/terminal-core.ts",
     "./terminal": "./src/terminal.ts",
     "./sharing": "./src/sharing/index.ts",
+    "./shared-artifacts": "./src/shared-artifacts/index.ts",
     "./sharing/marketplaceShareLink": "./src/sharing/marketplaceShareLink.ts",
     "./sharing/sharedResourceProvenance": "./src/sharing/sharedResourceProvenance.ts",
     "./sharing/SharedResourceProvenanceMeta": "./src/sharing/SharedResourceProvenanceMeta.tsx",

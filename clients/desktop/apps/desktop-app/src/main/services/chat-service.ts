@@ -119,7 +119,10 @@ import {
   readChatLastMessageRole,
 } from '../lib/chat-tabs-reader';
 import { chatLastMessageRole } from '../lib/chat-last-message-role';
-import { resolveTerminalDrivenChat } from '../lib/terminal-driven-chat';
+import {
+  persistedTabProvider,
+  resolveTerminalDrivenChat,
+} from '../lib/terminal-driven-chat';
 import { enqueueChatTabMutation } from '../lib/chat-tab-mutation-queue';
 import {
   claudeForkSessionIdFromInit,
@@ -181,7 +184,11 @@ import {
   type ProviderEventIngestResult,
 } from './provider-event-admission';
 import type { DispatchWorktreeChatTurnOptions } from '../lib/worktree-chat-turn';
-import type { AuthorizedChatDispatch } from './chat-dispatch-authorization';
+import {
+  assertChatPairingAuthorized,
+  type AuthorizedChatDispatch,
+  type ChatPairingCheck,
+} from './chat-dispatch-authorization';
 import { getStoppedTurnResumeService } from './stopped-turn-resume-service';
 import { assertChatScopeAcceptsTurns } from '../lib/retired-chat-scope-guard';
 import { isDelegationDeliveryActive } from '../agents/delegation/lifecycle';
@@ -217,6 +224,8 @@ export interface ChatServiceOptions {
    * capability when one was issued. Never part of a request or DTO.
    */
   queueDispatch?: { authorization?: AuthorizedChatDispatch };
+  /** Host-only live pairing check for remote sends; never a DTO or persisted. */
+  canCommit?: ChatPairingCheck;
 }
 
 interface LocalChatDispatchOptions extends ChatServiceOptions {
@@ -235,6 +244,7 @@ let specialNativeChatDispatcher:
   | ((
       request: ChatSendMessageRequest,
       authorization?: AuthorizedChatDispatch,
+      canCommit?: ChatPairingCheck,
     ) => Promise<void>)
   | undefined;
 let autoModelRoutingDispatcher:
@@ -254,6 +264,7 @@ export function setSpecialNativeChatDispatcher(
   dispatch: (
     request: ChatSendMessageRequest,
     authorization?: AuthorizedChatDispatch,
+    canCommit?: ChatPairingCheck,
   ) => Promise<void>,
   appAdvisorSurfaces: NonNullable<ChatServiceOptions['appAdvisorSurfaces']>,
 ): void {
@@ -451,7 +462,9 @@ export async function assertWatcherDeliveryIngress(request: {
 
 export async function dispatchLocalWorktreeChatMessage(
   request: ChatSendMessageRequest,
+  canCommit?: ChatPairingCheck,
 ): Promise<void> {
+  assertChatPairingAuthorized(canCommit);
   if (
     'watcherFired' in request &&
     request.watcherFired &&
@@ -507,8 +520,14 @@ export async function dispatchLocalWorktreeChatMessage(
       (timestamp) =>
         buildPersistedUserMessage(prepared, prepared.userMessageId, timestamp),
       async () => {
+        assertChatPairingAuthorized(canCommit);
         const { getChatQueueService } = await import('./chat-queue-service');
-        await getChatQueueService().submit(prepared, 'desktop');
+        if (canCommit) immediateSendPairingGuards.set(prepared, canCommit);
+        try {
+          await getChatQueueService().submit(prepared, 'desktop');
+        } finally {
+          if (canCommit) immediateSendPairingGuards.delete(prepared);
+        }
       },
       // A held send dispatches after this returns; its failure, or its setup
       // ending, undoes the claim there, as this catch does for one that
@@ -630,7 +649,13 @@ async function dispatchLocalWorktreeChatMessageNow(
   );
   if (request.watcherFired && request.watcherDeliveryId)
     await assertWatcherDeliveryIngress(request);
-  await getChatStateService().ensureChatForTrustedSend(request);
+  const canCommit =
+    options.canCommit ?? options.queueDispatch?.authorization?.canDispatch;
+  assertChatPairingAuthorized(canCommit);
+  await getChatStateService().ensureChatForTrustedSend(request, canCommit);
+  let commitStagedPromptOnce: (() => Promise<void>) | undefined;
+  let stagedPromptCommitPromise: Promise<void> | undefined;
+  let turnHandoffAccepted = false;
   if (!hiddenContinuation) {
     const persistedUserMessage = buildPersistedUserMessage(
       request,
@@ -660,33 +685,6 @@ async function dispatchLocalWorktreeChatMessageNow(
         : {}),
       canopy_persisted_messages: [persistedUserMessage],
     };
-    const committed = await turnDispatchTiming.measure('prompt_commit', () =>
-      getChatStateService().ingestProviderEvent({
-        projectId: request.projectId,
-        worktreeId: request.worktreeId,
-        chatId: request.chatId,
-        mutationId: `${request.chatId}:${request.userMessageId}:user-prompt`,
-        data: userPromptEvent,
-        ...(request.providerType ? { providerType: request.providerType } : {}),
-        turnUserMessageId: request.userMessageId,
-      }),
-    );
-    if (!committed) {
-      const accepted = await getChatStateService().hasMutation(
-        { projectId: request.projectId, worktreeId: request.worktreeId },
-        `${request.chatId}:${request.userMessageId}:accepted`,
-      );
-      // A funded queue Retry deliberately reuses the refused prompt's identity.
-      // Its prior acceptance records handoff, not successful provider execution.
-      if (accepted && options.creditRetryAttemptId === undefined) {
-        getChatQueueService().onTurnTerminal(
-          request,
-          'complete',
-          request.userMessageId,
-        );
-        return;
-      }
-    }
     // Only queue-drained dispatches announce the user prompt: for immediate
     // sends the renderer already appended the message locally, and the Codex
     // transcript reducer appends canopy_user_prompt without dedupe.
@@ -698,7 +696,83 @@ async function dispatchLocalWorktreeChatMessageNow(
         data: userPromptEvent,
       });
     };
-    if (committed && shouldEmitUserPrompt) announceUserPrompt();
+    if (canCommit) {
+      if (options.creditRetryAttemptId === undefined) {
+        const accepted = await getChatStateService().hasMutation(
+          { projectId: request.projectId, worktreeId: request.worktreeId },
+          `${request.chatId}:${request.userMessageId}:accepted`,
+        );
+        if (accepted) {
+          getChatQueueService().onTurnTerminal(
+            request,
+            'complete',
+            request.userMessageId,
+          );
+          return;
+        }
+      }
+      commitStagedPromptOnce = (): Promise<void> => {
+        if (!stagedPromptCommitPromise) {
+          const attempt = (async (): Promise<void> => {
+            await getChatStateService().commitAutomationStartBanner(request);
+            const committed = await turnDispatchTiming.measure(
+              'prompt_commit',
+              () =>
+                getChatStateService().ingestProviderEvent({
+                  projectId: request.projectId,
+                  worktreeId: request.worktreeId,
+                  chatId: request.chatId,
+                  mutationId: `${request.chatId}:${request.userMessageId}:user-prompt`,
+                  data: userPromptEvent,
+                  ...(request.providerType
+                    ? { providerType: request.providerType }
+                    : {}),
+                  turnUserMessageId: request.userMessageId,
+                }),
+            );
+            if (committed && shouldEmitUserPrompt) announceUserPrompt();
+          })();
+          stagedPromptCommitPromise = attempt;
+          void attempt.catch(() => {
+            if (stagedPromptCommitPromise === attempt) {
+              stagedPromptCommitPromise = undefined;
+            }
+          });
+        }
+        return stagedPromptCommitPromise;
+      };
+    } else {
+      const committed = await turnDispatchTiming.measure('prompt_commit', () =>
+        getChatStateService().ingestProviderEvent({
+          projectId: request.projectId,
+          worktreeId: request.worktreeId,
+          chatId: request.chatId,
+          mutationId: `${request.chatId}:${request.userMessageId}:user-prompt`,
+          data: userPromptEvent,
+          ...(request.providerType
+            ? { providerType: request.providerType }
+            : {}),
+          turnUserMessageId: request.userMessageId,
+        }),
+      );
+      if (!committed) {
+        const accepted = await getChatStateService().hasMutation(
+          { projectId: request.projectId, worktreeId: request.worktreeId },
+          `${request.chatId}:${request.userMessageId}:accepted`,
+        );
+        // A funded queue Retry deliberately reuses the refused prompt's identity.
+        // Its prior acceptance records handoff, not successful provider execution.
+        if (accepted && options.creditRetryAttemptId === undefined) {
+          getChatQueueService().onTurnTerminal(
+            request,
+            'complete',
+            request.userMessageId,
+          );
+          return;
+        }
+      }
+      if (committed && shouldEmitUserPrompt) announceUserPrompt();
+    }
   }
   const { dispatchWorktreeChatTurn: dispatchTurn } =
     await import('../lib/worktree-chat-turn');
@@ -719,6 +793,7 @@ async function dispatchLocalWorktreeChatMessageNow(
       ...(options.queueDispatch?.authorization
         ? { authorization: options.queueDispatch.authorization }
         : {}),
+      ...(canCommit ? { canCommit } : {}),
       requiredAccountProxyConnectionId:
         options.requiredAccountProxyConnectionId,
       countsTowardSkillUsage:
@@ -742,6 +817,7 @@ async function dispatchLocalWorktreeChatMessageNow(
           }
         : {
             onTurnAccepted: (): void => {
+              turnHandoffAccepted = true;
               options.onTurnAccepted?.();
               const consumedInstructionIds =
                 request.pendingSystemInstructions?.map(
@@ -753,6 +829,14 @@ async function dispatchLocalWorktreeChatMessageNow(
                 (userMessageId) => userMessageId !== request.userMessageId,
               );
               const task = (async (): Promise<void> => {
+                if (commitStagedPromptOnce) {
+                  await commitStagedPromptOnce().catch((error: unknown) => {
+                    logMainProcessWarn(
+                      '[chat-service] Failed to commit staged local prompt on turn acceptance',
+                      error,
+                    );
+                  });
+                }
                 for (const userMessageId of constituentUserMessageIds) {
                   await commitAcceptedUserPrompt({ ...request, userMessageId });
                 }
@@ -778,6 +862,14 @@ async function dispatchLocalWorktreeChatMessageNow(
             },
           }),
       onBeforeChatEvent: async (event) => {
+        if (turnHandoffAccepted && commitStagedPromptOnce) {
+          await commitStagedPromptOnce().catch((error: unknown) => {
+            logMainProcessWarn(
+              '[chat-service] Failed to commit staged local prompt before provider event',
+              error,
+            );
+          });
+        }
         // The provider that ran wins: lane selection may substitute one.
         const providerType = event.providerType ?? request.providerType;
         const outcome =
@@ -834,6 +926,10 @@ function isUserInitiatedImmediateSend(
 const remoteControlQueueOptions = new WeakMap<
   ChatSendMessageRequest,
   ChatServiceOptions
+>();
+const immediateSendPairingGuards = new WeakMap<
+  ChatSendMessageRequest,
+  ChatPairingCheck
 >();
 
 export async function dispatchHostQueuedWorktreeChatMessage(
@@ -1052,6 +1148,13 @@ async function dispatchHostQueuedWorktreeChatMessageNow(
   }
   const getWindow = getWorktreeChatWindow;
   const remoteControlOptions = remoteControlQueueOptions.get(request);
+  const canCommit =
+    authorization?.canDispatch ??
+    (!fromQueue
+      ? (immediateSendPairingGuards.get(request) ??
+        remoteControlOptions?.canCommit)
+      : undefined);
+  assertChatPairingAuthorized(canCommit);
   if (fromQueue) {
     const cancelledAutomaticRetry = cancelTransientRetryForChat(
       request,
@@ -1146,10 +1249,12 @@ async function dispatchHostQueuedWorktreeChatMessageNow(
       getEffectiveClaudeChatInterfaceMode(dispatchRequest.interfaceMode),
     )
   ) {
+    assertChatPairingAuthorized(canCommit);
     await sendWorktreeChatMessage(dispatchRequest, {
       getWindow,
       preserveActiveTab: true,
       appAdvisorSurfaces: queuedAppAdvisorSurfaces,
+      ...(canCommit ? { canCommit } : {}),
     });
     // The terminal session gates its own turns and never reports them to the
     // host queue, so release this turn now or later sends never drain.
@@ -1201,23 +1306,34 @@ async function dispatchHostQueuedWorktreeChatMessageNow(
         );
       }
       if (decision !== undefined && holdsForBackgroundWork(target, decision)) {
+        assertChatPairingAuthorized(canCommit);
         throw new TurnHeldForBackgroundWorkError();
       }
     }
   }
 
   if (specialNativeTarget) {
+    assertChatPairingAuthorized(canCommit);
     if (!specialNativeChatDispatcher)
       throw new Error('Native chat dispatch is unavailable');
     await withAgentSenderAuthority(
       dispatchRequest,
-      () => specialNativeChatDispatcher?.(dispatchRequest, authorization),
+      () =>
+        specialNativeChatDispatcher?.(
+          dispatchRequest,
+          authorization,
+          canCommit,
+        ),
       revalidateAgentSenderRequest,
     );
     return;
   }
+  assertChatPairingAuthorized(canCommit);
   // A pipeline override's model holds over a change made while it was queued.
-  await getChatStateService().commitTurnOverrideModelFor(dispatchRequest);
+  await getChatStateService().commitTurnOverrideModelFor(
+    dispatchRequest,
+    canCommit,
+  );
   // The queue admitted this send: its dispatchers must not submit it again.
   const queueDispatch = authorization ? { authorization } : {};
   if (origin === 'desktop') {
@@ -1225,6 +1341,7 @@ async function dispatchHostQueuedWorktreeChatMessageNow(
       getWindow,
       onTurnAccepted,
       queueDispatch,
+      ...(canCommit ? { canCommit } : {}),
       ...(automationExecutionContext !== undefined
         ? { executionContext: automationExecutionContext }
         : {}),
@@ -1250,6 +1367,7 @@ async function dispatchHostQueuedWorktreeChatMessageNow(
       ? { executionContext: automationExecutionContext }
       : {}),
     queueDispatch,
+    ...(canCommit ? { canCommit } : {}),
     ...(queueOptions.requiredAccountProxyConnectionId !== undefined
       ? {
           requiredAccountProxyConnectionId:
@@ -1541,6 +1659,7 @@ type WorktreeChatSendRequest =
 type TrustedWorktreeChatSendRequest = WorktreeChatSendRequest & {
   agentSent?: AgentSentInfo;
   autoResume?: AutoResumeMetadata;
+  nativeAutomationRunInputId?: string;
 };
 
 function normalizeRemoteControlChatModelConfig(
@@ -2029,14 +2148,12 @@ function chatSummaryEntity(input: {
   const lastMessageAt = input.tab.transcript
     ? input.tab.transcript.lastMessageAt
     : input.tab.messages[input.tab.messages.length - 1]?.timestamp;
-  // Mirror the desktop composer usage-limit banner (CAN-2601). Same
-  // visibility predicate as the renderer (`useWorktreeChatSurfaceState`): the
-  // persisted banner is live unless its exact dismiss key was dismissed. The
-  // raw limit frames are never projected as transcript messages, so this
-  // field is the portal's only signal.
+  // Mirror the desktop composer: after a switch to Antigravity, the old
+  // limit still matters to the account but no longer blocks this chat.
   const usageLimitBanner = input.tab.llmProviderUsageLimitBanner;
   const usageLimit =
     usageLimitBanner !== undefined &&
+    persistedTabProvider(input.tab) !== 'antigravity' &&
     input.tab.dismissedLlmProviderUsageLimitBannerKey !==
       usageLimitBanner.dismissKey
       ? {
@@ -2437,6 +2554,9 @@ async function sendWorktreeChatMessageNow(
   request: TrustedWorktreeChatSendRequest,
   options: ChatServiceOptions,
 ): Promise<{ ok: true; chatId: string }> {
+  const canCommit =
+    options.canCommit ?? options.queueDispatch?.authorization?.canDispatch;
+  assertChatPairingAuthorized(canCommit);
   const turnDispatchTiming = new TurnDispatchTiming();
   if (
     'watcherFired' in request &&
@@ -2899,14 +3019,24 @@ async function sendWorktreeChatMessageNow(
     // settings in the chat and then schedule the prompt again.
     if (terminalChatSettingsDiffer(existingTab, request))
       throw new Error(TERMINAL_CHAT_SETTINGS_DIFFER_MESSAGE);
-    if (trustedAgentRequest) {
+    assertChatPairingAuthorized(canCommit);
+    const nativeAutomationInput =
+      request.nativeAutomationRunInputId === userMessageId;
+    if (trustedAgentRequest && !nativeAutomationInput) {
       await getChatStateService().retainTrustedTerminalInput(
         trustedAgentRequest,
+        canCommit,
       );
     }
     // A terminal chat's prompt is typed by the App Advisor window's terminal,
     // so that window is a precondition here, not just a presentation.
     await appAdvisorSurfaces?.ensureAppAdvisorWindow();
+    assertChatPairingAuthorized(canCommit);
+    const target = {
+      projectId: request.projectId,
+      worktreeId: request.worktreeId,
+      chatId,
+    };
     if (implementsPlan) {
       const { MAX_TERMINAL_WRITE_BYTES, TerminalServiceError } =
         await import('./terminal-service');
@@ -2917,6 +3047,7 @@ async function sendWorktreeChatMessageNow(
           'invalid_payload',
           'Terminal write exceeds maximum data size',
         );
+      assertChatPairingAuthorized(canCommit);
       const { getClaudeTerminalSessionService } =
         await import('../integration/claude-terminal-session-service');
       getClaudeTerminalSessionService().retainPlanImplementationDelivery({
@@ -2932,6 +3063,7 @@ async function sendWorktreeChatMessageNow(
       worktreeId: request.worktreeId,
       chatId,
       userMessageId,
+      ...(nativeAutomationInput ? { acceptedInputId: userMessageId } : {}),
       ...('autoResume' in request && request.autoResume
         ? { autoResume: request.autoResume }
         : {}),
@@ -2967,30 +3099,65 @@ async function sendWorktreeChatMessageNow(
       worktreeId: request.worktreeId,
       chatTabId: chatId,
     });
+    if (
+      nativeAutomationInput &&
+      !(await getChatStateService().retainNativeAutomationTerminalInput(
+        trustedAgentRequest ?? { ...request, ...target, userMessageId },
+        canCommit,
+      ))
+    )
+      return { ok: true, chatId };
+    let transportStarted = false;
     const deliver = (): ReturnType<typeof sendToWindowDetailed> => {
-      // The renderer marks only non-agent prompts as automation turns; an
-      // unmarked agent prompt is accepted as the user's turn, like other sends.
-      if (scheduledPrompt.acceptedInputId === undefined)
+      assertChatPairingAuthorized(canCommit);
+      if (!trustedAgentRequest)
         stageTerminalPresentationTurn(
           presentationKey,
           userMessageId,
           implementsPlan ? 'user' : 'automation',
         );
+      const window = (getScheduledPromptWindow ?? getNullWindow)();
+      transportStarted = true;
       return sendToWindowDetailed(
-        (getScheduledPromptWindow ?? getNullWindow)(),
+        window,
         IPC_CHANNELS.claudeTerminalScheduledPrompt,
         scheduledPrompt,
       );
     };
-    const delivery = trustedAgentRequest
-      ? await withAgentSenderAuthority(
-          trustedAgentRequest,
-          deliver,
-          revalidateAgentSenderRequest,
-        )
-      : deliver();
+    let delivery: ReturnType<typeof sendToWindowDetailed>;
+    try {
+      delivery = trustedAgentRequest
+        ? await withAgentSenderAuthority(
+            trustedAgentRequest,
+            deliver,
+            revalidateAgentSenderRequest,
+          )
+        : deliver();
+    } catch (error) {
+      if (nativeAutomationInput) {
+        if (transportStarted) {
+          await getChatStateService().observeNativeAutomationTerminalInput(
+            target,
+            userMessageId,
+            'unknown',
+          );
+        } else {
+          cancelTerminalPresentationTurn(presentationKey, userMessageId);
+          await getChatStateService().cancelRetainedTerminalAgentInput(
+            target,
+            userMessageId,
+          );
+        }
+      }
+      throw error;
+    }
     if (!delivery.delivered) {
       cancelTerminalPresentationTurn(presentationKey, userMessageId);
+      if (nativeAutomationInput)
+        await getChatStateService().cancelRetainedTerminalAgentInput(
+          target,
+          userMessageId,
+        );
       throw new Error(
         `Cannot deliver a scheduled prompt to a Claude Code terminal chat without a ${BRAND.displayName} window.`,
       );
@@ -3331,12 +3498,16 @@ async function sendWorktreeChatMessageNow(
     ...(executionHarness ? { executionHarness } : {}),
   };
   if (queuedRequest.agentSenderProvenance && !existingTab) {
-    await getChatStateService().ensureChatForTrustedSend({
-      ...queuedRequest,
-      approvalMode,
-    });
+    await getChatStateService().ensureChatForTrustedSend(
+      {
+        ...queuedRequest,
+        approvalMode,
+      },
+      canCommit,
+    );
   }
   if (!authorizedRemoteControlDispatch) {
+    assertChatPairingAuthorized(canCommit);
     const { getChatQueueService } = await import('./chat-queue-service');
     remoteControlQueueOptions.set(queuedRequest, options);
     const queue = getChatQueueService();
@@ -3361,42 +3532,69 @@ async function sendWorktreeChatMessageNow(
     nextTabs.some((tab) => tab.id === tabsFile.activeTabId)
       ? tabsFile.activeTabId
       : chatId;
+  assertChatPairingAuthorized(canCommit);
+  const deferPortalPromptCommit = Boolean(canCommit && !appAdvisorSurfaces);
+  if (deferPortalPromptCommit && options.creditRetryAttemptId === undefined) {
+    const alreadyAccepted = await getChatStateService().hasMutation(
+      { projectId: request.projectId, worktreeId: request.worktreeId },
+      `${chatId}:${userMessageId}:accepted`,
+    );
+    if (alreadyAccepted) return { ok: true, chatId };
+  }
+  const compatibilityTabs = deferPortalPromptCommit
+    ? nextTabs.map((tab) =>
+        tab.id === chatId
+          ? {
+              ...tab,
+              messages: existingTab ? existingTab.messages : [],
+            }
+          : tab,
+      )
+    : nextTabs;
+  const portalUserPromptData = {
+    type: 'canopy_user_prompt',
+    original_text: request.text,
+    canopy_turn_user_message_id: userMessageId,
+    ...('resumesInterruptedTurn' in request && request.resumesInterruptedTurn
+      ? { canopy_resumes_interrupted_turn: true }
+      : {}),
+    provider:
+      request.providerType ??
+      (request.model ? getProviderForModel(request.model) : undefined),
+    ...('autoResume' in request && request.autoResume?.resumesUserMessageId
+      ? {
+          canopy_resumes_user_message_id:
+            request.autoResume.resumesUserMessageId,
+        }
+      : {}),
+    canopy_persisted_messages: [userMessage],
+  };
   await turnDispatchTiming.measure('prompt_commit', async () => {
     await getChatStateService().replaceCompatibilityTabs(
       { projectId: request.projectId, worktreeId: request.worktreeId },
       {
         ...tabsFile,
-        tabs: nextTabs,
+        tabs: compatibilityTabs,
         activeTabId,
       },
+      canCommit
+        ? {
+            beforePublish: (): void => {
+              assertChatPairingAuthorized(canCommit);
+            },
+          }
+        : undefined,
     );
-
-    await getChatStateService().ingestProviderEvent({
-      projectId: request.projectId,
-      worktreeId: request.worktreeId,
-      chatId,
-      data: {
-        type: 'canopy_user_prompt',
-        original_text: request.text,
-        canopy_turn_user_message_id: userMessageId,
-        ...('resumesInterruptedTurn' in request &&
-        request.resumesInterruptedTurn
-          ? { canopy_resumes_interrupted_turn: true }
-          : {}),
-        provider:
-          request.providerType ??
-          (request.model ? getProviderForModel(request.model) : undefined),
-        ...('autoResume' in request && request.autoResume?.resumesUserMessageId
-          ? {
-              canopy_resumes_user_message_id:
-                request.autoResume.resumesUserMessageId,
-            }
-          : {}),
-        canopy_persisted_messages: [userMessage],
-      },
-      ...(request.providerType ? { providerType: request.providerType } : {}),
-      turnUserMessageId: userMessageId,
-    });
+    if (!deferPortalPromptCommit) {
+      await getChatStateService().ingestProviderEvent({
+        projectId: request.projectId,
+        worktreeId: request.worktreeId,
+        chatId,
+        data: portalUserPromptData,
+        ...(request.providerType ? { providerType: request.providerType } : {}),
+        turnUserMessageId: userMessageId,
+      });
+    }
   });
   invalidateCoworkChatSummary(request.projectId);
 
@@ -3533,30 +3731,72 @@ async function sendWorktreeChatMessageNow(
       projectId: request.projectId,
       worktreeId: request.worktreeId,
       chatId,
-      tab: selectedTab,
+      tab:
+        compatibilityTabs.find((candidate) => candidate.id === chatId) ??
+        selectedTab,
       activateTab: false,
     });
   }
-  sendToWindow(getWindow(), IPC_CHANNELS.chatEvent, {
-    projectId: request.projectId,
-    worktreeId: request.worktreeId,
-    chatId,
-    data: {
-      type: 'canopy_user_prompt',
-      original_text: request.text,
-      canopy_turn_user_message_id: userMessageId,
-      provider:
-        request.providerType ??
-        (request.model ? getProviderForModel(request.model) : undefined),
-      canopy_persisted_messages: [userMessage],
-    },
-  });
-  if (startsNewTrackedChat) {
-    await notifyCanonicalChatStarted(
-      { projectId: request.projectId, worktreeId: request.worktreeId, chatId },
-      userMessageId,
-      selectedTab.newChatStartedWatcherFiredAt ?? createdAt,
-    ).catch(() => undefined);
+  let commitStagedPortalPromptOnce: (() => Promise<void>) | undefined;
+  let stagedPortalPromptCommitPromise: Promise<void> | undefined;
+  let portalTurnHandoffAccepted = false;
+  commitStagedPortalPromptOnce = (): Promise<void> => {
+    if (!stagedPortalPromptCommitPromise) {
+      stagedPortalPromptCommitPromise = (async (): Promise<void> => {
+        if (deferPortalPromptCommit) {
+          await getChatStateService().commitAutomationStartBanner(
+            queuedRequest,
+          );
+          await getChatStateService().ingestProviderEvent({
+            projectId: request.projectId,
+            worktreeId: request.worktreeId,
+            chatId,
+            mutationId: `${chatId}:${userMessageId}:user-prompt`,
+            data: portalUserPromptData,
+            ...(request.providerType
+              ? { providerType: request.providerType }
+              : {}),
+            turnUserMessageId: userMessageId,
+          });
+        }
+        sendToWindow(getWindow(), IPC_CHANNELS.chatEvent, {
+          projectId: request.projectId,
+          worktreeId: request.worktreeId,
+          chatId,
+          data: {
+            type: 'canopy_user_prompt',
+            original_text: request.text,
+            canopy_turn_user_message_id: userMessageId,
+            provider:
+              request.providerType ??
+              (request.model ? getProviderForModel(request.model) : undefined),
+            canopy_persisted_messages: [userMessage],
+          },
+        });
+        if (startsNewTrackedChat) {
+          await notifyCanonicalChatStarted(
+            {
+              projectId: request.projectId,
+              worktreeId: request.worktreeId,
+              chatId,
+            },
+            userMessageId,
+            selectedTab.newChatStartedWatcherFiredAt ?? createdAt,
+          ).catch(() => undefined);
+        }
+      })();
+      const pendingPortalCommit = stagedPortalPromptCommitPromise;
+      void pendingPortalCommit.catch(() => {
+        if (stagedPortalPromptCommitPromise === pendingPortalCommit) {
+          stagedPortalPromptCommitPromise = undefined;
+        }
+      });
+    }
+    return stagedPortalPromptCommitPromise;
+  };
+  if (!deferPortalPromptCommit) {
+    await commitStagedPortalPromptOnce();
+    commitStagedPortalPromptOnce = undefined;
   }
   const pendingSystemInstructions =
     'pendingSystemInstructions' in request &&
@@ -3585,6 +3825,7 @@ async function sendWorktreeChatMessageNow(
       ...(options.queueDispatch?.authorization
         ? { authorization: options.queueDispatch.authorization }
         : {}),
+      ...(canCommit ? { canCommit } : {}),
       admissionSignal: options.admissionSignal,
       requiredAccountProxyConnectionId:
         options.requiredAccountProxyConnectionId,
@@ -3608,6 +3849,14 @@ async function sendWorktreeChatMessageNow(
       turnDispatchTiming,
       providerEventSequenceNamespace: options.creditRetryAttemptId,
       onBeforeChatEvent: async (event) => {
+        if (portalTurnHandoffAccepted && commitStagedPortalPromptOnce) {
+          await commitStagedPortalPromptOnce().catch((error: unknown) => {
+            logMainProcessWarn(
+              '[chat-service] Failed to commit staged portal prompt before provider event',
+              error,
+            );
+          });
+        }
         // The provider that ran wins: lane selection may substitute one.
         const providerType = event.providerType ?? request.providerType;
         const outcome =
@@ -3628,16 +3877,27 @@ async function sendWorktreeChatMessageNow(
         return normalizeProviderEventIngestResult(outcome);
       },
       onTurnAccepted: () => {
+        portalTurnHandoffAccepted = true;
         options.onTurnAccepted?.();
-        const acceptedPromptTask = emitAcceptedUserPrompt(
-          getWindow,
-          {
-            ...queuedRequest,
-            chatId,
-            userMessageId,
-          },
-          pendingSystemInstructions?.map((instruction) => instruction.id),
-        ).catch((error: unknown) => {
+        const acceptedPromptTask = (async (): Promise<void> => {
+          if (commitStagedPortalPromptOnce) {
+            await commitStagedPortalPromptOnce().catch((error: unknown) => {
+              logMainProcessWarn(
+                '[chat-service] Failed to commit staged portal prompt on turn acceptance',
+                error,
+              );
+            });
+          }
+          await emitAcceptedUserPrompt(
+            getWindow,
+            {
+              ...queuedRequest,
+              chatId,
+              userMessageId,
+            },
+            pendingSystemInstructions?.map((instruction) => instruction.id),
+          );
+        })().catch((error: unknown) => {
           logMainProcessWarn(
             '[chat-service] Failed to commit accepted turn state',
             error,

@@ -2682,7 +2682,7 @@ export function DesktopSharedSidebarHost({
           if (!project || project.type === 'cowork') return undefined;
           const scope = { workspaceLocalId: workspaceId };
           const store = useSidebarItemGroupsStore.getState();
-          const report = (error: unknown): void =>
+          const report = (error: unknown): false => {
             useGitHubStore
               .getState()
               .addToast(
@@ -2693,10 +2693,12 @@ export function DesktopSharedSidebarHost({
                 undefined,
                 { caught: error },
               );
+            return false;
+          };
           return {
             create: (itemId): ReturnType<typeof store.create> =>
               store.create({ scope, itemId }),
-            update: (groupId, patch): Promise<void> =>
+            update: (groupId, patch): Promise<void | false> =>
               store.update({ scope, groupId, ...patch }).catch(report),
             ungroup: (groupId): void => {
               void store.ungroup({ scope, groupId }).catch(report);

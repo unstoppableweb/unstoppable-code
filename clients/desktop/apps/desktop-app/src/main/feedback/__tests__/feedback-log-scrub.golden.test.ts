@@ -2268,13 +2268,13 @@ describe('clean process output passes byte for byte (CAN-7623)', () => {
 
 // The stated cost of whole-file withholding (measured in the PR's Known
 // limits): one line with a credential-named field and no value withholds the
-// whole log. CAN-7624 owns the value shapes, CAN-7630 the placeholders.
+// whole log. CAN-7624 owns these value shapes; placeholders such as
+// `token: <your token>` are kept since CAN-7630 (see below).
 describe('a log with one credential-named field and no value is withheld whole (CAN-7623)', () => {
   it.each([
     ['jest', '    Received: {"token": undefined}'],
     ['curl', '> Authorization: [redacted]'],
     ['hook', `pass${'word'}: ********`],
-    ['pipeline', 'token: <your token>'],
   ])('withholds a %s log for one such line', async (name, line) => {
     const out = await scrubbed(
       'process-output',
@@ -3023,4 +3023,210 @@ describe('account names replaced in a Windows main.log copy (CAN-7623)', () => {
     expect(named.out).toBe(`${head}${ENTRY_WITHHELD}\n`);
     expect(named.summary).toEqual(plain.summary);
   });
+});
+
+// A process output line whose only credential-looking part is a placeholder
+// assignment is copied. Any value left beside, inside or glued onto the
+// placeholder still withholds the whole file.
+describe('a placeholder assignment in process output (CAN-7630)', () => {
+  const ESC = '\u001b';
+  const DOLLAR = '$';
+  const value = 'Q9w8'.repeat(3);
+  const word = `hunter${'two'}`;
+  const npmShort = `np${'m'}_${'a'.repeat(31)}`;
+  const npmTail = `${npmShort}token`;
+  const awsTail = `AKI${'A'}${'Q'.repeat(11)}TOKEN`;
+  const ghTail = `gh${'p'}_${'a1B2'.repeat(9)}`;
+  const path = 'pipeline-executions/exec-1/steps/deploy.log';
+  const log = (line: string): string => `step started\n${line}\nstep done\n`;
+
+  it.each([7, 64 * 1024])(
+    'copies a pipeline log with each ticket form as written, in %i-byte writes',
+    async (chunkBytes) => {
+      const text = [
+        'step started',
+        'token: <your token>',
+        `  TOKEN: ${DOLLAR}{{ secrets.DEPLOY_TOKEN }}`,
+        'api_key: $API_KEY',
+        'step done',
+        '',
+      ].join('\n');
+      const out = await scrubbed(
+        'process-output',
+        path,
+        Buffer.from(text),
+        chunkBytes,
+      );
+      expect(out).toBe(text);
+    },
+  );
+
+  it.each([
+    ['colored', `token: ${ESC}[1m<your token>${ESC}[0m`],
+    ['quoted', `TOKEN: "${DOLLAR}{{ secrets.DEPLOY_TOKEN }}"`],
+    ['JSON pair', `{"token":"${DOLLAR}{{ secrets.DEPLOY_TOKEN }}"}`],
+    ['$DEPLOY_PAT', 'token: $DEPLOY_PAT'],
+    ['NPM_TOKEN=$NPM_TOKEN', 'NPM_TOKEN=$NPM_TOKEN'],
+    // Review round 3: closing punctuation that ends at the line end, a quote
+    // or whitespace.
+    ['JSON pair and another field', '{"token":"<your token>","b":1}'],
+    ['shell statement', 'export TOKEN=$TOKEN; next'],
+    // Review round 4: a color code or a flag dash before the key.
+    ['colored key', `${ESC}[32mtoken: <your token>`],
+    [
+      'two color codes before the key',
+      `${ESC}[1m${ESC}[32mtoken: <your token>`,
+    ],
+    ['color code after a space', `step ${ESC}[32mtoken: <your token>`],
+    ['flag', '--token=$TOKEN'],
+  ])('copies a log with a %s placeholder as written', async (_name, line) => {
+    const text = log(line);
+    expect(await scrubbed('process-output', path, Buffer.from(text))).toBe(
+      text,
+    );
+  });
+
+  it.each([
+    ['a GitHub token', `token: <your token> ${FAKES.githubToken.text}`],
+    [
+      'password=value',
+      `TOKEN: ${DOLLAR}{{ secrets.X }} pass${'word'}=${value}`,
+    ],
+    ['<pw>value', `pass${'word'}=<pw>${value}`],
+    ['a braced name glued to a value', `token=${DOLLAR}{TOKEN}${value}`],
+    ['a real value in brackets', `token: <${FAKES.githubToken.text}>`],
+    ['$API_KEY and an sk- key', `api_key: $API_KEY ${FAKES.apiKey.text}`],
+    ['a bare name glued to a value', `token: $API_KEY${value}`],
+    ['a bare name, escape, then value', `token: $API_KEY${ESC}[0m${value}`],
+    ['a bare name holding an AWS key', `token: $TOKEN${FAKES.awsKey.text}`],
+    ['$API_KEYABCDEFGH', 'token: $API_KEYABCDEFGH'],
+    ['pwd = value', `token: <t> pwd = ${value}`],
+    ["password='value'", `token: $X pass${'word'}='${value}'`],
+    ['two glued fakes', `token: <t> ${FAKES.npmToken.text}${FAKES.jwt.text}`],
+    [
+      'line-start token = value',
+      `token=${DOLLAR}{{ secrets.X }} token = ${value} {`,
+    ],
+    [
+      'a JSON placeholder and a real field',
+      `{"token":"${DOLLAR}{{ secrets.X }}","pass${'word'}":"${value}"}`,
+    ],
+    // Review round 1: a literal inside the quotes or the brackets, without
+    // the digits a value-like run needs.
+    [
+      'a literal after it inside the quotes',
+      `{"pass${'word'}":"<your pass${'word'}> ${word}"}`,
+    ],
+    [
+      'a literal after a quoted reference',
+      `TOKEN: "${DOLLAR}{{ secrets.X }} ${word}"`,
+    ],
+    ['a literal before it inside the quotes', `token: "${word} <t>"`],
+    ['a || fallback', `token: ${DOLLAR}{{ secrets.TOKEN || '${word}' }}`],
+    ['a default() filter', `token: {{ inputs.token | default('${word}') }}`],
+    ['a command substitution', `token: ${DOLLAR}(printf ${word})`],
+    ['gh auth token', `TOKEN=${DOLLAR}(gh auth token) gh pr create`],
+    ['an assignment inside <>', `token: <pw=${word}>`],
+    ['a key with a value inside <>', `token: <pass${'word'}: ${word}>`],
+    [
+      'a bare name that takes the next key',
+      `token: process.env.TOKENNPM_TOKEN = "${word} <t>"`,
+    ],
+    // Review round 3: a literal glued on after closing punctuation or a
+    // closing quote, or in URL user-info.
+    ['a URL password and ;', `https://token:$API_KEY;${word}@host`],
+    ['a URL <> password', `https://token:<your token>;${word}@host`],
+    [
+      'a URL ${{ }} password',
+      `https://token:${DOLLAR}{{ secrets.T }};${word}@host`,
+    ],
+    ['a URL password and ,', `https://token:$API_KEY,${word}@host`],
+    ['a URL password and )', `https://token:$API_KEY)${word}@host`],
+    ['a literal glued after ;', `pass${'word'}=$API_KEY;${word}`],
+    ['a literal glued after ,', `token: <your token>,${word}`],
+    ['a literal glued after )', `token: ${DOLLAR}{{ secrets.T }})${word}`],
+    ['a literal after a double quote', `pass${'word'}: "$API_KEY";${word}`],
+    ['a literal after a single quote', `pass${'word'}: '<x>',${word}`],
+    ['a literal glued after a dot', `token: $API_KEY.${word}`],
+    ['a quoted literal after ,', `pass${'word'}=$API_KEY,"${word}"`],
+    ['a quoted literal after ;', `api_key: $API_KEY;'${word}'`],
+    ['a quoted literal after )', `token: <your token>)"${word}"`],
+    [
+      'a ${{ }} then a quoted literal',
+      `TOKEN: ${DOLLAR}{{ secrets.T }},"${word}"`,
+    ],
+    ['an unquoted JSON placeholder', '{"token":$TOKEN,"b":1}'],
+    ['a quoted literal after a quoted one', `{"token":"<x>","${word}"}`],
+    ['a literal glued after ]', `token: <your token>]${word}`],
+    ['a literal glued after }', `token: $API_KEY}${word}`],
+    ['a literal glued after @', `token: $API_KEY@${word}`],
+    // Review round 4: text glued on before the key, such as a token whose
+    // last characters spell the key word.
+    ['an npm token ending in token', `${npmTail}: <your token>`],
+    ['an npm token ending in token, then $NAME', `${npmTail}: $API_KEY`],
+    [
+      'an npm token ending in token, then ${{ }}',
+      `${npmTail}: ${DOLLAR}{{ secrets.X }}`,
+    ],
+    ['an AWS key ending in TOKEN', `${awsTail}: <your token>`],
+    ['an AWS key ending in TOKEN, then $NAME', `${awsTail}: $API_KEY`],
+    [
+      'an AWS key ending in TOKEN, then ${{ }}',
+      `${awsTail}: ${DOLLAR}{{ secrets.X }}`,
+    ],
+    ['a short npm run and _', `${npmShort}_token: <x>`],
+    ['a short npm run and -', `${npmShort}-token: <x>`],
+    ['a short npm run and ,', `${npmShort},token: <x>`],
+    ['a short npm run and (', `${npmShort}(token: <x>`],
+    ['an AWS-like run and _', `AKI${'A'}${'Q'.repeat(16)}_TOKEN: <x>`],
+    ['a GitHub token and .', `${ghTail}.token: <x>`],
+    ['an unknown key prefix', `ASI${'A'}${'Q'.repeat(11)}TOKEN: <x>`],
+    ['a word glued before the key', `${word}token: <x>`],
+    ['a word and _ before the key', `hunter_token: <x>`],
+    ['a camelCase key', `github${'Token'}: ${DOLLAR}{{ secrets.X }}`],
+    ['a name prefix', `DEPLOY_TOKEN: ${DOLLAR}{{ secrets.DEPLOY_TOKEN }}`],
+    ['nested JSON', `{"a":{"token":"${DOLLAR}{{ secrets.X }}"}},`],
+    ['a call argument', 'f(token=$TOKEN)'],
+    ['digits before the key', '1126token: <x>'],
+    ['digits and _ before the key', '2025_token: <x>'],
+    ['digits before the key, then $NAME', '1126TOKEN: $API_KEY'],
+    ['a word, a color code, the key', `${word}${ESC}[0mtoken: <x>`],
+    ['an npm run, a color code, the key', `${npmShort}${ESC}[0mtoken: <x>`],
+    ['a word and _, a color code, the key', `hunter_${ESC}[32mtoken: <x>`],
+    ['digits, a color code, the key', `1126${ESC}[0mtoken: <x>`],
+    ['a word, a color code, the key and =', `${word}${ESC}[0mtoken=<x>`],
+    [
+      'digits, a color code, the key and =',
+      `1126${ESC}[0mpass${'word'}=$API_KEY`,
+    ],
+    ['an npm run and a digit before the key', `${npmShort}9token: <x>`],
+    [
+      'an npm run, a color code, the key, then $NAME',
+      `${npmShort}${ESC}[32mtoken: $API_KEY`,
+    ],
+    [
+      'a word, two color codes, the key, then ${{ }}',
+      `${word}${ESC}[1m${ESC}[0mtoken: ${DOLLAR}{{ secrets.X }}`,
+    ],
+  ])(
+    'withholds the whole log for a placeholder with %s',
+    async (_name, line) => {
+      expect(
+        await scrubbed('process-output', path, Buffer.from(log(line))),
+      ).toBe(fileWithheld('deploy.log'));
+    },
+  );
+
+  // A long line after a placeholder, or a long word before a bare name.
+  it.each([
+    ['letters after a placeholder', `token: <x> ${'a'.repeat(250_000)}`],
+    ['a long word before a bare name', `${'a'.repeat(250_000)} token=$TOKEN`],
+  ])(
+    'copies a 250,000-character line with %s as written',
+    async (_name, line) => {
+      const text = log(line);
+      const out = await scrubbed('process-output', path, Buffer.from(text));
+      expect(out).toBe(text);
+    },
+  );
 });

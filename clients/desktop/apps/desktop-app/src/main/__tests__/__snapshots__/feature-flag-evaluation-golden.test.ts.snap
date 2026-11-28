@@ -82,7 +82,7 @@ exports[`FeatureFlagService states serves LaunchDarkly-disabled defaults when un
   "canopy-shared-org-projects-enabled": true,
   "canopy-shared-release-notes-enabled": false,
   "canopy-shared-space-notification-settings": true,
-  "canopy-web-core-client": false,
+  "canopy-web-core-client": true,
 }
 `;
 
@@ -168,7 +168,7 @@ exports[`FeatureFlagService states serves enabled-unavailable fallbacks when con
   "canopy-shared-org-projects-enabled": false,
   "canopy-shared-release-notes-enabled": false,
   "canopy-shared-space-notification-settings": false,
-  "canopy-web-core-client": false,
+  "canopy-web-core-client": true,
 }
 `;
 

@@ -771,6 +771,20 @@ export class ScriptExecutionWorker {
     };
   }
 
+  /** `null` when the key's latest run isn't the orphaned run the Stop names. */
+  async orphanSpawner(
+    params: WorkerScriptExecutionStopParams,
+  ): Promise<string | undefined | null> {
+    this.assertServed(params.scope);
+    const found = await this.logs.orphanSpawner({
+      projectId: params.scope.workspaceId,
+      worktreeId: params.scope.worktreeId,
+      scriptKey: params.scriptKey,
+      runId: params.executionId,
+    });
+    return typeof found === 'string' ? null : found.spawner;
+  }
+
   async stopOrphan(
     params: WorkerScriptExecutionStopParams,
   ): Promise<WorkerScriptExecutionStopResult> {
@@ -788,6 +802,8 @@ export class ScriptExecutionWorker {
       case 'absent':
       case 'not_orphaned':
         throw notOrphanedError();
+      case 'not_owner':
+        throw notOwnerError();
       case 'unconfirmed':
         throw confirmationRequiredError();
       case 'unsupported':
@@ -819,6 +835,7 @@ export class ScriptExecutionWorker {
     });
     if (outcome === 'absent' || outcome === 'not_orphaned')
       throw notOrphanedError();
+    if (outcome === 'not_owner') throw notOwnerError();
     if (outcome === 'unconfirmed') throw confirmationRequiredError();
     switch (outcome.kind) {
       case 'done':
@@ -960,6 +977,16 @@ function notOrphanedError(): CanopyOperationError {
     kind: 'conflict',
     code: 'worker.script.notOrphaned',
     message: 'This run is not an orphaned run, so it cannot be stopped.',
+    retry: { kind: 'never' },
+  });
+}
+
+function notOwnerError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'failed_precondition',
+    code: 'worker.script.notOwner',
+    message:
+      "This run was started by another part of the app, so it can't be stopped here.",
     retry: { kind: 'never' },
   });
 }

@@ -10,14 +10,16 @@ import { broadcastPreferencesSynced } from '../lib/preferences-broadcast';
 import {
   APP_ADVISOR_PROJECT_ID,
   IPC_CHANNELS,
+  type AppAdvisorSettingsPatchResponse,
 } from '@canopy/desktop-shared/types';
 import {
   buildAppAdvisorProjectAgentAccessOwnerOptions,
   normalizeAppAdvisorProjectAgentAccess,
 } from '@canopy/desktop-shared/lib/app-advisor-project-agent-access';
-import type {
-  RemoteControlAppAdvisorProjectAgentAccess,
-  RemoteControlAppAdvisorSettings,
+import {
+  OrchestratorInstructionsConflictError,
+  type RemoteControlAppAdvisorProjectAgentAccess,
+  type RemoteControlAppAdvisorSettings,
 } from '@canopy/protocol/remote-control/shell';
 import { trackDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
 import {
@@ -98,7 +100,8 @@ export async function readAppAdvisorSettingsView(): Promise<RemoteControlAppAdvi
     ),
     projectAgentAccessOwnerOptions:
       buildAppAdvisorProjectAgentAccessOwnerOptions(organizations),
-    instructions,
+    instructions: instructions.content,
+    instructionsRevision: instructions.revision,
     archiveRetentionDays: settings.archiveRetentionDays ?? null,
     autoArchiveDays: settings.autoArchiveDays ?? null,
     // Antigravity is left out on purpose: it cannot run App Advisor turns
@@ -122,13 +125,6 @@ export async function readAppAdvisorSettingsView(): Promise<RemoteControlAppAdvi
   };
 }
 
-/** A patch the stores refused before anything was written. */
-export interface AppAdvisorSettingsPatchRefusal {
-  readonly ok: false;
-  readonly code: 'invalid_payload';
-  readonly error: string;
-}
-
 /**
  * Save a partial settings patch through the desktop's canonical stores. An
  * invalid patch is refused whole before any store is written; both desktop
@@ -140,7 +136,7 @@ export async function applyAppAdvisorSettingsPatch(
     AppAdvisorToolRuntimeSurfaces,
     'getMainWindow' | 'getAppAdvisorWindow'
   > | null,
-): Promise<{ readonly ok: true } | AppAdvisorSettingsPatchRefusal> {
+): Promise<AppAdvisorSettingsPatchResponse> {
   if (!isRecord(payload)) {
     return {
       ok: false,
@@ -155,6 +151,14 @@ export async function applyAppAdvisorSettingsPatch(
         ? normalizeAppAdvisorProjectAgentAccess(payload.projectAgentAccess)
         : null;
 
+  const instructions = payload.instructions;
+  const instructionDraft =
+    isRecord(instructions) &&
+    typeof instructions.content === 'string' &&
+    typeof instructions.revision === 'string' &&
+    instructions.revision
+      ? { content: instructions.content, revision: instructions.revision }
+      : undefined;
   if (
     (payload.model !== undefined &&
       (typeof payload.model !== 'string' ||
@@ -162,8 +166,7 @@ export async function applyAppAdvisorSettingsPatch(
         payload.model.length > 256)) ||
     (payload.thinkingLevel !== undefined &&
       !isAppAdvisorThinkingLevel(payload.thinkingLevel)) ||
-    (payload.instructions !== undefined &&
-      typeof payload.instructions !== 'string') ||
+    (instructions !== undefined && instructionDraft === undefined) ||
     (payload.archiveRetentionDays !== undefined &&
       payload.archiveRetentionDays !== null &&
       (typeof payload.archiveRetentionDays !== 'number' ||
@@ -187,6 +190,21 @@ export async function applyAppAdvisorSettingsPatch(
       code: 'invalid_payload',
       error: `Invalid ${ORCHESTRATOR_LABEL} settings.`,
     };
+  }
+  // Refuse conflicts before writing preferences or retention.
+  let instructionsRevision: string | undefined;
+  if (instructionDraft !== undefined) {
+    try {
+      instructionsRevision = await saveAppAdvisorClaudeMd(instructionDraft);
+    } catch (error) {
+      if (!(error instanceof OrchestratorInstructionsConflictError))
+        throw error;
+      return {
+        ok: false,
+        code: 'instructions_changed',
+        error: OrchestratorInstructionsConflictError.copy.title,
+      };
+    }
   }
   const preferencePatch = {
     ...(typeof payload.model === 'string'
@@ -233,9 +251,6 @@ export async function applyAppAdvisorSettingsPatch(
       ),
     );
   }
-  if (typeof payload.instructions === 'string') {
-    await saveAppAdvisorClaudeMd(payload.instructions);
-  }
   if (
     payload.archiveRetentionDays !== undefined ||
     payload.autoArchiveDays !== undefined
@@ -259,5 +274,7 @@ export async function applyAppAdvisorSettingsPatch(
       saved,
     );
   }
-  return { ok: true };
+  return instructionsRevision === undefined
+    ? { ok: true }
+    : { ok: true, instructionsRevision };
 }

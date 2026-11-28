@@ -193,9 +193,35 @@ function wakeBoundaryMessage(
         ...(block.spawnedBy.event ? { taskEvent: true } : {}),
         ...(block.spawnedBy.scheduled ? { scheduled: true } : {}),
         ...(block.spawnedBy.toolsLoaded ? { toolsLoaded: true } : {}),
+        ...(block.spawnedBy.peerMessage ? { peerMessage: true } : {}),
       },
     ],
   };
+}
+
+/** Whether a canonical timer heads a wake's own turn in display. */
+function startsWake(
+  message: ChatMessage,
+  canonical: { anchor: string | undefined; toolsLoaded: boolean },
+  turnIds: ReadonlySet<string>,
+): boolean {
+  const block = message.blocks[0];
+  return (
+    block?.type === 'turn_timer' &&
+    block.spawnedBy !== undefined &&
+    (canonical.anchor === undefined ||
+      !turnIds.has(canonical.anchor) ||
+      canonical.toolsLoaded)
+  );
+}
+
+/** A timer whose recorded cause is only another chat's message. */
+function isPeerMessageOnlyCause(message: ChatMessage): boolean {
+  const block = message.blocks[0];
+  if (block?.type !== 'turn_timer' || block.spawnedBy === undefined)
+    return false;
+  const { peerMessage, ...rest } = block.spawnedBy;
+  return peerMessage === true && Object.keys(rest).length === 0;
 }
 
 export function reorderMessagesForDisplay(
@@ -209,6 +235,13 @@ export function reorderMessagesForDisplay(
      * later run with no prompt and no recorded cause into the turn it follows.
      */
     readonly indexOrder?: boolean;
+    /**
+     * Prompts whose completed turn is compacted on this page (rows missing
+     * before a history cursor). A wake that only another chat's message
+     * started stays in such a prompt's turn, so the turn's final reply and
+     * its cursor cover the wake's rows until the full turn loads.
+     */
+    readonly compactedTurnIds?: ReadonlySet<string>;
   } = {},
 ): ChatMessage[] {
   // A canonical timer shows at the end of its anchor's turn wherever it was
@@ -227,17 +260,41 @@ export function reorderMessagesForDisplay(
   // Where each timer row was appended. Executions are ordered by it, not by
   // `startedAt`, which a closing timer recomputes from the provider's duration.
   const timerPositions = new Map<ChatMessage, number>();
+  // In display, a later run of an earlier prompt (a Resume) that starts after
+  // a wake stays in the wake's turn with its rows, the latest turn, rather
+  // than reaching back to the prompt above the wake. Main's index keeps
+  // develop's placement, by anchor.
+  const keepsPeerWakeIn = (promptId: string | undefined): boolean =>
+    options.indexOrder === true ||
+    (promptId !== undefined &&
+      options.compactedTurnIds?.has(promptId) === true);
+  let wakeTurnId: string | undefined;
+  let promptId: string | undefined;
   for (const [position, message] of messages.entries()) {
-    if (message.hidden || !isTurnTimerMessage(message)) continue;
+    if (message.hidden) continue;
+    if (isRootUserTurnBoundary(message)) {
+      wakeTurnId = undefined;
+      promptId = message.id;
+      continue;
+    }
+    if (!isTurnTimerMessage(message)) continue;
     timerPositions.set(message, position);
     const canonical = canonicalTimer(message);
+    if (
+      canonical !== null &&
+      options.indexOrder !== true &&
+      !(isPeerMessageOnlyCause(message) && keepsPeerWakeIn(promptId)) &&
+      startsWake(message, canonical, turnIds)
+    ) {
+      wakeTurnId = `${message.id}:wake`;
+    }
     const anchor = canonical?.anchor;
     if (anchor === undefined || !turnIds.has(anchor)) continue;
     if (canonical?.toolsLoaded) {
       continuations.set(anchor, `${message.id}:wake`);
       continue;
     }
-    const owner = continuations.get(anchor) ?? anchor;
+    const owner = wakeTurnId ?? continuations.get(anchor) ?? anchor;
     anchoredTimers.set(owner, [...(anchoredTimers.get(owner) ?? []), message]);
   }
 
@@ -245,6 +302,8 @@ export function reorderMessagesForDisplay(
   let pendingTimer: ChatMessage | null = null;
   const pendingCanonicalTimers: ChatMessage[] = [];
   let currentTurnId: string | undefined;
+  // The prompt whose span this row is in, wakes included.
+  let currentPromptId: string | undefined;
   const flushTurn = (): void => {
     // Newest first: a turn closes at its first timer, so the latest
     // execution's timer owns the turn and a resumed turn stays live. That
@@ -296,8 +355,14 @@ export function reorderMessagesForDisplay(
       // A wake heads its own turn (turn-state phase 40d), as does the
       // continuation after a tools load, where it was appended. Main's turn
       // index keeps one indexed turn per prompt but reads the prompt's own group.
+      // The index groups a run another chat's message started as develop
+      // did before that cause was recorded: the cause only labels the turn
+      // in display, so every reply read stays the same.
+      const indexIgnoresCause =
+        isPeerMessageOnlyCause(msg) && keepsPeerWakeIn(currentPromptId);
       const wake =
         canonical !== null &&
+        !indexIgnoresCause &&
         (canonical.anchor === undefined ||
           !turnIds.has(canonical.anchor) ||
           canonical.toolsLoaded)
@@ -326,6 +391,7 @@ export function reorderMessagesForDisplay(
     if (isRootUserTurnBoundary(msg)) {
       flushTurn();
       currentTurnId = msg.id;
+      currentPromptId = msg.id;
     }
 
     result.push(msg);

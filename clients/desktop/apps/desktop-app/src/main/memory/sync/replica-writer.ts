@@ -24,7 +24,7 @@ import {
   retireImportNotes,
   stampImportNotesConsolidated,
   writeImportState,
-} from '../local/import/ledger';
+} from '@canopy/memory-store/import/ledger';
 import {
   assertMemoryPathContained,
   assertMemoryScopeLockHeld,
@@ -38,11 +38,11 @@ import {
   writeMemoryFileAtomically,
   writeMemoryFileDurably,
   type MemoryFileContent,
-} from '../local/memory-files';
+} from '@canopy/memory-store/memory-files';
 import {
   memoryNoteId,
   readMemoryNoteFrontMatter,
-} from '../local/note-identity';
+} from '@canopy/memory-store/note-identity';
 import { createLocalMemorySnapshot } from '../local/snapshots';
 import {
   normalizeMemoryDocumentContent,

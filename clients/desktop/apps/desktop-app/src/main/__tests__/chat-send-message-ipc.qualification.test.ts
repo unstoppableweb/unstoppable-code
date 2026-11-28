@@ -558,11 +558,25 @@ jest.mock('../lib/preferences-store', () => ({
 const mockOneWindowSenders = new Map<number, () => boolean>();
 jest.mock('../remote-control/host/bridge-window', () => ({
   ...jest.requireActual<object>('../remote-control/host/bridge-window'),
-  remoteBridgeIsOneWindow: (sender: { id: number }): boolean =>
-    mockOneWindowSenders.has(sender.id),
-  remoteBridgeCommitGuard: (sender: {
-    id: number;
-  }): (() => boolean) | undefined => mockOneWindowSenders.get(sender.id),
+  remoteBridgeIsOneWindow: (sender?: { id?: number }): boolean =>
+    typeof sender?.id === 'number' && mockOneWindowSenders.has(sender.id),
+  remoteBridgeCommitGuard: (sender?: {
+    id?: number;
+  }): (() => boolean) | undefined => {
+    if (typeof sender?.id !== 'number') return undefined;
+    const senderId = sender.id;
+    const record = mockOneWindowSenders.get(senderId);
+    if (!record) return undefined;
+    return () => mockOneWindowSenders.get(senderId) === record && record();
+  },
+}));
+const mockAssertCoworkChatRootPresent = jest
+  .fn<Promise<void>, [string, string]>()
+  .mockResolvedValue(undefined);
+jest.mock('../lib/cowork-folder-guard', () => ({
+  ...jest.requireActual<object>('../lib/cowork-folder-guard'),
+  assertCoworkChatRootPresent: (projectId: string, worktreeId: string) =>
+    mockAssertCoworkChatRootPresent(projectId, worktreeId),
 }));
 
 jest.mock('../lib/workspace-registry', () => ({
@@ -622,6 +636,8 @@ jest.mock('../services/active-chat-input', () => {
     ...actual,
     checkWatcherDeliveryIngress: (request: unknown) =>
       mockCheckWatcherIngress(request),
+    notifyCanonicalChatStarted: (...args: unknown[]) =>
+      mockNotifyCanonicalChatStarted(...args),
     captureCanonicalChatProducerContext: jest.fn(
       (target: { projectId: string; worktreeId: string; chatId: string }) =>
         Promise.resolve({
@@ -635,6 +651,9 @@ jest.mock('../services/active-chat-input', () => {
     ),
   };
 });
+const mockNotifyCanonicalChatStarted = jest
+  .fn<Promise<void>, unknown[]>()
+  .mockResolvedValue(undefined);
 const mockHandleChatTerminalEvent = jest.fn();
 
 jest.mock('../observability', () => ({
@@ -671,8 +690,17 @@ jest.mock('../app-advisor/watchers', () => ({
   })),
 }));
 
+const mockCaptureTurnStart = jest
+  .fn<Promise<void>, [string, string, string]>()
+  .mockResolvedValue(undefined);
+const mockDiscardTurnStart = jest.fn<void, [string]>();
 jest.mock('../lib/turn-diff-capture', () => ({
-  captureTurnStart: jest.fn().mockResolvedValue(undefined),
+  captureTurnStart: (
+    sessionKey: string,
+    projectId: string,
+    worktreeId: string,
+  ) => mockCaptureTurnStart(sessionKey, projectId, worktreeId),
+  discardTurnStart: (sessionKey: string) => mockDiscardTurnStart(sessionKey),
   captureTurnEndAndDiff: jest.fn().mockResolvedValue(null),
   // The chat turn's end capture since turn-state phase 40f.
   captureTurnEndAndDiffs: jest.fn().mockResolvedValue(null),
@@ -714,6 +742,7 @@ const mockHoldLocalSendForWorktreeSetup = jest.fn(
 );
 const mockAnswerPendingQuestion = jest.fn().mockResolvedValue(false);
 const mockEnsureChatForTrustedSend = jest.fn().mockResolvedValue(undefined);
+const mockCommitAutomationStartBanner = jest.fn().mockResolvedValue(undefined);
 const mockRunWithScopeActivity = jest.fn(
   async (
     _scope: { projectId: string; worktreeId: string },
@@ -798,15 +827,28 @@ const mockUpdateCompatibilityTab = jest.fn(
 );
 const mockChatStateCommand = jest.fn<
   Promise<DesktopSharedTypesModule.ChatCommandResult>,
-  [envelope: unknown]
->((envelope: unknown): Promise<DesktopSharedTypesModule.ChatCommandResult> => {
-  void envelope;
-  return Promise.resolve({
-    commandId: 'test',
-    revision: 1,
-    outcome: 'applied',
-  });
-});
+  [
+    envelope: unknown,
+    options?: DesktopSharedTypesModule.ChatCommandExecutionOptions,
+  ]
+>(
+  (
+    envelope: unknown,
+    options?: DesktopSharedTypesModule.ChatCommandExecutionOptions,
+  ): Promise<DesktopSharedTypesModule.ChatCommandResult> => {
+    void envelope;
+    void options;
+    return Promise.resolve({
+      commandId: 'test',
+      revision: 1,
+      outcome: 'applied',
+    });
+  },
+);
+const mockRetainTrustedTerminalInput = jest.fn<
+  Promise<{ status: 'retained' | 'already-retained' }>,
+  [unknown, unknown, (() => boolean) | undefined]
+>(() => Promise.resolve({ status: 'retained' }));
 const mockGetCompatibilityTabs = jest.fn(
   (scope: { projectId: string; worktreeId: string }): Promise<ChatTabsFile> =>
     mockReadChatTabsFile(scope.projectId, scope.worktreeId),
@@ -860,6 +902,9 @@ jest.mock('../services/chat-state-service', () => ({
     get ensureChatForTrustedSend() {
       return mockEnsureChatForTrustedSend;
     },
+    get commitAutomationStartBanner() {
+      return mockCommitAutomationStartBanner;
+    },
     get editRetainedTerminalAgentInput() {
       return mockEditRetainedTerminalAgentInput;
     },
@@ -894,6 +939,9 @@ jest.mock('../services/chat-state-service', () => ({
     },
     get reconcileHostQueue() {
       return mockReconcileHostQueue;
+    },
+    get retainTrustedTerminalInput() {
+      return mockRetainTrustedTerminalInput;
     },
     get replaceCompatibilityTabs() {
       return mockReplaceCompatibilityTabs;
@@ -1282,6 +1330,7 @@ function makeWindowAccessors(
   return {
     getMainWindow,
     getAppAdvisorWindow: () => null,
+    openAppAdvisorApprovalsSettings: jest.fn().mockResolvedValue(undefined),
     openAppAdvisorWindow: openAppAdvisorWindowMock,
     ensureAppAdvisorWindow: ensureAppAdvisorWindowMock,
     closeAppAdvisorWindow: closeAppAdvisorWindowMock,
@@ -1439,6 +1488,1445 @@ describe('chat:send-message IPC qualification (CAN-5897)', () => {
     expect(mockHoldLocalSendForWorktreeSetup).not.toHaveBeenCalled();
     expect(submit).not.toHaveBeenCalled();
     expect(mockedGetOrCreateSession).not.toHaveBeenCalled();
+  });
+
+  it('refuses a remote chat:send-message once its pairing is revoked before dispatch (CAN-7877)', async () => {
+    let paired = false;
+    mockOneWindowSenders.set(77, () => paired);
+    const submit = jest.spyOn(getChatQueueService(), 'submit');
+    try {
+      await expect(
+        getHandler(IPC_CHANNELS.chatSendMessage)({ sender: { id: 77 } }, send),
+      ).rejects.toThrow(/no longer authorizes/i);
+      expect(mockHoldLocalSendForWorktreeSetup).not.toHaveBeenCalled();
+      expect(submit).not.toHaveBeenCalled();
+      expect(mockedGetOrCreateSession).not.toHaveBeenCalled();
+
+      paired = true;
+      mockHoldLocalSendForWorktreeSetup.mockImplementationOnce(
+        async (_request, _userMessage, admit) => {
+          paired = false;
+          await admit();
+          return 'dispatch-now';
+        },
+      );
+      await expect(
+        getHandler(IPC_CHANNELS.chatSendMessage)(
+          { sender: { id: 77 } },
+          { ...send, userMessageId: 'composer-revoked-during-setup' },
+        ),
+      ).rejects.toThrow(/no longer authorizes/i);
+      expect(submit).not.toHaveBeenCalled();
+      expect(mockedGetOrCreateSession).not.toHaveBeenCalled();
+    } finally {
+      mockOneWindowSenders.delete(77);
+    }
+  });
+
+  it('captures the pairing guard before the scope-check await so closing the bridge mid-check still rejects (CAN-7877)', async () => {
+    mockOneWindowSenders.set(79, () => true);
+    const submit = jest.spyOn(getChatQueueService(), 'submit');
+    mockAssertCoworkChatRootPresent.mockImplementationOnce(() => {
+      mockOneWindowSenders.delete(79);
+      return Promise.resolve();
+    });
+    try {
+      await expect(
+        getHandler(IPC_CHANNELS.chatSendMessage)(
+          { sender: { id: 79 } },
+          {
+            ...send,
+            userMessageId: 'composer-bridge-closed-during-scope-check',
+          },
+        ),
+      ).rejects.toThrow(/no longer authorizes/i);
+      expect(mockHoldLocalSendForWorktreeSetup).not.toHaveBeenCalled();
+      expect(submit).not.toHaveBeenCalled();
+      expect(mockedGetOrCreateSession).not.toHaveBeenCalled();
+    } finally {
+      mockOneWindowSenders.delete(79);
+    }
+  });
+
+  it('rejects caller-supplied forged or non-iterable consolidatedWatcherUserMessageIds on chat:send-message (CAN-7877)', async () => {
+    mockOneWindowSenders.set(80, () => true);
+    const submit = jest.spyOn(getChatQueueService(), 'submit');
+    try {
+      await expect(
+        getHandler(IPC_CHANNELS.chatSendMessage)(
+          { sender: { id: 80 } },
+          {
+            ...send,
+            userMessageId: 'composer-forged-consolidation',
+            consolidatedWatcherUserMessageIds: ['unrelated-local-input'],
+          },
+        ),
+      ).rejects.toThrow(/consolidatedWatcherUserMessageIds/);
+      await expect(
+        getHandler(IPC_CHANNELS.chatSendMessage)(
+          { sender: { id: 80 } },
+          Object.assign({}, send, {
+            userMessageId: 'composer-non-iterable-consolidation',
+            consolidatedWatcherUserMessageIds: 123,
+          }),
+        ),
+      ).rejects.toThrow(/consolidatedWatcherUserMessageIds/);
+      expect(submit).not.toHaveBeenCalled();
+      expect(mockedGetOrCreateSession).not.toHaveBeenCalled();
+    } finally {
+      mockOneWindowSenders.delete(80);
+    }
+  });
+
+  it('forwards the remote pairing guard through chat:queue-edit, cancel, force and edit-lock (CAN-7877)', async () => {
+    let paired = true;
+    mockOneWindowSenders.set(88, () => paired);
+    const remoteEvent = { sender: { id: 88 } };
+    const entry = {
+      projectId: 'proj',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      entryId: 'row-1',
+    };
+    try {
+      mockChatStateCommand.mockClear();
+      mockChatStateCommand.mockResolvedValue({
+        commandId: 'cmd',
+        revision: 1,
+        outcome: 'applied',
+        entityId: 'chat',
+      });
+
+      await getHandler(IPC_CHANNELS.chatQueueEdit)(remoteEvent, {
+        ...entry,
+        text: 'Updated',
+      });
+      await getHandler(IPC_CHANNELS.chatQueueCancel)(remoteEvent, entry);
+      await getHandler(IPC_CHANNELS.chatQueueForce)(remoteEvent, entry);
+      await getHandler(IPC_CHANNELS.chatQueueSetEditLock)(remoteEvent, {
+        ...entry,
+        locked: true,
+      });
+
+      expect(mockChatStateCommand).toHaveBeenCalledTimes(4);
+      for (const call of mockChatStateCommand.mock.calls) {
+        expect(call[1]?.canCommitSend?.()).toBe(true);
+      }
+
+      paired = false;
+      for (const call of mockChatStateCommand.mock.calls) {
+        expect(call[1]?.canCommitSend?.()).toBe(false);
+      }
+      mockChatStateCommand.mockClear();
+      await expect(
+        getHandler(IPC_CHANNELS.chatQueueEdit)(remoteEvent, {
+          ...entry,
+          text: 'Late edit',
+        }),
+      ).rejects.toThrow(/no longer authorizes/i);
+      await expect(
+        getHandler(IPC_CHANNELS.chatQueueCancel)(remoteEvent, entry),
+      ).rejects.toThrow(/no longer authorizes/i);
+      await expect(
+        getHandler(IPC_CHANNELS.chatQueueForce)(remoteEvent, entry),
+      ).rejects.toThrow(/no longer authorizes/i);
+      await expect(
+        getHandler(IPC_CHANNELS.chatQueueSetEditLock)(remoteEvent, {
+          ...entry,
+          locked: true,
+        }),
+      ).rejects.toThrow(/no longer authorizes/i);
+      expect(mockChatStateCommand).not.toHaveBeenCalled();
+
+      await getHandler(IPC_CHANNELS.chatQueueForce)(
+        { sender: { id: 1 } },
+        entry,
+      );
+      expect(mockChatStateCommand).toHaveBeenCalledTimes(1);
+      expect(mockChatStateCommand.mock.calls[0]?.[1]).toBeUndefined();
+    } finally {
+      mockOneWindowSenders.delete(88);
+    }
+  });
+
+  it('defers guarded portal prompt commits until provider handoff so revocations and parks leave zero committed prompt (CAN-7877)', async () => {
+    const resolveWorktree = await import('../lib/resolve-worktree');
+    const { sendWorktreeChatMessage } =
+      await import('../services/chat-service');
+    const resolveTargetSpy = jest
+      .spyOn(resolveWorktree, 'resolveWorktreeTargetIds')
+      .mockReturnValue({
+        projectId: send.projectId,
+        worktreeId: send.worktreeId,
+      });
+    mockReadChatTabsFile.mockResolvedValue({
+      version: 1,
+      activeTabId: send.chatId,
+      tabs: [
+        {
+          id: send.chatId,
+          title: 'Chat',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          messages: [],
+          kind: 'chat',
+        },
+      ],
+    });
+    try {
+      // 1. Revocation right before session.sendMessage: neither compatibility tabs
+      //    nor ingestProviderEvent ever wrote the user prompt.
+      let paired1 = true;
+      mockReplaceCompatibilityTabs.mockClear();
+      mockIngestProviderEvent.mockClear();
+      mockedGetOrCreateSession.mockImplementationOnce(() => {
+        paired1 = false;
+        return Promise.resolve(makeMockSession());
+      });
+      await expect(
+        sendWorktreeChatMessage(
+          {
+            ...send,
+            userMessageId: 'portal-revoked-before-send',
+            text: 'Must never commit before handoff',
+          },
+          { getWindow: () => null, canCommit: () => paired1 },
+        ),
+      ).rejects.toThrow(/no longer authorizes/i);
+      expect(
+        mockIngestProviderEvent.mock.calls.filter(
+          ([input]) =>
+            input.mutationId ===
+            `${send.chatId}:portal-revoked-before-send:user-prompt`,
+        ),
+      ).toHaveLength(0);
+      for (const call of mockReplaceCompatibilityTabs.mock.calls) {
+        const writtenTab = call[1]?.tabs.find((t) => t.id === send.chatId);
+        expect(
+          writtenTab?.messages.some(
+            (m) => m.id === 'portal-revoked-before-send',
+          ),
+        ).toBe(false);
+      }
+
+      // 2. Guarded dispatch that exits with a parked ChatDispatchOutcomeError
+      //    never commits an unaccepted prompt either.
+      mockReplaceCompatibilityTabs.mockClear();
+      mockIngestProviderEvent.mockClear();
+      const { ChatDispatchOutcomeError } =
+        await import('../services/chat-dispatch-authorization');
+      mockedGetOrCreateSession.mockResolvedValueOnce({
+        ...makeMockSession(),
+        sendMessage: jest.fn(() => {
+          throw new ChatDispatchOutcomeError({
+            dispatchOwner: Symbol('test-parked'),
+            operationEpoch: 1,
+            kind: 'parked',
+            blockedByTurnId: 'wake-turn-1',
+            receiptGeneration: 1,
+            promptCommitted: false,
+          });
+        }),
+      });
+      await sendWorktreeChatMessage(
+        {
+          ...send,
+          userMessageId: 'portal-parked-before-handoff',
+          text: 'Parked guarded send',
+        },
+        { getWindow: () => null, canCommit: () => true },
+      );
+      expect(
+        mockIngestProviderEvent.mock.calls.filter(
+          ([input]) =>
+            input.mutationId ===
+            `${send.chatId}:portal-parked-before-handoff:user-prompt`,
+        ),
+      ).toHaveLength(0);
+      for (const call of mockReplaceCompatibilityTabs.mock.calls) {
+        const writtenTab = call[1]?.tabs.find((t) => t.id === send.chatId);
+        expect(
+          writtenTab?.messages.some(
+            (m) => m.id === 'portal-parked-before-handoff',
+          ),
+        ).toBe(false);
+      }
+    } finally {
+      resolveTargetSpy.mockRestore();
+    }
+  });
+
+  it('enforces the pairing guard on the managed-terminal send branch before terminal delivery (CAN-7877)', async () => {
+    const resolveWorktree = await import('../lib/resolve-worktree');
+    const claudeTuiChats = await import('../lib/claude-tui-chats');
+    const { sendWorktreeChatMessage } =
+      await import('../services/chat-service');
+    const resolveTargetSpy = jest
+      .spyOn(resolveWorktree, 'resolveWorktreeTargetIds')
+      .mockReturnValue({
+        projectId: send.projectId,
+        worktreeId: send.worktreeId,
+      });
+    const tuiModeSpy = jest
+      .spyOn(claudeTuiChats, 'getEffectiveClaudeChatInterfaceMode')
+      .mockReturnValue('claude-code');
+    mockReadChatTabsFile.mockResolvedValue({
+      version: 1,
+      activeTabId: send.chatId,
+      tabs: [
+        {
+          id: send.chatId,
+          title: 'Terminal Chat',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          messages: [],
+          kind: 'chat',
+          interfaceMode: 'claude-code',
+          trackedPlanImplementation: {
+            planId: 'plan-1',
+            revisionNumber: 1,
+            userMessageId: 'terminal-revoked-before-deliver',
+            startedAt: '2026-01-01T00:00:00.000Z',
+          },
+        },
+      ],
+    });
+    mockedSendToWindowDetailed.mockClear();
+    let paired = true;
+    const baseTabs = await mockReadChatTabsFile(
+      send.projectId,
+      send.worktreeId,
+    );
+    let reads = 0;
+    mockReadChatTabsFile.mockImplementation(() => {
+      reads += 1;
+      // Revoke pairing right after the initial terminal-branch read so
+      // sendWorktreeChatMessageNow's managed-terminal gate rejects before delivery.
+      if (reads >= 1) paired = false;
+      return Promise.resolve(baseTabs);
+    });
+    try {
+      await expect(
+        sendWorktreeChatMessage(
+          {
+            ...send,
+            userMessageId: 'terminal-revoked-before-deliver',
+            text: 'Must stop before managed-terminal delivery',
+            interfaceMode: 'claude-code',
+          },
+          { getWindow: () => null, canCommit: () => paired },
+        ),
+      ).rejects.toThrow(/no longer authorizes/i);
+      expect(reads).toBeGreaterThanOrEqual(1);
+      expect(
+        mockedSendToWindowDetailed.mock.calls.filter(
+          (call) => call[1] === IPC_CHANNELS.claudeTerminalScheduledPrompt,
+        ),
+      ).toHaveLength(0);
+    } finally {
+      tuiModeSpy.mockRestore();
+      resolveTargetSpy.mockRestore();
+    }
+  });
+
+  it('defers notifyCanonicalChatStarted on guarded native sends until after provider handoff (CAN-7877)', async () => {
+    mockNotifyCanonicalChatStarted.mockReset().mockResolvedValue(undefined);
+    let paired = true;
+    let sessionCreated = false;
+    mockOneWindowSenders.set(81, () => paired);
+    const sendMessage = jest.fn();
+    mockedGetOrCreateSession.mockImplementationOnce(() => {
+      sessionCreated = true;
+      return Promise.resolve({
+        ...makeMockSession(),
+        sendMessage,
+      });
+    });
+    let postSessionScopeCheckRan = false;
+    mockAssertCoworkChatRootPresent.mockImplementation(() => {
+      // Wait until getOrCreateSession has run inside worktree-chat-turn so the
+      // revocation lands right between preparation and the pre-sendMessage fence.
+      if (sessionCreated) {
+        postSessionScopeCheckRan = true;
+        paired = false;
+      }
+      return Promise.resolve();
+    });
+    try {
+      await expect(
+        getHandler(IPC_CHANNELS.chatSendMessage)(
+          { sender: { id: 81 } },
+          {
+            ...send,
+            userMessageId: 'native-revoked-before-fence',
+            startsNewTrackedChat: true,
+          },
+        ),
+      ).rejects.toThrow(/no longer authorizes/i);
+      expect(sessionCreated).toBe(true);
+      expect(postSessionScopeCheckRan).toBe(true);
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(mockNotifyCanonicalChatStarted).not.toHaveBeenCalled();
+
+      // When pairing stays valid through provider handoff, notifyCanonicalChatStarted
+      // fires after session.sendMessage succeeds.
+      paired = true;
+      mockAssertCoworkChatRootPresent.mockResolvedValue(undefined);
+      const order: string[] = [];
+      const acceptedSendMessage = jest.fn(() => {
+        order.push('sendMessage');
+      });
+      mockNotifyCanonicalChatStarted.mockImplementation(() => {
+        order.push('notifyCanonicalChatStarted');
+        return Promise.resolve();
+      });
+      mockedGetOrCreateSession.mockResolvedValueOnce({
+        ...makeMockSession(),
+        sendMessage: acceptedSendMessage,
+      });
+      await getHandler(IPC_CHANNELS.chatSendMessage)(
+        { sender: { id: 81 } },
+        {
+          ...send,
+          userMessageId: 'native-paired-handoff',
+          startsNewTrackedChat: true,
+        },
+      );
+      expect(order).toEqual(['sendMessage', 'notifyCanonicalChatStarted']);
+    } finally {
+      mockAssertCoworkChatRootPresent.mockResolvedValue(undefined);
+      mockNotifyCanonicalChatStarted.mockReset().mockResolvedValue(undefined);
+      mockOneWindowSenders.delete(81);
+    }
+  });
+
+  it('keeps :accepted, blocks replay, and retries a failed deferred prompt commit across local, portal, and cowork guarded sends (CAN-7877)', async () => {
+    const resolveWorktree = await import('../lib/resolve-worktree');
+    const { sendWorktreeChatMessage } =
+      await import('../services/chat-service');
+    const resolveTargetSpy = jest
+      .spyOn(resolveWorktree, 'resolveWorktreeTargetIds')
+      .mockReturnValue({
+        projectId: send.projectId,
+        worktreeId: send.worktreeId,
+      });
+    mockReadChatTabsFile.mockResolvedValue({
+      version: 1,
+      activeTabId: send.chatId,
+      tabs: [
+        {
+          id: send.chatId,
+          title: 'Chat',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          messages: [],
+          kind: 'chat',
+        },
+      ],
+    });
+    const committedMutations = new Set<string>();
+    mockHasMutation.mockImplementation((_scope, mutationId) =>
+      Promise.resolve(committedMutations.has(mutationId)),
+    );
+    mockOneWindowSenders.set(82, () => true);
+    try {
+      // 1. Guarded local send: first prompt commit fails transiently, :accepted still commits,
+      //    replay returns already_accepted without calling sendMessage again, and the next provider event retries the prompt.
+      let localOnEvent: ((data: unknown) => void | Promise<void>) | undefined;
+      const localSendMessage = jest.fn();
+      mockedGetOrCreateSession.mockImplementationOnce((_opts, onEvent) => {
+        localOnEvent = onEvent;
+        return Promise.resolve({
+          ...makeMockSession(),
+          sendMessage: localSendMessage,
+        });
+      });
+      let localPromptAttempts = 0;
+      mockIngestProviderEvent.mockImplementation((input) => {
+        if (
+          input.mutationId === `${send.chatId}:local-staged-retry:user-prompt`
+        ) {
+          localPromptAttempts += 1;
+          if (localPromptAttempts === 1) {
+            return Promise.reject(new Error('transient sqlite busy'));
+          }
+        }
+        if (input.mutationId) committedMutations.add(input.mutationId);
+        return Promise.resolve(true);
+      });
+      mockIngestProviderEventWithResult.mockClear();
+      await getHandler(IPC_CHANNELS.chatSendMessage)(
+        { sender: { id: 82 } },
+        { ...send, userMessageId: 'local-staged-retry' },
+      );
+      expect(localSendMessage).toHaveBeenCalledTimes(1);
+      expect(localPromptAttempts).toBe(1);
+      expect(
+        committedMutations.has(`${send.chatId}:local-staged-retry:accepted`),
+      ).toBe(true);
+      expect(
+        committedMutations.has(`${send.chatId}:local-staged-retry:user-prompt`),
+      ).toBe(false);
+      await expect(
+        getHandler(IPC_CHANNELS.chatSendMessage)(
+          { sender: { id: 82 } },
+          { ...send, userMessageId: 'local-staged-retry' },
+        ),
+      ).resolves.toEqual({ disposition: 'already_accepted' });
+      expect(localSendMessage).toHaveBeenCalledTimes(1);
+      expect(localOnEvent).toBeDefined();
+      await localOnEvent?.({
+        type: 'assistant',
+        message: {
+          id: 'local-assistant-1',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Delivered after retry' }],
+        },
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(localPromptAttempts).toBe(2);
+      expect(
+        committedMutations.has(`${send.chatId}:local-staged-retry:user-prompt`),
+      ).toBe(true);
+      expect(mockIngestProviderEventWithResult).toHaveBeenCalled();
+
+      // 2. Guarded portal send: same guarantee for :accepted, replay dedupe, and prompt retry.
+      getChatQueueService().resetForTests();
+      let portalOnEvent: ((data: unknown) => void | Promise<void>) | undefined;
+      const portalSendMessage = jest.fn();
+      mockedGetOrCreateSession.mockImplementationOnce((_opts, onEvent) => {
+        portalOnEvent = onEvent;
+        return Promise.resolve({
+          ...makeMockSession(),
+          sendMessage: portalSendMessage,
+        });
+      });
+      let portalPromptAttempts = 0;
+      mockIngestProviderEvent.mockImplementation((input) => {
+        if (
+          input.mutationId === `${send.chatId}:portal-staged-retry:user-prompt`
+        ) {
+          portalPromptAttempts += 1;
+          if (portalPromptAttempts === 1) {
+            return Promise.reject(new Error('transient portal sqlite busy'));
+          }
+        }
+        if (input.mutationId) committedMutations.add(input.mutationId);
+        return Promise.resolve(true);
+      });
+      mockIngestProviderEventWithResult.mockClear();
+      await sendWorktreeChatMessage(
+        {
+          ...send,
+          userMessageId: 'portal-staged-retry',
+          text: 'Portal retry test',
+        },
+        { getWindow: () => null, canCommit: () => true },
+      );
+      expect(portalSendMessage).toHaveBeenCalledTimes(1);
+      expect(portalPromptAttempts).toBe(1);
+      expect(
+        committedMutations.has(`${send.chatId}:portal-staged-retry:accepted`),
+      ).toBe(true);
+      expect(
+        committedMutations.has(
+          `${send.chatId}:portal-staged-retry:user-prompt`,
+        ),
+      ).toBe(false);
+      getChatQueueService().resetForTests();
+      await expect(
+        sendWorktreeChatMessage(
+          {
+            ...send,
+            userMessageId: 'portal-staged-retry',
+            text: 'Portal retry test',
+          },
+          { getWindow: () => null, canCommit: () => true },
+        ),
+      ).resolves.toEqual({ ok: true, chatId: send.chatId });
+      expect(portalSendMessage).toHaveBeenCalledTimes(1);
+      expect(portalOnEvent).toBeDefined();
+      await portalOnEvent?.({
+        type: 'assistant',
+        message: {
+          id: 'portal-assistant-1',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Portal delivered after retry' }],
+        },
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(portalPromptAttempts).toBe(2);
+      expect(
+        committedMutations.has(
+          `${send.chatId}:portal-staged-retry:user-prompt`,
+        ),
+      ).toBe(true);
+      expect(mockIngestProviderEventWithResult).toHaveBeenCalled();
+
+      // 3. Guarded cowork/native send in ipc/chat.ts: failed deferred prompt write after
+      //    turnRun.accepted() does not fail the IPC or ack org memory as send_failed, still
+      //    commits :accepted, blocks replay, and retries on the next provider event.
+      getChatQueueService().resetForTests();
+      mockMemoryAckDelivered.mockClear();
+      mockMemoryAckDropped.mockClear();
+      mockPrepareOrgMemory.mockResolvedValueOnce({
+        attempt: {
+          result: {
+            organizationExternalId: 'org-1',
+            searchId: 'search-1',
+            block: '<org-memory/>',
+            facts: [
+              {
+                id: 'fact-1',
+                title: 'Fact',
+                content: 'Remembered',
+                source: 'org',
+              },
+            ],
+          },
+        },
+      });
+      let coworkOnEvent: ((data: unknown) => void | Promise<void>) | undefined;
+      const coworkSendMessage = jest.fn();
+      mockedGetOrCreateSession.mockImplementationOnce((_opts, onEvent) => {
+        coworkOnEvent = onEvent;
+        return Promise.resolve({
+          ...makeMockSession(),
+          sendMessage: coworkSendMessage,
+        });
+      });
+      let coworkPromptAttempts = 0;
+      mockIngestProviderEvent.mockImplementation((input) => {
+        if (
+          input.mutationId === `${send.chatId}:cowork-staged-retry:user-prompt`
+        ) {
+          coworkPromptAttempts += 1;
+          if (coworkPromptAttempts === 1) {
+            return Promise.reject(new Error('transient cowork sqlite busy'));
+          }
+        }
+        if (input.mutationId) committedMutations.add(input.mutationId);
+        return Promise.resolve(true);
+      });
+      mockIngestProviderEventWithResult.mockClear();
+      const coworkSend = {
+        ...send,
+        projectId: 'cowork-default',
+        userMessageId: 'cowork-staged-retry',
+        text: 'Cowork retry test',
+      };
+      await expect(
+        getHandler(IPC_CHANNELS.chatSendMessage)(
+          { sender: { id: 82 } },
+          coworkSend,
+        ),
+      ).resolves.toEqual({ disposition: 'dispatched' });
+      expect(coworkSendMessage).toHaveBeenCalledTimes(1);
+      expect(coworkPromptAttempts).toBe(1);
+      expect(mockMemoryAckDropped).not.toHaveBeenCalled();
+      expect(mockMemoryAckDelivered).toHaveBeenCalledWith('org-1', 'search-1');
+      expect(
+        committedMutations.has(`${send.chatId}:cowork-staged-retry:accepted`),
+      ).toBe(true);
+      expect(
+        committedMutations.has(
+          `${send.chatId}:cowork-staged-retry:user-prompt`,
+        ),
+      ).toBe(false);
+      await expect(
+        getHandler(IPC_CHANNELS.chatSendMessage)(
+          { sender: { id: 82 } },
+          coworkSend,
+        ),
+      ).resolves.toEqual({ disposition: 'already_accepted' });
+      expect(coworkSendMessage).toHaveBeenCalledTimes(1);
+      expect(coworkOnEvent).toBeDefined();
+      await coworkOnEvent?.({
+        type: 'assistant',
+        message: {
+          id: 'cowork-assistant-1',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Cowork delivered after retry' }],
+        },
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(coworkPromptAttempts).toBe(2);
+      expect(
+        committedMutations.has(
+          `${send.chatId}:cowork-staged-retry:user-prompt`,
+        ),
+      ).toBe(true);
+      expect(mockIngestProviderEventWithResult).toHaveBeenCalled();
+    } finally {
+      mockPrepareOrgMemory.mockResolvedValue(null);
+      mockHasMutation.mockResolvedValue(false);
+      mockIngestProviderEvent.mockResolvedValue(true);
+      mockOneWindowSenders.delete(82);
+      resolveTargetSpy.mockRestore();
+    }
+  });
+
+  it('completes the audit turn and discards the diff baseline on pre-acceptance pairing-guard rejection (CAN-7877)', async () => {
+    const resolveWorktree = await import('../lib/resolve-worktree');
+    const { sendWorktreeChatMessage } =
+      await import('../services/chat-service');
+    const resolveTargetSpy = jest
+      .spyOn(resolveWorktree, 'resolveWorktreeTargetIds')
+      .mockReturnValue({
+        projectId: send.projectId,
+        worktreeId: send.worktreeId,
+      });
+    mockReadChatTabsFile.mockResolvedValue({
+      version: 1,
+      activeTabId: send.chatId,
+      tabs: [
+        {
+          id: send.chatId,
+          title: 'Chat',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          messages: [],
+          kind: 'chat',
+        },
+      ],
+    });
+    try {
+      // 1. Revoked before the pre-send pairing guard (after startChatTurn and captureTurnStart).
+      let pairedEarly = true;
+      const sendMessageEarly = jest.fn();
+      startChatTurnMock.mockClear();
+      completeChatTurnMock.mockClear();
+      mockCaptureTurnStart.mockClear();
+      mockDiscardTurnStart.mockClear();
+      mockedGetOrCreateSession.mockImplementationOnce(() => {
+        pairedEarly = false;
+        return Promise.resolve({
+          ...makeMockSession(),
+          sendMessage: sendMessageEarly,
+        });
+      });
+      await expect(
+        sendWorktreeChatMessage(
+          {
+            ...send,
+            userMessageId: 'revoked-audit-cleanup-early',
+            text: 'Revoked before pre-send guard',
+          },
+          { getWindow: () => null, canCommit: () => pairedEarly },
+        ),
+      ).rejects.toThrow(/no longer authorizes/i);
+      expect(sendMessageEarly).not.toHaveBeenCalled();
+      expect(startChatTurnMock).toHaveBeenCalledTimes(1);
+      expect(completeChatTurnMock).toHaveBeenCalledTimes(1);
+      expect(completeChatTurnMock).toHaveBeenCalledWith(
+        send.projectId,
+        send.worktreeId,
+        send.chatId,
+        'interrupted',
+      );
+      expect(mockCaptureTurnStart).toHaveBeenCalledTimes(1);
+      const earlySessionKey = mockCaptureTurnStart.mock.calls[0]?.[0];
+      expect(earlySessionKey).toBeDefined();
+      expect(mockDiscardTurnStart).toHaveBeenCalledTimes(1);
+      expect(mockDiscardTurnStart).toHaveBeenCalledWith(earlySessionKey);
+
+      // 2. Revoked at the final pre-enqueue pairing guard (after assertCoworkChatRootPresent).
+      let pairedLate = true;
+      let sessionCreated = false;
+      const sendMessageLate = jest.fn();
+      startChatTurnMock.mockClear();
+      completeChatTurnMock.mockClear();
+      mockCaptureTurnStart.mockClear();
+      mockDiscardTurnStart.mockClear();
+      mockedGetOrCreateSession.mockImplementationOnce(() => {
+        sessionCreated = true;
+        return Promise.resolve({
+          ...makeMockSession(),
+          sendMessage: sendMessageLate,
+        });
+      });
+      mockAssertCoworkChatRootPresent.mockImplementation(() => {
+        if (sessionCreated) {
+          pairedLate = false;
+        }
+        return Promise.resolve();
+      });
+      await expect(
+        sendWorktreeChatMessage(
+          {
+            ...send,
+            userMessageId: 'revoked-audit-cleanup-late',
+            text: 'Revoked before final enqueue guard',
+          },
+          { getWindow: () => null, canCommit: () => pairedLate },
+        ),
+      ).rejects.toThrow(/no longer authorizes/i);
+      expect(sendMessageLate).not.toHaveBeenCalled();
+      expect(startChatTurnMock).toHaveBeenCalledTimes(1);
+      expect(completeChatTurnMock).toHaveBeenCalledTimes(1);
+      expect(completeChatTurnMock).toHaveBeenCalledWith(
+        send.projectId,
+        send.worktreeId,
+        send.chatId,
+        'interrupted',
+      );
+      expect(mockCaptureTurnStart).toHaveBeenCalledTimes(1);
+      const lateSessionKey = mockCaptureTurnStart.mock.calls[0]?.[0];
+      expect(lateSessionKey).toBeDefined();
+      expect(mockDiscardTurnStart).toHaveBeenCalledTimes(1);
+      expect(mockDiscardTurnStart).toHaveBeenCalledWith(lateSessionKey);
+    } finally {
+      mockAssertCoworkChatRootPresent.mockResolvedValue(undefined);
+      resolveTargetSpy.mockRestore();
+    }
+  });
+
+  it('commits the deferred local user prompt before provider output that arrives during post-handoff bookkeeping awaits (CAN-7877)', async () => {
+    const rootMigrationNotice =
+      await import('../lib/root-migration-chat-notice');
+    let releaseDelivered: (() => void) | undefined;
+    let deliveredStartedResolve: (() => void) | undefined;
+    const deliveredStarted = new Promise<void>((resolve) => {
+      deliveredStartedResolve = resolve;
+    });
+    const deliveredGate = new Promise<void>((resolve) => {
+      releaseDelivered = resolve;
+    });
+    const migrationSpy = jest
+      .spyOn(rootMigrationNotice, 'prepareRootMigrationChatNotice')
+      .mockResolvedValueOnce({
+        text: 'Root migration notice',
+        delivered: () => {
+          deliveredStartedResolve?.();
+          return deliveredGate;
+        },
+      });
+    let capturedOnEvent: ((data: unknown) => void | Promise<void>) | undefined;
+    const sendMessage = jest.fn();
+    mockedGetOrCreateSession.mockImplementationOnce((_opts, onEvent) => {
+      capturedOnEvent = onEvent;
+      return Promise.resolve({
+        ...makeMockSession(),
+        sendMessage,
+      });
+    });
+    const order: string[] = [];
+    mockIngestProviderEvent.mockImplementation((input) => {
+      if (input.mutationId === `${send.chatId}:staged-order-race:user-prompt`) {
+        order.push('user-prompt');
+      }
+      return Promise.resolve(true);
+    });
+    mockIngestProviderEventWithResult.mockImplementation((input) => {
+      if (input.mutationId?.includes(':provider:')) {
+        order.push('provider-event');
+      }
+      return ingestResultFromOutcome(input);
+    });
+    mockOneWindowSenders.set(84, () => true);
+    try {
+      const sendPromise = getHandler(IPC_CHANNELS.chatSendMessage)(
+        { sender: { id: 84 } },
+        {
+          ...send,
+          userMessageId: 'staged-order-race',
+          text: 'Must precede fast provider output',
+        },
+      );
+      await deliveredStarted;
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+      expect(capturedOnEvent).toBeDefined();
+      void capturedOnEvent?.({
+        type: 'assistant',
+        message: {
+          id: 'fast-assistant-1',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Fast reply during await' }],
+        },
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(order).toEqual(['user-prompt', 'provider-event']);
+      releaseDelivered?.();
+      await expect(sendPromise).resolves.toEqual({ disposition: 'dispatched' });
+    } finally {
+      releaseDelivered?.();
+      migrationSpy.mockRestore();
+      mockIngestProviderEvent.mockResolvedValue(true);
+      mockIngestProviderEventWithResult.mockImplementation(
+        ingestResultFromOutcome,
+      );
+      mockOneWindowSenders.delete(84);
+    }
+  });
+
+  it('opens no cowork audit turn on pre-acceptance pairing-guard rejection (CAN-7877)', async () => {
+    let paired = true;
+    let sessionCreated = false;
+    const coworkSendMessage = jest.fn();
+    startChatTurnMock.mockClear();
+    completeChatTurnMock.mockClear();
+    mockedGetOrCreateSession.mockImplementationOnce(() => {
+      sessionCreated = true;
+      return Promise.resolve({
+        ...makeMockSession(),
+        sendMessage: coworkSendMessage,
+      });
+    });
+    mockAssertCoworkChatRootPresent.mockImplementation(() => {
+      if (sessionCreated) {
+        paired = false;
+      }
+      return Promise.resolve();
+    });
+    mockOneWindowSenders.set(85, () => paired);
+    try {
+      await expect(
+        getHandler(IPC_CHANNELS.chatSendMessage)(
+          { sender: { id: 85 } },
+          {
+            ...send,
+            projectId: 'cowork-default',
+            userMessageId: 'cowork-revoked-audit-cleanup',
+            text: 'Revoked cowork send',
+          },
+        ),
+      ).rejects.toThrow(/no longer authorizes/i);
+      expect(coworkSendMessage).not.toHaveBeenCalled();
+      expect(startChatTurnMock).not.toHaveBeenCalled();
+      expect(completeChatTurnMock).not.toHaveBeenCalled();
+    } finally {
+      mockAssertCoworkChatRootPresent.mockResolvedValue(undefined);
+      mockOneWindowSenders.delete(85);
+    }
+  });
+
+  it('rejects a revoked guarded send instead of parking it into the queue when a concurrent wake starts (CAN-7877)', async () => {
+    const chatTurnOwnership = await import('../services/chat-turn-ownership');
+    const sessionEventRouter = await import('../agents/session-event-router');
+    const { initialChatTurnState, reduceChatTurn, serializeChatTurnState } =
+      await import('@canopy/agent-transcript/turn');
+    const queue = getChatQueueService();
+    const scope = {
+      projectId: send.projectId,
+      worktreeId: send.worktreeId,
+      chatId: send.chatId,
+    };
+    const idleTurnState = serializeChatTurnState(initialChatTurnState());
+    let currentTurnState = idleTurnState;
+    let emitTurnStateChange:
+      | ((change: {
+          scope: typeof scope;
+          state: typeof idleTurnState;
+          effects: readonly [];
+          generation: number;
+          cause: 'lifecycle';
+        }) => void)
+      | undefined;
+    let generation = 0;
+    const emitConcurrentWake = (turnId: string): void => {
+      const started = reduceChatTurn(initialChatTurnState(), {
+        version: 1,
+        provider: 'claude',
+        projectId: scope.projectId,
+        worktreeId: scope.worktreeId,
+        chatId: scope.chatId,
+        sequence: generation + 1,
+        eventId: `evt-${turnId}`,
+        observedAtMs: Date.now(),
+        type: 'TurnStarted',
+        phase: 'start',
+        startedAtMs: Date.now(),
+        turnId,
+        origin: 'autonomous',
+        binding: 'unbound',
+        submissionIds: [],
+        userMessageIds: [],
+        providerUserMessageUuids: [],
+      });
+      currentTurnState = serializeChatTurnState(started.state);
+      generation += 1;
+      emitTurnStateChange?.({
+        scope,
+        state: currentTurnState,
+        effects: [],
+        generation,
+        cause: 'lifecycle',
+      });
+    };
+    const ownership = chatTurnOwnership.getChatTurnOwnership();
+    const unbindOwnership = ownership.bind(
+      {
+        getTurnState: () => currentTurnState,
+        onTurnStateChange: (listener) => {
+          emitTurnStateChange = listener;
+          return () => {
+            if (emitTurnStateChange === listener) {
+              emitTurnStateChange = undefined;
+            }
+          };
+        },
+        onTurnStateCommitted: () => () => undefined,
+      },
+      () => Promise.resolve(currentTurnState),
+    );
+    const actualParkBehindWake = sessionEventRouter.parkBehindWake;
+    const parkBehindWakeSpy = jest.spyOn(sessionEventRouter, 'parkBehindWake');
+    try {
+      // 1. Revoked during preparation when parkedEarly triggers on a reused session.
+      currentTurnState = idleTurnState;
+      await ownership.hydrate(scope);
+      ownership.markBackgroundFresh(scope);
+      let pairedEarly = true;
+      const sendMessageEarly = jest.fn();
+      const reusedEarlySession = {
+        ...makeMockSession(),
+        sendMessage: sendMessageEarly,
+      };
+      queue.resetForTests();
+      startChatTurnMock.mockClear();
+      completeChatTurnMock.mockClear();
+      mockDiscardTurnStart.mockClear();
+      parkBehindWakeSpy.mockClear();
+      const liveEarlySpy = jest
+        .spyOn(sessionEventRouter, 'getLiveRoutedSession')
+        .mockReturnValue(reusedEarlySession);
+      mockedGetOrCreateSession.mockImplementationOnce(() => {
+        emitConcurrentWake('wake-turn-early');
+        pairedEarly = false;
+        return Promise.resolve(reusedEarlySession);
+      });
+      mockOneWindowSenders.set(86, () => pairedEarly);
+      try {
+        await expect(
+          getHandler(IPC_CHANNELS.chatSendMessage)(
+            { sender: { id: 86 } },
+            {
+              ...send,
+              userMessageId: 'revoked-concurrent-wake-early',
+              text: 'Must reject instead of parking early',
+            },
+          ),
+        ).rejects.toThrow(/no longer authorizes/i);
+        expect(startChatTurnMock).not.toHaveBeenCalled();
+        expect(parkBehindWakeSpy).not.toHaveBeenCalled();
+        expect(sendMessageEarly).not.toHaveBeenCalled();
+        expect(
+          queue.holdsUserMessage(scope, 'revoked-concurrent-wake-early'),
+        ).toBe(false);
+        expect(
+          queue.getWorktreeSnapshots(send.projectId, send.worktreeId),
+        ).toEqual([]);
+      } finally {
+        liveEarlySpy.mockRestore();
+        mockOneWindowSenders.delete(86);
+      }
+
+      // 2. Revoked after startChatTurn/captureTurnStart when the late parked check triggers.
+      ownership.resetScope(scope);
+      currentTurnState = idleTurnState;
+      await ownership.hydrate(scope);
+      ownership.markBackgroundFresh(scope);
+      let pairedLate = true;
+      const sendMessageLate = jest.fn();
+      const reusedLateSession = {
+        ...makeMockSession(),
+        sendMessage: sendMessageLate,
+      };
+      queue.resetForTests();
+      startChatTurnMock.mockClear();
+      completeChatTurnMock.mockClear();
+      mockCaptureTurnStart.mockClear();
+      mockDiscardTurnStart.mockClear();
+      parkBehindWakeSpy.mockClear();
+      const liveLateSpy = jest
+        .spyOn(sessionEventRouter, 'getLiveRoutedSession')
+        .mockReturnValue(reusedLateSession);
+      mockedGetOrCreateSession.mockImplementationOnce(() =>
+        Promise.resolve(reusedLateSession),
+      );
+      mockCaptureTurnStart.mockImplementationOnce(() => {
+        emitConcurrentWake('wake-turn-late');
+        pairedLate = false;
+        return Promise.resolve();
+      });
+      mockOneWindowSenders.set(87, () => pairedLate);
+      try {
+        await expect(
+          getHandler(IPC_CHANNELS.chatSendMessage)(
+            { sender: { id: 87 } },
+            {
+              ...send,
+              userMessageId: 'revoked-concurrent-wake-late',
+              text: 'Must reject instead of parking late',
+            },
+          ),
+        ).rejects.toThrow(/no longer authorizes/i);
+        expect(parkBehindWakeSpy).not.toHaveBeenCalled();
+        expect(sendMessageLate).not.toHaveBeenCalled();
+        expect(startChatTurnMock).toHaveBeenCalledTimes(1);
+        expect(completeChatTurnMock).toHaveBeenCalledTimes(1);
+        expect(completeChatTurnMock).toHaveBeenCalledWith(
+          send.projectId,
+          send.worktreeId,
+          send.chatId,
+          'interrupted',
+        );
+        expect(mockDiscardTurnStart).toHaveBeenCalledTimes(1);
+        expect(
+          queue.holdsUserMessage(scope, 'revoked-concurrent-wake-late'),
+        ).toBe(false);
+        expect(
+          queue.getWorktreeSnapshots(send.projectId, send.worktreeId),
+        ).toEqual([]);
+      } finally {
+        liveLateSpy.mockRestore();
+        mockOneWindowSenders.delete(87);
+      }
+
+      // 3. Revoked mid-parkBehindWake (during discardPendingTurnRoute) still rejects instead of parking.
+      ownership.resetScope(scope);
+      currentTurnState = idleTurnState;
+      await ownership.hydrate(scope);
+      ownership.markBackgroundFresh(scope);
+      let pairedMidPark = true;
+      const sendMessageMidPark = jest.fn();
+      const reusedMidParkSession = {
+        ...makeMockSession(),
+        sendMessage: sendMessageMidPark,
+      };
+      queue.resetForTests();
+      startChatTurnMock.mockClear();
+      completeChatTurnMock.mockClear();
+      mockDiscardTurnStart.mockClear();
+      parkBehindWakeSpy.mockClear();
+      parkBehindWakeSpy.mockImplementationOnce((target, parked) => {
+        pairedMidPark = false;
+        return actualParkBehindWake(target, parked);
+      });
+      const liveMidParkSpy = jest
+        .spyOn(sessionEventRouter, 'getLiveRoutedSession')
+        .mockReturnValue(reusedMidParkSession);
+      mockedGetOrCreateSession.mockImplementationOnce(() => {
+        emitConcurrentWake('wake-turn-mid-park');
+        return Promise.resolve(reusedMidParkSession);
+      });
+      mockOneWindowSenders.set(88, () => pairedMidPark);
+      try {
+        await expect(
+          getHandler(IPC_CHANNELS.chatSendMessage)(
+            { sender: { id: 88 } },
+            {
+              ...send,
+              userMessageId: 'revoked-concurrent-wake-mid-park',
+              text: 'Must reject if revoked while parking',
+            },
+          ),
+        ).rejects.toThrow(/no longer authorizes/i);
+        expect(parkBehindWakeSpy).toHaveBeenCalledTimes(1);
+        expect(sendMessageMidPark).not.toHaveBeenCalled();
+        expect(
+          queue.holdsUserMessage(scope, 'revoked-concurrent-wake-mid-park'),
+        ).toBe(false);
+        expect(
+          queue.getWorktreeSnapshots(send.projectId, send.worktreeId),
+        ).toEqual([]);
+      } finally {
+        liveMidParkSpy.mockRestore();
+        mockOneWindowSenders.delete(88);
+      }
+    } finally {
+      parkBehindWakeSpy.mockRestore();
+      unbindOwnership();
+      ownership.resetScopesForTests();
+    }
+  });
+
+  it('discards the pending provider route when a guarded send is rejected for revocation after route registration (CAN-8007)', async () => {
+    const chatTurnOwnership = await import('../services/chat-turn-ownership');
+    const sessionEventRouter = await import('../agents/session-event-router');
+    const { initialChatTurnState, serializeChatTurnState } =
+      await import('@canopy/agent-transcript/turn');
+    const { pendingRouteCount } =
+      sessionEventRouter.sessionEventRouterTestExports;
+    const queue = getChatQueueService();
+    const scope = {
+      projectId: send.projectId,
+      worktreeId: send.worktreeId,
+      chatId: send.chatId,
+    };
+    // Bound turn ownership issues the dispatch owner that registers a
+    // pending provider route for the attempt.
+    const idleTurnState = serializeChatTurnState(initialChatTurnState());
+    const ownership = chatTurnOwnership.getChatTurnOwnership();
+    const unbindOwnership = ownership.bind(
+      {
+        getTurnState: () => idleTurnState,
+        onTurnStateChange: () => () => undefined,
+        onTurnStateCommitted: () => () => undefined,
+      },
+      () => Promise.resolve(idleTurnState),
+    );
+    await ownership.hydrate(scope);
+    ownership.markBackgroundFresh(scope);
+    const routesBefore = pendingRouteCount();
+    try {
+      // 1. Revoked after route registration, before the pre-send pairing check.
+      let pairedEarly = true;
+      const sendMessageEarly = jest.fn();
+      let routesAtRevocationEarly = 0;
+      queue.resetForTests();
+      mockedGetOrCreateSession.mockImplementationOnce(() =>
+        Promise.resolve({
+          ...makeMockSession(),
+          sendMessage: sendMessageEarly,
+        }),
+      );
+      mockCaptureTurnStart.mockImplementationOnce(() => {
+        routesAtRevocationEarly = pendingRouteCount();
+        pairedEarly = false;
+        return Promise.resolve();
+      });
+      mockOneWindowSenders.set(91, () => pairedEarly);
+      try {
+        await expect(
+          getHandler(IPC_CHANNELS.chatSendMessage)(
+            { sender: { id: 91 } },
+            {
+              ...send,
+              userMessageId: 'revoked-pending-route-early',
+              text: 'Revoked after route registration',
+            },
+          ),
+        ).rejects.toThrow(/no longer authorizes/i);
+        expect(routesAtRevocationEarly).toBe(routesBefore + 1);
+        expect(sendMessageEarly).not.toHaveBeenCalled();
+        expect(pendingRouteCount()).toBe(routesBefore);
+        expect(
+          queue.holdsUserMessage(scope, 'revoked-pending-route-early'),
+        ).toBe(false);
+      } finally {
+        mockOneWindowSenders.delete(91);
+      }
+
+      // 2. Revoked at the final check before the provider send.
+      let pairedLate = true;
+      let sessionCreated = false;
+      const sendMessageLate = jest.fn();
+      queue.resetForTests();
+      mockedGetOrCreateSession.mockImplementationOnce(() => {
+        sessionCreated = true;
+        return Promise.resolve({
+          ...makeMockSession(),
+          sendMessage: sendMessageLate,
+        });
+      });
+      mockAssertCoworkChatRootPresent.mockImplementation(() => {
+        if (sessionCreated) pairedLate = false;
+        return Promise.resolve();
+      });
+      mockOneWindowSenders.set(92, () => pairedLate);
+      try {
+        await expect(
+          getHandler(IPC_CHANNELS.chatSendMessage)(
+            { sender: { id: 92 } },
+            {
+              ...send,
+              userMessageId: 'revoked-pending-route-late',
+              text: 'Revoked at the final send check',
+            },
+          ),
+        ).rejects.toThrow(/no longer authorizes/i);
+        expect(sendMessageLate).not.toHaveBeenCalled();
+        expect(pendingRouteCount()).toBe(routesBefore);
+        expect(
+          queue.holdsUserMessage(scope, 'revoked-pending-route-late'),
+        ).toBe(false);
+      } finally {
+        mockOneWindowSenders.delete(92);
+        mockAssertCoworkChatRootPresent.mockReset();
+        mockAssertCoworkChatRootPresent.mockResolvedValue(undefined);
+      }
+    } finally {
+      unbindOwnership();
+      ownership.resetScopesForTests();
+    }
+  });
+
+  it('defers automation start banner until provider handoff on guarded sends and persists nothing when revoked between tab commit and handoff (CAN-7877)', async () => {
+    const resolveWorktree = await import('../lib/resolve-worktree');
+    const { sendWorktreeChatMessage } =
+      await import('../services/chat-service');
+    const resolveTargetSpy = jest
+      .spyOn(resolveWorktree, 'resolveWorktreeTargetIds')
+      .mockReturnValue({
+        projectId: send.projectId,
+        worktreeId: send.worktreeId,
+      });
+    try {
+      // 1. Worktree guarded send revoked between ensureChatForTrustedSend and handoff.
+      let pairedWorktree = true;
+      const sendMessageWorktree = jest.fn();
+      mockCommitAutomationStartBanner.mockClear();
+      mockIngestProviderEvent.mockClear();
+      mockedGetOrCreateSession.mockImplementationOnce(() => {
+        pairedWorktree = false;
+        return Promise.resolve({
+          ...makeMockSession(),
+          sendMessage: sendMessageWorktree,
+        });
+      });
+      mockOneWindowSenders.set(89, () => pairedWorktree);
+      try {
+        await expect(
+          getHandler(IPC_CHANNELS.chatSendMessage)(
+            { sender: { id: 89 } },
+            {
+              ...send,
+              userMessageId: 'auto-worktree-revoked',
+              text: 'Revoked automation worktree send',
+              initiationSource: 'automation',
+              automationName: 'Nightly audit',
+            },
+          ),
+        ).rejects.toThrow(/no longer authorizes/i);
+        expect(sendMessageWorktree).not.toHaveBeenCalled();
+        expect(mockCommitAutomationStartBanner).not.toHaveBeenCalled();
+        expect(
+          mockIngestProviderEvent.mock.calls.filter(
+            ([input]) =>
+              input.mutationId ===
+              `${send.chatId}:auto-worktree-revoked:user-prompt`,
+          ),
+        ).toHaveLength(0);
+      } finally {
+        mockOneWindowSenders.delete(89);
+      }
+
+      // 2. Cowork guarded send revoked between ensureChatForTrustedSend and handoff.
+      let pairedCowork = true;
+      const sendMessageCowork = jest.fn();
+      mockCommitAutomationStartBanner.mockClear();
+      mockIngestProviderEvent.mockClear();
+      mockedGetOrCreateSession.mockImplementationOnce(() => {
+        pairedCowork = false;
+        return Promise.resolve({
+          ...makeMockSession(),
+          sendMessage: sendMessageCowork,
+        });
+      });
+      mockOneWindowSenders.set(90, () => pairedCowork);
+      try {
+        await expect(
+          getHandler(IPC_CHANNELS.chatSendMessage)(
+            { sender: { id: 90 } },
+            {
+              ...send,
+              projectId: 'cowork-default',
+              userMessageId: 'auto-cowork-revoked',
+              text: 'Revoked automation cowork send',
+              initiationSource: 'automation',
+              automationName: 'Nightly audit',
+            },
+          ),
+        ).rejects.toThrow(/no longer authorizes/i);
+        expect(sendMessageCowork).not.toHaveBeenCalled();
+        expect(mockCommitAutomationStartBanner).not.toHaveBeenCalled();
+        expect(
+          mockIngestProviderEvent.mock.calls.filter(
+            ([input]) =>
+              input.mutationId ===
+              `${send.chatId}:auto-cowork-revoked:user-prompt`,
+          ),
+        ).toHaveLength(0);
+      } finally {
+        mockOneWindowSenders.delete(90);
+      }
+
+      // 3. Portal guarded send revoked between compatibility tab write and handoff.
+      let pairedPortal = true;
+      const sendMessagePortal = jest.fn();
+      mockReplaceCompatibilityTabs.mockClear();
+      mockCommitAutomationStartBanner.mockClear();
+      mockIngestProviderEvent.mockClear();
+      mockedGetOrCreateSession.mockImplementationOnce(() => {
+        pairedPortal = false;
+        return Promise.resolve({
+          ...makeMockSession(),
+          sendMessage: sendMessagePortal,
+        });
+      });
+      await expect(
+        sendWorktreeChatMessage(
+          {
+            ...send,
+            chatId: 'auto-portal-new-chat',
+            userMessageId: 'auto-portal-revoked',
+            text: 'Revoked automation portal send',
+            initiationSource: 'automation',
+            automationName: 'Nightly audit',
+          },
+          { getWindow: () => null, canCommit: () => pairedPortal },
+        ),
+      ).rejects.toThrow(/no longer authorizes/i);
+      expect(sendMessagePortal).not.toHaveBeenCalled();
+      expect(mockCommitAutomationStartBanner).not.toHaveBeenCalled();
+      for (const call of mockReplaceCompatibilityTabs.mock.calls) {
+        const writtenTab = call[1]?.tabs.find(
+          (t) => t.id === 'auto-portal-new-chat',
+        );
+        expect(writtenTab?.messages ?? []).toEqual([]);
+      }
+      expect(
+        mockIngestProviderEvent.mock.calls.filter(
+          ([input]) =>
+            input.mutationId ===
+            'auto-portal-new-chat:auto-portal-revoked:user-prompt',
+        ),
+      ).toHaveLength(0);
+
+      // 4. Authorized guarded send writes banner after handoff, right before prompt ingest.
+      const order: string[] = [];
+      const sendMessageAllowed = jest.fn(() => {
+        order.push('provider-handoff');
+      });
+      mockCommitAutomationStartBanner.mockImplementationOnce(() => {
+        order.push('automation-banner');
+        return Promise.resolve();
+      });
+      mockIngestProviderEvent.mockImplementation((input) => {
+        if (
+          input.mutationId === `${send.chatId}:auto-worktree-ok:user-prompt`
+        ) {
+          order.push('user-prompt');
+        }
+        return Promise.resolve(true);
+      });
+      mockedGetOrCreateSession.mockResolvedValueOnce({
+        ...makeMockSession(),
+        sendMessage: sendMessageAllowed,
+      });
+      mockOneWindowSenders.set(91, () => true);
+      try {
+        await expect(
+          getHandler(IPC_CHANNELS.chatSendMessage)(
+            { sender: { id: 91 } },
+            {
+              ...send,
+              userMessageId: 'auto-worktree-ok',
+              text: 'Authorized automation worktree send',
+              initiationSource: 'automation',
+              automationName: 'Nightly audit',
+            },
+          ),
+        ).resolves.toEqual({ disposition: 'dispatched' });
+        expect(order).toEqual([
+          'provider-handoff',
+          'automation-banner',
+          'user-prompt',
+        ]);
+      } finally {
+        mockIngestProviderEvent.mockResolvedValue(true);
+        mockOneWindowSenders.delete(91);
+      }
+    } finally {
+      resolveTargetSpy.mockRestore();
+    }
   });
 
   // CAN-7854: a turn its managed terminal drives runs outside the chat

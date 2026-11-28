@@ -71,7 +71,7 @@ export interface CodeSidebarItemGroupCommands {
       SidebarItemGroupUpdateRequest,
       'name' | 'color' | 'collapsed' | 'labelHidden' | 'keepWhenEmpty'
     >,
-  ) => void | Promise<unknown>;
+  ) => void | Promise<void | false>;
   ungroup: (groupId: string) => void;
   moveItem: (itemId: string, drop: SidebarItemGroupDrop) => void;
   moveGroup: (groupId: string, drop: SidebarItemGroupDrop) => void;
@@ -276,17 +276,7 @@ function GroupBlock({
           },
           onCreate: (): void => onCreate(group.id),
           onUngroup: (): void => commands?.ungroup(group.id),
-          onLabelCommit: ({ name, labelHidden }): void | Promise<unknown> =>
-            commands?.update(
-              group.id,
-              labelHidden === undefined ? { name } : { name, labelHidden },
-            ),
-          onColorChange: (color): void => {
-            void commands?.update(group.id, { color });
-          },
-          onKeepWhenEmptyChange: (keepWhenEmpty): void => {
-            void commands?.update(group.id, { keepWhenEmpty });
-          },
+          onSave: (patch) => commands?.update(group.id, patch),
         }}
       >
         {children}
@@ -1152,25 +1142,15 @@ export function CodeSidebarItemGroups({
             onEditorChange={onEditorChange}
             group={editorGroup}
             groups={groups}
-            unitLabel={unitLabel}
+            key={editorGroup.id}
             anchorRef={focusRef}
             returnFocusRef={editorReturnFocusRef}
-            onClose={(): void => setEditorId(null)}
-            onLabelCommit={({ name, labelHidden }): void | Promise<unknown> =>
-              commands?.update(
-                editorGroup.id,
-                labelHidden === undefined ? { name } : { name, labelHidden },
+            onClose={(): void =>
+              setEditorId((current) =>
+                current === editorGroup.id ? null : current,
               )
             }
-            onColorChange={(color): void => {
-              void commands?.update(editorGroup.id, { color });
-            }}
-            onKeepWhenEmptyChange={(keepWhenEmpty): void => {
-              void commands?.update(editorGroup.id, { keepWhenEmpty });
-            }}
-            onCreate={(): void => onCreate(editorGroup.id)}
-            canCreate={canCreate}
-            onUngroup={(): void => commands?.ungroup(editorGroup.id)}
+            onSave={(patch) => commands.update(editorGroup.id, patch)}
           />
         )}
       </div>

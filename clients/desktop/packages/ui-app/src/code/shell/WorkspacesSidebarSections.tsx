@@ -37,6 +37,12 @@ import {
   ProjectListPagination,
 } from '@canopy/ui-shared/components';
 import { useProjectListPagination } from './sidebar/useProjectListPagination';
+import { createStableRowElements } from './sidebar/stable-row-elements';
+import {
+  SidebarRowsList,
+  WINDOWED_SIDEBAR_ROWS_MIN,
+  type SidebarRowListPosition,
+} from './sidebar/WindowedSidebarRows';
 import {
   PendingProjectRows,
   type SidebarPendingProject,
@@ -105,6 +111,7 @@ import {
   type BranchGroupingState,
 } from '@canopy/protocol';
 import {
+  scheduleStickyCollapseScrollAdjust,
   SidebarList,
   SidebarRowFrame,
   SidebarSection,
@@ -1405,6 +1412,8 @@ export function WorkspacesSidebarSections({
   const itemGroupEditorsRef = useRef(
     new Map<string, CodeSidebarItemGroupEditorHandle>(),
   );
+  // Per workspace: its section root, for the collapse scroll correction.
+  const sectionRootsRef = useRef(new Map<string, HTMLElement>());
   const [collapsedOverrides, setCollapsedOverrides] = useState<
     Record<string, boolean>
   >({});
@@ -1675,6 +1684,13 @@ export function WorkspacesSidebarSections({
     },
     [revealIfTarget],
   );
+  // A paired computer's rows are reused while unchanged, so this computer's
+  // own updates do not render every one of them again (CAN-8047). Local and
+  // cloud rows render as before.
+  const [pairedRowElements] = useState(createStableRowElements);
+  useEffect(() => {
+    pairedRowElements.sweep();
+  });
 
   // Release a pending create only once the host lists its row: in the
   // snapshot AND not vetoed by `isWorktreeListed` (desktop hides a snapshot row
@@ -2456,6 +2472,8 @@ export function WorkspacesSidebarSections({
       // `role="dialog"` test ids for one user action.
       pinnedSurface?: 'pin-top' | 'pin-bottom' | 'sticky-slot',
       itemGroupMenuItems?: WorktreeMenuItem[],
+      // Its place in a windowed list, which renders only some of its rows.
+      listPosition?: SidebarRowListPosition,
     ): ReactNode => {
       const rowSelected =
         selected?.kind === 'worktree' &&
@@ -2544,6 +2562,8 @@ export function WorkspacesSidebarSections({
               }
             : {})}
           variant="bare"
+          aria-setsize={listPosition?.setSize}
+          aria-posinset={listPosition?.posInSet}
           role={
             !pinnedSurface &&
             rowSelectable &&
@@ -2877,19 +2897,57 @@ export function WorkspacesSidebarSections({
           : localVisibleRows.map((worktree) => renderRow(worktree, false))}
       </SidebarList>
     );
+    // Built only while the project is open, where it renders: a collapsed
+    // project's paired rows are neither walked nor kept (CAN-8047).
+    const pairedListClassName =
+      localVisibleRows.length > 0 || itemBlocks.length > 0
+        ? 'mt-px'
+        : undefined;
+    const pairedRowKeys = pairedVisibleRows.map((worktree) =>
+      worktreeRowKey(workspace.localId, worktree.localId),
+    );
+    const renderPairedRow = (
+      index: number,
+      listPosition?: SidebarRowListPosition,
+    ): ReactNode => {
+      const worktree = pairedVisibleRows[index];
+      const key = pairedRowKeys[index];
+      return worktree === undefined || key === undefined
+        ? null
+        : pairedRowElements.stabilize(
+            key,
+            renderRow(
+              worktree,
+              false,
+              undefined,
+              undefined,
+              undefined,
+              listPosition,
+            ),
+          );
+    };
+    // A long paired list renders only the rows near the viewport (CAN-8060);
+    // the selected row and a row waiting to be revealed stay rendered.
+    const pairedKeptKeys = [
+      selected?.kind === 'worktree' &&
+      selected.workspaceLocalId === workspace.localId
+        ? worktreeRowKey(workspace.localId, selected.worktreeLocalId)
+        : null,
+      pendingRevealTarget?.workspaceLocalId === workspace.localId
+        ? worktreeRowKey(workspace.localId, pendingRevealTarget.worktreeLocalId)
+        : null,
+    ].filter((key): key is string => key !== null);
     const pairedVisibleList =
-      pairedVisibleRows.length > 0 ? (
-        <SidebarList
-          className={
-            localVisibleRows.length > 0 || itemBlocks.length > 0
-              ? 'mt-px'
-              : undefined
-          }
+      collapsed || pairedVisibleRows.length === 0 ? null : (
+        <SidebarRowsList
+          className={pairedListClassName}
           rowGap={worktreeRowGap ?? 'hairline'}
-        >
-          {pairedVisibleRows.map((worktree) => renderRow(worktree, false))}
-        </SidebarList>
-      ) : null;
+          rowKeys={pairedRowKeys}
+          windowed={pairedVisibleRows.length > WINDOWED_SIDEBAR_ROWS_MIN}
+          keepRenderedKeys={pairedKeptKeys}
+          renderRow={renderPairedRow}
+        />
+      );
     const renderGroupStatus = (block: SidebarItemGroupBlock): ReactNode => {
       const runtime = block.units
         .flatMap((unit) => unit.itemIds)
@@ -3268,6 +3326,14 @@ export function WorkspacesSidebarSections({
         touchTarget={touchTargets}
         onToggleCollapse={(): void => {
           const nextCollapsed = !collapsed;
+          // Collapsing from the pinned copy removes this project's rows from
+          // under the band, which would leave its header scrolled above it
+          // and out of reach. Correct the scroll before the collapse commits,
+          // as desktop's project and cowork sections already did.
+          if (nextCollapsed)
+            scheduleStickyCollapseScrollAdjust(
+              sectionRootsRef.current.get(workspace.localId) ?? null,
+            );
           if (onWorkspaceCollapsedChange) {
             onWorkspaceCollapsedChange(workspace.localId, nextCollapsed);
             return;
@@ -3349,6 +3415,10 @@ export function WorkspacesSidebarSections({
         // sharing one attribute for both would tie the rail's contract to a
         // test selector.
         data-sidebar-workspace-id={workspace.localId}
+        ref={(node): void => {
+          if (node) sectionRootsRef.current.set(workspace.localId, node);
+          else sectionRootsRef.current.delete(workspace.localId);
+        }}
       >
         <WorkspaceDropIndicator workspaceLocalId={workspace.localId} />
         {/* Pinned copies of this header and the selected row, portaled into

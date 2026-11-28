@@ -150,6 +150,30 @@ export function readClaudeWakeCause(data: unknown): SpawnedBy | undefined {
 }
 
 /**
+ * The cause of a turn another agent session's message started (Claude Code's
+ * cross-session messaging): a root result whose origin is a peer. The SDK
+ * reports no frame before such a turn, so its cause comes with the result.
+ * An in-process background subagent reports as a peer too, naming its task.
+ * Keeps nothing of the origin: the cause is built before the chat secret
+ * backstop runs, so the sender and the message stay out of it.
+ */
+export function readClaudePeerWakeCause(data: unknown): SpawnedBy | undefined {
+  if (typeof data !== 'object' || data === null) return undefined;
+  const frame: Record<string, unknown> = { ...data };
+  if (
+    frame.type !== 'result' ||
+    frame.parent_tool_use_id != null ||
+    typeof frame.origin !== 'object' ||
+    frame.origin === null
+  )
+    return undefined;
+  const origin: Record<string, unknown> = { ...frame.origin };
+  return origin.kind === 'peer' && typeof origin.senderTaskId !== 'string'
+    ? { peerMessage: true }
+    : undefined;
+}
+
+/**
  * A result for a queued task notification that is neither a scheduled run nor
  * a peer message: a running task's event, such as a Monitor's output line.
  */
@@ -451,13 +475,16 @@ export class ClaudeTurnBindingTracker {
     if (this.turn && !this.turn.closed) this.turn.origin = 'restart';
   }
 
-  /** `eventCause` names the running task whose event woke the turn, if any. */
+  /**
+   * `resultCause` names what woke the turn when only its result says so: a
+   * running task's event or another session's message.
+   */
   sealAtResult(
     result: {
       originKind?: string;
       resultIndex?: number;
     },
-    eventCause?: SpawnedBy,
+    resultCause?: SpawnedBy,
   ): TurnBinding | undefined {
     const turn = this.turn;
     if (!turn || turn.closed) return undefined;
@@ -466,10 +493,10 @@ export class ClaudeTurnBindingTracker {
       turn.origin = 'autonomous';
       if (turn.heldSpawnedBy !== undefined && turn.spawnedBy === undefined)
         turn.spawnedBy = { ...turn.heldSpawnedBy };
-      // An event wake has no notification frame, so its cause comes with
-      // the result.
-      if (eventCause !== undefined && turn.spawnedBy === undefined)
-        turn.spawnedBy = { ...eventCause };
+      // An event or peer-message wake has no notification frame, so its
+      // cause comes with the result.
+      if (resultCause !== undefined && turn.spawnedBy === undefined)
+        turn.spawnedBy = { ...resultCause };
     }
     if (result.originKind !== undefined) {
       turn.providerOriginKind = result.originKind;

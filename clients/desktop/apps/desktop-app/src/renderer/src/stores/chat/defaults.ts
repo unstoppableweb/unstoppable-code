@@ -1,6 +1,7 @@
 // Provider/model/interface-mode defaults resolution against chat state.
 import {
   AI_GATEWAY_MODELS,
+  ANTIGRAVITY_MODELS,
   CLAUDE_MODELS,
   CODEX_ACCOUNT_MODELS,
   CODEX_MODELS,
@@ -26,6 +27,7 @@ import {
   type ThinkingLevel,
 } from '@canopy/desktop-shared/types';
 import { isBotProjectId } from '@canopy/protocol/chat-targets';
+import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import {
   isModelBlocked,
   isModelBlockedTriState,
@@ -43,7 +45,10 @@ import {
   type LaneModelDefaults,
   type PersonalGatewayLane,
 } from '@canopy/desktop-shared/lib/default-model-lane';
-import { listPersonalGatewayDefaultModels } from '@canopy/desktop-shared/lib/org-model-gateway';
+import {
+  gatewayRequirementForOwner,
+  listPersonalGatewayDefaultModels,
+} from '@canopy/desktop-shared/lib/org-model-gateway';
 import { isGatewayRoutableModel } from '@canopy/execution-engine/lib/gateway-model-availability';
 import {
   DEFAULT_CODEX_SPEED,
@@ -58,8 +63,10 @@ import {
   getRendererModelGatewayEnforced,
   getRendererModelGatewayIndex,
   getRendererModelPolicy,
+  getRendererModelPolicyForOwner,
   isRendererModelExcludedByGateway,
   isRendererModelPolicyHydrated,
+  isRendererModelPolicyReadAvailable,
   listRendererEnforcedGatewayModels,
 } from '../modelPolicyRuntime';
 import {
@@ -374,11 +381,28 @@ export function personalGatewaySendableModels(): readonly ChatModel[] {
  * order. Computed only on demand, for the model matcher.
  */
 export function nativeSendableModels(
-  provider: 'claude' | 'codex',
+  provider: 'claude' | 'codex' | 'antigravity',
+  scope?: { owner: WorkOwner | undefined; useAccountPolicy?: boolean },
 ): readonly ChatModel[] {
+  if (
+    scope &&
+    (scope.owner === undefined ||
+      !isRendererModelPolicyReadAvailable() ||
+      gatewayRequirementForOwner(getRendererModelGatewayIndex(), scope.owner)
+        .kind !== 'unrestricted')
+  ) {
+    return [];
+  }
+  const policy = scope
+    ? getRendererModelPolicyForOwner(
+        scope.useAccountPolicy ? undefined : scope.owner,
+      )
+    : getRendererModelPolicy();
+  if (provider === 'antigravity') {
+    return ANTIGRAVITY_MODELS.filter((model) => !isModelBlocked(model, policy));
+  }
   const lane: BillingLane =
     provider === 'claude' ? 'claude-native' : 'codex-native';
-  const policy = getRendererModelPolicy();
   return laneCatalog(lane).filter(
     (model) =>
       !isModelBlocked(model, policy) &&

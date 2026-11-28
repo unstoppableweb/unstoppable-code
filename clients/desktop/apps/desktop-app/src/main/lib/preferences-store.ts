@@ -10,7 +10,6 @@ import {
   narrowsFileWriteRules,
   trackPreferencesAuthoritySave,
 } from '../approvals/rule-revisions';
-import { resolveAvailableModel } from './model-availability';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { readFile, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -52,8 +51,7 @@ import {
   type ForeignPreferenceCommit,
   type ForeignPreferenceCommitChange,
 } from './preference-commit-effects';
-import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
-import { toShortcutPlatform } from '@canopy/desktop-shared/lib/global-shortcut-accelerator';
+import { ELECTRON_PREFERENCES_MODEL_FACTS } from './preferences-model-facts';
 import { installPreferencesNormalizationEnvironment } from '@canopy/desktop-shared/node/preferences/normalization-environment';
 import { DEFAULT_PREFERENCES } from '@canopy/desktop-shared/node/preferences/defaults';
 import {
@@ -109,11 +107,7 @@ export {
 
 export { DEFAULT_PREFERENCES } from '@canopy/desktop-shared/node/preferences/defaults';
 
-installPreferencesNormalizationEnvironment({
-  resolveAvailableModel: (model) => resolveAvailableModel(model),
-  ollamaEnabled: () => __CANOPY_OLLAMA_ENABLED__,
-  shortcutPlatform: () => toShortcutPlatform(hostOperatingSystem() ?? 'linux'),
-});
+installPreferencesNormalizationEnvironment(ELECTRON_PREFERENCES_MODEL_FACTS);
 
 function slotFilePath(filePath: string, slot: PreferencesDocumentSlot): string {
   switch (slot) {

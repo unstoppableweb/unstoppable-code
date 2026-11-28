@@ -113,6 +113,8 @@ import {
 export interface CanopyMcpRequestContext {
   onAskUserRequestCreated?: (requestId: string) => void;
   signal?: AbortSignal;
+  /** The route nonce when the request arrived (CAN-4169). */
+  fallbackNonce?: string;
 }
 
 export type ClaudeTerminalHookHandler = (
@@ -255,16 +257,30 @@ export class CanopyToolRouter {
     string
   >();
 
-  private localWatcherToolCallId(
-    route: CanopyWorktreeSessionRoute,
-    id: string | number,
-  ): string {
+  /**
+   * The route's fallback nonce. A tools/call reads it once on arrival and
+   * keeps it to result delivery, so a re-initialize mid-call can't re-key it.
+   */
+  routeNonce(route: CanopyWorktreeSessionRoute): string {
     let registrationId = this.localWatcherRegistrationIds.get(route);
     if (!registrationId) {
       registrationId = randomUUID();
       this.localWatcherRegistrationIds.set(route, registrationId);
     }
-    return `${registrationId}:${String(id)}`;
+    return registrationId;
+  }
+
+  private localWatcherToolCallId(nonce: string, id: string | number): string {
+    return `${nonce}:${String(id)}`;
+  }
+
+  /**
+   * A re-initialized MCP session restarts its request ids, so it takes a new
+   * nonce. Fallback keys therefore never dedupe a retry across a
+   * re-initialize; only a provider tool_use id does.
+   */
+  resetRouteNonce(route: CanopyWorktreeSessionRoute): void {
+    this.localWatcherRegistrationIds.delete(route);
   }
 
   /**
@@ -280,7 +296,7 @@ export class CanopyToolRouter {
    * Cursor turn registers a new route, so its IDs never repeat across turns.
    */
   private ledgerInvocationContext(
-    route: CanopyWorktreeSessionRoute,
+    nonce: string,
     id: unknown,
     meta: unknown,
   ): Pick<CanopyInjectedToolContext, 'invocationId'> {
@@ -289,7 +305,7 @@ export class CanopyToolRouter {
       return { invocationId: `claude:${toolUseId}` };
     }
     return typeof id === 'string' || typeof id === 'number'
-      ? { invocationId: `mcp:${this.localWatcherToolCallId(route, id)}` }
+      ? { invocationId: `mcp:${this.localWatcherToolCallId(nonce, id)}` }
       : {};
   }
 
@@ -301,11 +317,11 @@ export class CanopyToolRouter {
    * counts from 1, so it would replay another chat's response (CAN-3976).
    */
   private assistantToolUseId(
-    route: CanopyWorktreeSessionRoute,
+    nonce: string,
     id: string | number,
     meta: unknown,
   ): string {
-    return getClaudeToolUseId(meta) ?? this.localWatcherToolCallId(route, id);
+    return getClaudeToolUseId(meta) ?? this.localWatcherToolCallId(nonce, id);
   }
 
   /**
@@ -319,10 +335,11 @@ export class CanopyToolRouter {
     route: CanopyWorktreeSessionRoute,
     id: string | number,
     meta: unknown,
+    nonce = this.routeNonce(route),
   ): string {
     return route.assistantMode === 'app-advisor' ||
       route.assistantMode === 'pipeline-editor'
-      ? this.assistantToolUseId(route, id, meta)
+      ? this.assistantToolUseId(nonce, id, meta)
       : String(id);
   }
 
@@ -398,6 +415,7 @@ export class CanopyToolRouter {
     },
   ): Promise<Record<string, unknown>> {
     const { id, params, uiServer, requestContext } = call;
+    const nonce = requestContext?.fallbackNonce ?? this.routeNonce(route);
     const effectiveSurface: CanopyInjectedToolSurface = uiServer
       ? 'native-sdk-ui'
       : getClaudeCanopyToolSurface(route);
@@ -506,11 +524,8 @@ export class CanopyToolRouter {
           ...(!isBaseBranchDispatch &&
           (typeof id === 'string' || typeof id === 'number')
             ? {
-                toolUseId:
-                  canonicalKey === 'schedule_wakeup' ||
-                  canonicalKey === 'watch_command'
-                    ? this.localWatcherToolCallId(route, id)
-                    : this.routeToolUseId(route, id, params._meta),
+                // Watchers too: a retry keeps Claude's tool_use id (CAN-4169).
+                toolUseId: this.routeToolUseId(route, id, params._meta, nonce),
               }
             : {}),
           ...(requestContext?.signal ? { signal: requestContext.signal } : {}),
@@ -519,13 +534,13 @@ export class CanopyToolRouter {
             : {}),
           ...(isLedgerCall && route.ledgerTools
             ? {
-                ...this.ledgerInvocationContext(route, id, params._meta),
+                ...this.ledgerInvocationContext(nonce, id, params._meta),
                 ledgerRuntime: route.ledgerTools,
               }
             : {}),
           // SetAutoArchive keys its write by the provider invocation too.
           ...(canonicalKey === 'set_auto_archive'
-            ? this.ledgerInvocationContext(route, id, params._meta)
+            ? this.ledgerInvocationContext(nonce, id, params._meta)
             : {}),
           // CAN-7749: a DispatchAction image (only slack_thread.open_file
           // returns one) gets no budget where preview_visual sends none.
@@ -592,7 +607,14 @@ export class CanopyToolRouter {
           route.pipelineEditorRuntime,
           {
             ...(typeof id === 'string' || typeof id === 'number'
-              ? { toolUseId: this.routeToolUseId(route, id, params._meta) }
+              ? {
+                  toolUseId: this.routeToolUseId(
+                    route,
+                    id,
+                    params._meta,
+                    nonce,
+                  ),
+                }
               : {}),
             ...(requestContext?.signal
               ? { signal: requestContext.signal }
@@ -779,9 +801,9 @@ export class CanopyToolRouter {
       // transport id because its renderer request id has process-wide
       // deduplication scope.
       // A pipeline run, cancel or resume, hook pause or resume, or script run
-      // replays by tool call. The bare request id restarts per connection, so it takes
-      // Claude's tool_use id, which a retry resends, or this registration's
-      // id, as App Advisor's calls do.
+      // replays by tool call, and a watcher dedupes by it. The bare request
+      // id restarts per connection, so these take Claude's tool_use id, which
+      // a retry resends, or this registration's id, as App Advisor's calls do.
       const keyedByToolCall =
         canonicalKey === 'dispatch_action' &&
         isRecord(args.action) &&
@@ -793,12 +815,12 @@ export class CanopyToolRouter {
         canonicalKey !== 'set_base_branch' &&
         (typeof id === 'string' || typeof id === 'number')
           ? {
-              toolUseId: keyedByToolCall
-                ? this.assistantToolUseId(route, id, params._meta)
-                : canonicalKey === 'schedule_wakeup' ||
-                    canonicalKey === 'watch_command'
-                  ? this.localWatcherToolCallId(route, id)
-                  : this.routeToolUseId(route, id, params._meta),
+              toolUseId:
+                keyedByToolCall ||
+                canonicalKey === 'schedule_wakeup' ||
+                canonicalKey === 'watch_command'
+                  ? this.assistantToolUseId(nonce, id, params._meta)
+                  : this.routeToolUseId(route, id, params._meta, nonce),
             }
           : {}),
         ...(requestContext?.signal ? { signal: requestContext.signal } : {}),
@@ -813,7 +835,7 @@ export class CanopyToolRouter {
             }
           : {}),
         ...(isInvocationKeyedInjectedToolKey(canonicalKey)
-          ? this.ledgerInvocationContext(route, id, params._meta)
+          ? this.ledgerInvocationContext(nonce, id, params._meta)
           : {}),
       };
       const result = await executeCanopyInjectedTool(

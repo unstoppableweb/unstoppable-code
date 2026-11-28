@@ -70,6 +70,7 @@ const SOURCE_NAMES: Readonly<Record<ProviderSourceId, string>> = {
   codex: 'Codex',
   cursor: 'Cursor',
   copilot: 'Copilot',
+  antigravity: 'Antigravity',
   gateway: 'AI gateway',
   ollama: 'Ollama',
   credits: brandText.appName,
@@ -384,6 +385,11 @@ export function DesktopProviderChoiceDialog({
         choice.creditsBalance === 'empty'
           ? CREDITS_ROW_EMPTY_DESCRIPTION
           : CREDITS_ROW_DESCRIPTION,
+    },
+    antigravity: {
+      name: SOURCE_NAMES.antigravity,
+      icon: sourceIcon('antigravity'),
+      description: PROVIDER_ROW_DESCRIPTIONS.antigravity,
     },
     gateway: aiGatewayPresentation(gateway?.summary ?? null, gatewayRowReady),
   };

@@ -199,9 +199,9 @@ export function createDaemonWatchRoute(
         rejectBeforeAttach(error);
         signal.removeEventListener('abort', onAbort);
         controller.abort();
-        // Client close is local-only: no wire cancel exists. CAN-4730 must
-        // release the daemon stream/lease slot before E2; never close the
-        // shared window session here, which would cancel sibling streams.
+        // The client's close sends `core.events.unsubscribe`, which frees the
+        // daemon's stream and lease slot (CAN-8067); never close the shared
+        // window session here, which would cancel sibling streams.
         current?.close();
         pending.length = 0;
         emit({

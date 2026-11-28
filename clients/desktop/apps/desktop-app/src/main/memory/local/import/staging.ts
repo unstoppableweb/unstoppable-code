@@ -5,7 +5,7 @@ import {
   assertMemoryPathContained,
   assertMemoryScopeLockHeld,
   writeMemoryFileAtomically,
-} from '../memory-files';
+} from '@canopy/memory-store/memory-files';
 import { redactMemoryContent } from '@canopy/memory-consolidation/redaction';
 
 function slug(value: string, maximum: number): string {

@@ -191,28 +191,31 @@ function isRenderedRoot(root: HTMLElement): boolean {
 
 /**
  * True when `doc` holds a rendered `aria-modal="true"` element that does not
- * itself contain `targetRoot`. An open modal owns Escape wherever focus sits,
- * so the cancel shortcut must not arm underneath it. Hand-rolled modals do
- * not register with `useOverlayEscape`, so the overlay stack alone cannot
- * tell. A modal that hosts the chat is the chat's container, not a layer
- * above it.
+ * itself contain `targetRoot`. It owns keyboard focus and Escape even when
+ * it is absent from the overlay stack. A modal that hosts the chat is the
+ * chat's container, not a layer above it.
  *
  * Matches `aria-modal="true"` only: non-modal pickers render
  * `role="dialog"` with `aria-modal="false"` and must not block the shortcut.
  */
-function hasOpenModalDialogAbove(
+export function hasOpenModalDialogAbove(
   doc: Document,
   targetRoot: Element | null,
 ): boolean {
   for (const modal of Array.from(
     doc.querySelectorAll<HTMLElement>('[aria-modal="true"]'),
   )) {
-    if (!modal.isConnected) continue;
+    if (!modal.isConnected || modal.matches('dialog:not([open])')) continue;
     if (targetRoot && modal.contains(targetRoot)) continue;
+    const containedOverlay = modal.closest(
+      '[data-canopy-overlay-containment="parent"]',
+    );
+    const pane = containedOverlay?.parentElement;
+    if (targetRoot && pane && !pane.contains(targetRoot)) continue;
     // jsdom does not implement `checkVisibility`; treat it as rendered there,
     // the same way `isRenderedRoot` does.
     if (typeof modal.checkVisibility !== 'function') return true;
-    if (modal.checkVisibility()) return true;
+    if (modal.checkVisibility({ visibilityProperty: true })) return true;
   }
   return false;
 }

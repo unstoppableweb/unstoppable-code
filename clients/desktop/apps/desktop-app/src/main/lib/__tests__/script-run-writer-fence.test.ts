@@ -57,6 +57,10 @@ describePosix('desktopScriptRunWriterFence', () => {
     }
   });
 
+  it('stops only its own runs and earlier records where Stop routes to the daemon (CAN-7586)', () => {
+    expect(desktopScriptRunWriterFence.stopOwnership).toBe('own-or-legacy');
+  });
+
   it('never kills a process the daemon left, and reports it gone once it exits (CAN-6482)', async () => {
     const live = spawn('/bin/sleep', ['30'], { stdio: 'ignore' });
     const pid = live.pid;

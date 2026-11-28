@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { PlatformOperatingSystem } from '@canopy/core-runtime';
 import type { WorkerScriptExecuteParams } from '@canopy/protocol/canopy-core';
 
 /**
@@ -59,4 +60,19 @@ export function isDaemonScriptRunEligible(
     params.scope.workspaceId !== undefined &&
     params.scope.worktreeId !== undefined
   );
+}
+
+// Not the run route's gate: a Windows record is never identified, so Stop stays in process.
+export const DAEMON_SCRIPT_STOP_PLATFORMS: Readonly<
+  Record<PlatformOperatingSystem, boolean>
+> = {
+  darwin: true,
+  linux: true,
+  win32: false,
+};
+
+export function isDaemonScriptStopPlatform(
+  platform: PlatformOperatingSystem | null,
+): boolean {
+  return platform !== null && DAEMON_SCRIPT_STOP_PLATFORMS[platform] === true;
 }

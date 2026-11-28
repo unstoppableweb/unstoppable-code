@@ -118,7 +118,13 @@ export async function launchDesktop({
     if (seed) await seed(userDataDir);
   }
   const launched = await withBundledBinaryOverridesScrubbed(() =>
-    launchCanopy({ userDataDir, electronArgs: REMOTE_ACCESS_ELECTRON_ARGS }),
+    launchCanopy({
+      userDataDir,
+      electronArgs: REMOTE_ACCESS_ELECTRON_ARGS,
+      ...(process.platform === 'win32'
+        ? { env: { CANOPY_E2E_OFFSCREEN_WINDOW: '1' } }
+        : {}),
+    }),
   );
   // Closed here when the run fails or is interrupted before its own close.
   onCleanup(async () => {
@@ -350,6 +356,29 @@ export async function measureKeyToPaint(
   electronApp,
   { count = 40, intervalMs = 60 } = {},
 ) {
+  if (process.platform === 'linux' || process.platform === 'win32') {
+    const browserWindow = await electronApp.browserWindow(window);
+    let surface;
+    try {
+      surface = await browserWindow.evaluate((win) => ({
+        offscreen: win.webContents.isOffscreen(),
+        visible: win.isVisible(),
+        headed: process.env.CANOPY_E2E_SHOW_WINDOW === '1',
+      }));
+    } finally {
+      await browserWindow.dispose();
+    }
+    if (!surface.offscreen && !surface.visible) {
+      throw new Error(
+        'Key-to-paint window is hidden without offscreen rendering; its compositor throttles animation frames to ~1 Hz.',
+      );
+    }
+    if (!surface.offscreen && !surface.headed) {
+      throw new Error(
+        'Key-to-paint window is not offscreen in a headless run; display occlusion or DPMS can throttle animation frames to ~1 Hz.',
+      );
+    }
+  }
   await textbox.click();
   await window.evaluate(() => {
     const samples = [];

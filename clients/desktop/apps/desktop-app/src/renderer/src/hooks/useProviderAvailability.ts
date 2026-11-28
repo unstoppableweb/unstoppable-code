@@ -10,7 +10,10 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { useClaudeAuthStatus } from './useClaudeAuthStatus';
 import { useCodexAuthStatus } from './useCodexAuthStatus';
-import { useAiCreditsAvailability } from './useAiCreditsAvailability';
+import {
+  useAiCreditsAvailability,
+  type AiCreditsAvailability,
+} from './useAiCreditsAvailability';
 import { isAccountProxyReadyForHarness } from '@canopy/desktop-shared/lib/account-proxy';
 import { useAccountProxyStatus } from '@/stores/accountProxyStore';
 
@@ -64,6 +67,14 @@ export type ProviderAvailability = Record<
 export function useProviderAvailability(
   creditsScope?: AiCreditsScopeRequest,
 ): ProviderAvailability {
+  return useProviderAvailabilityForCredits(
+    useAiCreditsAvailability(creditsScope),
+  );
+}
+
+export function useProviderAvailabilityForCredits(
+  credits: AiCreditsAvailability,
+): ProviderAvailability {
   const antigravityEnabled = useFeatureFlagsStore((state) =>
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarness.key),
   );
@@ -75,7 +86,6 @@ export function useProviderAvailability(
   const copilot = useCopilotChatAvailable(true);
   const claudeAuth = useClaudeAuthStatus();
   const codexAuth = useCodexAuthStatus();
-  const credits = useAiCreditsAvailability(creditsScope);
   const accountProxy = useAccountProxyStatus();
   const claudeProxyReady = isAccountProxyReadyForHarness(
     accountProxy,

@@ -236,7 +236,7 @@ it('with the daemon port selected, nothing read and the daemon down, a theme or 
       await readPreferencesRecord('client-preferences.json'),
     ).toMatchObject({ colorMode: 'dark', sidebarWidth: 280 });
   } finally {
-    daemonPort.close();
+    daemonPort.dispose();
     mockSelected.port = null;
   }
 });
@@ -286,7 +286,7 @@ it("a daemon read landing during a cold client-only save never makes that save's
       sidebarWidth: 300,
     });
   } finally {
-    daemonPort.close();
+    daemonPort.dispose();
     mockSelected.port = null;
   }
 
@@ -313,7 +313,7 @@ it("a daemon read landing during a cold client-only save never makes that save's
     expect(mockBroadcast).not.toHaveBeenCalled();
     expect(mockSetEnabled).not.toHaveBeenCalled();
   } finally {
-    second.close();
+    second.dispose();
     mockSelected.port = null;
   }
 });

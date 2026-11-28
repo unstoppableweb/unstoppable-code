@@ -43,6 +43,13 @@ export {
   type CanopyLaunchDetails,
 } from './daemon-refusal';
 export type { CanopyClientEndpoint } from './endpoint';
+export {
+  connectCanopyWindowClient,
+  type CanopyWindowAdmission,
+  type CanopyWindowClient,
+  type CanopyWindowClientOptions,
+  type CanopyWindowConnection,
+} from './window-client';
 /** Hosts may extend the launch budget through their post-connect capability checks. */
 export { Deadline as CanopyDaemonDeadline } from './launch-deadline';
 export {

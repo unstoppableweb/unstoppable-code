@@ -29,6 +29,7 @@ import {
   sendWrappedToWebContents,
 } from '../../lib/web-contents-send';
 import { primaryWindowFocus } from '../../lib/window-focus-recency';
+import { getUiAutomationWindowWebPreferences } from '../../lib/ui-automation-window';
 
 /** The paired computer a window shows. */
 export interface RemoteWindowHost {
@@ -199,19 +200,24 @@ export class RemoteMachineWindows implements RemoteControlWindows {
   open(host: RemoteWindowHost): void {
     const existing = this.windows.get(host.deviceId);
     if (existing && !existing.isDestroyed()) {
-      if (existing.isMinimized()) existing.restore();
-      existing.show();
-      existing.focus();
+      if (this.options.keepHidden?.() !== true) {
+        if (existing.isMinimized()) existing.restore();
+        existing.show();
+        existing.focus();
+      }
       return;
     }
     this.hosts.set(host.deviceId, host);
     const window = this.createWindow(host, 'main');
     this.windows.set(host.deviceId, window);
     primaryWindowFocus.track(window);
-    // Shown at first paint, as before. Its native background is visible only
-    // in the strip a live resize exposes, and it follows the paired computer's
-    // theme color as soon as this window's renderer publishes it.
-    window.once('ready-to-show', () => window.show());
+    // Shown at first paint, as before, unless automation keeps windows
+    // hidden. Its native background is visible only in the strip a live
+    // resize exposes, and it follows the paired computer's theme color as
+    // soon as this window's renderer publishes it.
+    window.once('ready-to-show', () => {
+      if (this.options.keepHidden?.() !== true) window.show();
+    });
     window.on('closed', () => {
       if (this.windows.get(host.deviceId) === window) {
         this.windows.delete(host.deviceId);
@@ -375,6 +381,7 @@ export class RemoteMachineWindows implements RemoteControlWindows {
       title: this.options.title(host, surface),
       webPreferences: {
         ...base.webPreferences,
+        ...getUiAutomationWindowWebPreferences(),
         preload: this.options.preloadPath,
         sandbox: false,
         contextIsolation: true,

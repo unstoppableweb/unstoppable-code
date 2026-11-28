@@ -49,6 +49,7 @@ const config = {
       '<rootDir>/packages/memory-consolidation/src/index.ts',
     '^@canopy/memory-consolidation/(.*)$':
       '<rootDir>/packages/memory-consolidation/src/$1',
+    '^@canopy/memory-store/(.*)$': '<rootDir>/packages/memory-store/src/$1',
     '^@canopy/pipeline-interop$':
       '<rootDir>/packages/pipeline-interop/src/index.ts',
     '^@canopy/pipeline-interop/(.*)$':

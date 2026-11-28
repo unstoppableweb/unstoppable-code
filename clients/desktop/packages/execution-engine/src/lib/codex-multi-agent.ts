@@ -1,13 +1,7 @@
+import { normalizeCodexMaxConcurrentSubagents } from '@canopy/protocol/preferences';
 import { isCodexConfig, type CodexConfig } from './codex-model-config';
 
-/** Null selects the upstream default; zero does not disable multi-agent. */
-export function normalizeCodexMaxConcurrentSubagents(
-  value: unknown,
-): number | null {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
-    ? value
-    : null;
-}
+export { normalizeCodexMaxConcurrentSubagents };
 
 /** Apply desktop policy after provider config, preserving unrelated agent roles. */
 export function applyCodexMultiAgentConfig(

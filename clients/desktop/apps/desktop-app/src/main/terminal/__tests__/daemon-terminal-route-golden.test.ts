@@ -50,8 +50,16 @@ import { terminalPersistenceStore } from '../persistence';
 import type * as Persistence from '../persistence';
 import { TerminalRecordAdmissionDeferred } from '../record-admission';
 import { workerTerminal } from '../worker-terminal';
+import { hostRendererInView } from '../../lib/renderer-surface';
 
 let mockRecordCapability = false;
+// CAN-8068: window admission calls and the endpoint main verified.
+const mockWindowCalls: [string, unknown][] = [];
+const MOCK_ENDPOINT = {
+  kind: 'socket',
+  path: '/tmp/core.sock',
+  auth: { secret: 'token', dataRootHash: 'hash' },
+};
 let mockConnectionLifetime = new AbortController();
 
 interface RouteState {
@@ -147,13 +155,26 @@ jest.mock('../../canopy-runtime/electron-daemon-access', () => ({
       authorityId: 'local',
     }),
   ),
+  verifiedDaemonEndpoint: (): typeof MOCK_ENDPOINT => MOCK_ENDPOINT,
   getElectronDaemonConnections: jest.fn(() => ({
     get: jest.fn(() =>
       Promise.resolve().then(() => {
         if (mockState.failure && !('payload' in mockState.failure))
           throw mockState.failure;
-        return {
+        const session = {
+          signal: mockConnectionLifetime.signal,
+          lease: {
+            lease: { leaseId: 'lease-1' },
+            register: (
+              _key: string,
+              issue: (lease: { leaseId: string }, client: unknown) => void,
+            ): (() => void) => {
+              issue({ leaseId: 'lease-1' }, session.client);
+              return (): void => undefined;
+            },
+          },
           client: {
+            identity: { runtimeId: 'runtime-1', daemonEpoch: 'epoch-1' },
             manifest: {
               has: (): boolean => mockRecordCapability,
               schemaRevisions: new Map([['worker.terminal.create', 2]]),
@@ -210,6 +231,18 @@ jest.mock('../../canopy-runtime/electron-daemon-access', () => ({
                       buildRestoreMarker(scrollback.length > 0).length,
                   };
                 }
+                if (operation.startsWith('core.client.window.')) {
+                  mockWindowCalls.push([operation, raw]);
+                  if (operation === 'core.client.window.issue')
+                    return {
+                      ticketId: 'ticket-1',
+                      secret: 's'.repeat(43),
+                      expiresAt: '2026-11-27T00:01:00.000Z',
+                    };
+                  return operation === 'core.client.window.grant'
+                    ? { grantId: 'grant-1' }
+                    : { revoked: true };
+                }
                 throw new Error(`Unexpected operation: ${operation}`);
               }),
             openStream: jest.fn(() =>
@@ -220,6 +253,7 @@ jest.mock('../../canopy-runtime/electron-daemon-access', () => ({
             ),
           },
         };
+        return session;
       }),
     ),
   })),
@@ -400,6 +434,7 @@ afterAll(() => {
 });
 beforeEach(() => {
   mockRecordCapability = false;
+  mockWindowCalls.length = 0;
   mockConnectionLifetime = new AbortController();
   mockRouteRecords.length = 0;
   mockState.daemon = undefined;
@@ -820,6 +855,173 @@ describe('terminal:spawn and terminal:restore default daemon placement (CAN-5718
     expect(mockState.hosted.size).toBe(mockState.failureAfterCreate ? 1 : 0);
     // Each decision is counted once, refusals included.
     expect(mockRouteRecords).toEqual([['terminals', 'refused']]);
+  });
+});
+
+describe('window admission (CAN-8068, inert until a window asks)', () => {
+  type Frame = { url: string; detached: boolean; isDestroyed: () => boolean };
+  let nextContentsId = 100;
+  /** The window's live main frame, as Electron reports it to a handler. */
+  function mainFrameOf(window: BrowserWindow): Frame {
+    const frame: Frame = {
+      url: 'app://renderer',
+      detached: false,
+      isDestroyed: () => false,
+    };
+    Object.assign(window.webContents, {
+      mainFrame: frame,
+      id: nextContentsId++,
+    });
+    return frame;
+  }
+  function invokeFrom(
+    channel: string,
+    request: unknown,
+    window: BrowserWindow,
+    senderFrame: Frame | null,
+  ): Promise<unknown> {
+    const handler = handlers.get(channel);
+    if (!handler) throw new Error(`Missing IPC handler ${channel}`);
+    const event = {
+      sender: window.webContents,
+      senderFrame,
+    } as unknown as IpcMainInvokeEvent;
+    return Promise.resolve().then((): unknown => handler(event, request));
+  }
+
+  it('issues the main window a ticket and grants it a daemon shell it shows', async () => {
+    await expect(
+      invoke(IPC_CHANNELS.terminalSpawn, REQUEST),
+    ).resolves.toMatchObject({ id: 'daemon-1' });
+    mockRecordCapability = true;
+    const frame = mainFrameOf(main);
+    await expect(
+      invokeFrom(IPC_CHANNELS.terminalWindowConnect, undefined, main, frame),
+    ).resolves.toMatchObject({
+      endpoint: MOCK_ENDPOINT,
+      // CAN-8069: the runtime main verified, which the window must reach.
+      runtime: { runtimeId: 'runtime-1', daemonEpoch: 'epoch-1' },
+      ticket: { ticketId: 'ticket-1', secret: 's'.repeat(43) },
+      expiresAt: '2026-11-27T00:01:00.000Z',
+    });
+    await expect(
+      invokeFrom(
+        IPC_CHANNELS.terminalWindowRoute,
+        { terminalId: 'daemon-1' },
+        main,
+        frame,
+      ),
+    ).resolves.toMatchObject({
+      scope: { workspaceId: 'project', worktreeId: 'task' },
+      terminalId: 'daemon-1',
+      rights: ['attach', 'write', 'resize'],
+    });
+    expect(mockWindowCalls.map(([operation]) => operation)).toEqual([
+      'core.client.window.issue',
+      'core.client.window.grant',
+    ]);
+    expect(mockWindowCalls[0]?.[1]).toMatchObject({ label: 'Desktop window' });
+    // Restoring the live terminal reattaches it, so its grant stays.
+    await expect(
+      invoke(IPC_CHANNELS.terminalRestore, {
+        terminalId: 'daemon-1',
+        cols: 80,
+        rows: 24,
+      }),
+    ).resolves.toMatchObject({ id: 'daemon-1' });
+    expect(mockWindowCalls).toHaveLength(2);
+    // An in-process terminal stays on main's relay.
+    await expect(
+      invokeFrom(
+        IPC_CHANNELS.terminalWindowRoute,
+        { terminalId: 'engine-1' },
+        main,
+        frame,
+      ),
+    ).resolves.toBeNull();
+    // A navigated page loses its window, grants and all.
+    const issued: unknown = mockWindowCalls[0]?.[1];
+    const windowInstanceId: unknown =
+      typeof issued === 'object' && issued !== null
+        ? Reflect.get(issued, 'windowInstanceId')
+        : undefined;
+    expect(typeof windowInstanceId).toBe('string');
+    main.webContents.emit('did-navigate');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockWindowCalls.at(-1)).toEqual([
+      'core.client.window.revoke',
+      { windowInstanceId },
+    ]);
+  });
+
+  it('keeps main relaying for an older daemon and for senders that are not a window page', async () => {
+    const frame = mainFrameOf(main);
+    // Without the terminal record (or the window ops), no ticket.
+    await expect(
+      invokeFrom(IPC_CHANNELS.terminalWindowConnect, undefined, main, frame),
+    ).resolves.toBeNull();
+    mockRecordCapability = true;
+    const child: Frame = { ...frame };
+    for (const [window, senderFrame] of [
+      [foreign, mainFrameOf(foreign)],
+      [main, child],
+      [main, null],
+    ] as const)
+      await expect(
+        invokeFrom(
+          IPC_CHANNELS.terminalWindowConnect,
+          undefined,
+          window,
+          senderFrame,
+        ),
+      ).resolves.toBeNull();
+    // A window never admitted has no routes.
+    await expect(
+      invokeFrom(
+        IPC_CHANNELS.terminalWindowRoute,
+        { terminalId: 'daemon-1' },
+        main,
+        frame,
+      ),
+    ).resolves.toBeNull();
+    expect(mockWindowCalls).toEqual([]);
+  });
+
+  it('admits the early access Orchestrator by its renderer view, not the window hosting it', async () => {
+    mockRecordCapability = true;
+    const orchestrator = new BrowserWindow();
+    const view = new BrowserWindow();
+    const stopHosting = hostRendererInView(
+      orchestrator.webContents,
+      () => view.webContents,
+    );
+    registerTerminalHandlers({
+      getMainWindow: () => main,
+      getAppAdvisorWindow: () => orchestrator,
+    } as never);
+    try {
+      await expect(
+        invokeFrom(
+          IPC_CHANNELS.terminalWindowConnect,
+          undefined,
+          view,
+          mainFrameOf(view),
+        ),
+      ).resolves.toMatchObject({ ticket: { ticketId: 'ticket-1' } });
+      expect(mockWindowCalls[0]?.[1]).toMatchObject({
+        label: 'Orchestrator window',
+      });
+      await expect(
+        invokeFrom(
+          IPC_CHANNELS.terminalWindowConnect,
+          undefined,
+          orchestrator,
+          mainFrameOf(orchestrator),
+        ),
+      ).resolves.toBeNull();
+    } finally {
+      stopHosting();
+    }
   });
 });
 

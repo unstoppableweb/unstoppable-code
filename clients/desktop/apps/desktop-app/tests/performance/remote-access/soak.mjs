@@ -6,11 +6,13 @@
  * while running, in every round and in parallel on both hosts: a burst of
  * tunnelled calls, a streaming terminal job whose output must arrive
  * complete, and every third round a 1 MB attachment upload. The relay is
- * restarted twice mid-run; operations that fail while it is down are counted
+ * restarted three times mid-run; operations that fail while it is down are counted
  * separately, and every window must reconnect and keep working. Memory and
  * window counts are sampled each minute to catch leaks (for example bridge
- * windows that outlive their sessions). `local` runs the same work in each
- * host's own window, without Remote Control, for comparison.
+ * windows that outlive their sessions), and each computer's heap after a full
+ * GC must not grow past a bound from minute 2 to the end (CAN-7859). `local`
+ * runs the same work in each host's own window, without Remote Control, for
+ * comparison.
  */
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -19,7 +21,7 @@ import path from 'node:path';
 import { expect } from '@playwright/test';
 import { closeCanopy } from '../../electron/launchCanopy.mjs';
 import { registerScenario } from '../../electron/seeders/registerScenario.mjs';
-import { PERFORMANCE_MOCK_BASE_URL } from '../mock-server.mjs';
+import { currentMockBaseUrl } from '../mock-server.mjs';
 import { onCleanupSync } from './cleanup.mjs';
 import {
   DEMO_APPS,
@@ -66,11 +68,95 @@ async function invokeBurst(window, count) {
   }, count);
 }
 
+/**
+ * Each computer's heap after a full GC is read at this minute, once start-up
+ * code and caches have settled, and again after the final checks.
+ */
+const RETAINED_HEAP_BASELINE_MINUTE = 2;
+/**
+ * How much more heap any computer may keep after a full GC at the end of a
+ * soak than at the baseline (CAN-7859). A 15-minute soak measured 3 to 5 MB
+ * on each receiving host; the terminal record keeps about 0.9 KB per round
+ * (about 2 MB per 15 minutes), so the bound holds for soaks of several hours,
+ * while keeping one round's output or uploads would cross it in minutes.
+ */
+const RETAINED_HEAP_GROWTH_MAX_MB = 64;
+
+/**
+ * Main's heap after a full garbage collection, in MB: what it still holds,
+ * without the garbage a sampled heap includes. `--expose-gc` set after start
+ * reaches only contexts created later, so the collection runs in a new one.
+ */
+async function retainedHeapMb(desktop) {
+  return desktop.electronApp.evaluate(async () => {
+    // Playwright drives main through an attached inspector, which keeps every
+    // console message's arguments alive, such as each error Electron logs for
+    // a rejected IPC handler (CAN-8049). A packaged app has no inspector, so
+    // its stored messages are dropped first: only they, nothing the app holds.
+    const session = new (process.getBuiltinModule('inspector').Session)();
+    session.connect();
+    try {
+      await new Promise((resolve, reject) =>
+        session.post('Runtime.discardConsoleEntries', (error) =>
+          error ? reject(error) : resolve(),
+        ),
+      );
+    } finally {
+      session.disconnect();
+    }
+    process.getBuiltinModule('v8').setFlagsFromString('--expose-gc');
+    process.getBuiltinModule('vm').runInNewContext('gc')();
+    return Math.round(process.memoryUsage().heapUsed / 1e6);
+  });
+}
+
+/** `promise`, or a rejection naming `what` once the sample timeout passes. */
+async function withinSampleTimeout(promise, what) {
+  promise.catch(() => undefined);
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `${what} took over ${String(SAMPLE_TIMEOUT_MS / 1_000)} s`,
+              ),
+            ),
+          SAMPLE_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const UPLOAD_BYTES = 1024 * 1024;
 /** How long one memory sample of the three computers may take. */
 const SAMPLE_TIMEOUT_MS = 30_000;
 /** How long each host has to run a fresh command after a relay restart. */
 const RESTART_PROBE_TIMEOUT_MS = 60_000;
+/** When in the soak the relay restarts, as fractions of its length. */
+const RESTART_AT = [0.25, 0.5, 0.75];
+/**
+ * How long a relay restart may take, from the kill until both hosts run a
+ * fresh command through their windows (CAN-8048). It takes about 3.5 s,
+ * including the relay's 2 s outage; the waits above are only outer limits.
+ */
+const RESTART_RECOVERY_MAX_MS = 30_000;
+/**
+ * A round whose every operation failed outside a relay restart waits before
+ * the next, from 1 s doubling to 10 s, so a controller that lost its relay is
+ * not hidden behind thousands of instant failures (CAN-8049). When every
+ * operation keeps failing for longer than the limit, timed from the start of
+ * the first failed round, the soak stops with that as its problem.
+ */
+const FAILED_ROUND_BACKOFF_MIN_MS = 1_000;
+const FAILED_ROUND_BACKOFF_MAX_MS = 10_000;
+const ALL_FAILING_MAX_MS = 60_000;
 
 /**
  * Attaches a 1 MB file to the worktree. Through a remote window the file
@@ -284,38 +370,49 @@ export async function runSoak({ minutes, local = false, progress = {} }) {
     uploads: 0,
     samples: [],
     sampleFailures: [],
+    // Rounds that waited because all their operations failed outside a
+    // restart, and how long; and how long every operation had been failing
+    // when that ended the soak early.
+    backoff: { rounds: 0, ms: 0 },
+    allFailingMs: null,
   };
   // The report so far, written to the artifact if the soak fails.
   progress.report = report;
   const sample = async (startedAt, [a, b, c]) => {
     const atMinute = Math.round((Date.now() - startedAt) / 6_000) / 10;
-    const reading = Promise.all([a, b, c].map(processSample));
-    reading.catch(() => undefined);
-    let timer;
-    try {
-      const [controller, hostB, hostC] = await Promise.race([
-        reading,
-        new Promise((_, reject) => {
-          timer = setTimeout(
-            () =>
-              reject(
-                new Error(
-                  `the memory sample took over ${String(SAMPLE_TIMEOUT_MS / 1_000)} s`,
-                ),
-              ),
-            SAMPLE_TIMEOUT_MS,
-          );
-        }),
-      ]);
-      report.samples.push({ atMinute, controller, hostB, hostC });
-    } finally {
-      clearTimeout(timer);
-    }
+    const [controller, hostB, hostC] = await withinSampleTimeout(
+      Promise.all([a, b, c].map(processSample)),
+      'the memory sample',
+    );
+    report.samples.push({ atMinute, controller, hostB, hostC });
+  };
+  // Each computer's heap after a full GC, at minute 2 and after the final
+  // checks; see RETAINED_HEAP_GROWTH_MAX_MB.
+  report.retainedHeap = {
+    inspectorConsole: 'discarded before each reading',
+    baselineMinute: RETAINED_HEAP_BASELINE_MINUTE,
+    maxGrowthMb: RETAINED_HEAP_GROWTH_MAX_MB,
+    baseline: null,
+    end: null,
+    failures: [],
+  };
+  // Too short to read a baseline after start-up has settled: neither
+  // reading is taken, so none can fail the run.
+  const checkRetainedHeap = minutes > RETAINED_HEAP_BASELINE_MINUTE;
+  if (!checkRetainedHeap) {
+    report.retainedHeap.skipped = `the soak is not longer than ${String(RETAINED_HEAP_BASELINE_MINUTE)} minutes`;
+  }
+  const readRetainedHeap = async ([a, b, c]) => {
+    const [controller, hostB, hostC] = await withinSampleTimeout(
+      Promise.all([a, b, c].map(retainedHeapMb)),
+      'the post-GC heap reading',
+    );
+    return { controller, hostB, hostC };
   };
   let stopSampling = async () => undefined;
   let relayWarnings = [];
   try {
-    await registerScenario(PERFORMANCE_MOCK_BASE_URL, apiKey, {
+    await registerScenario(currentMockBaseUrl(), apiKey, {
       cloud: {
         deviceRelay: {
           url: relay.url,
@@ -352,12 +449,13 @@ export async function runSoak({ minutes, local = false, progress = {} }) {
 
     const startedAt = Date.now();
     const deadline = startedAt + minutes * 60_000;
-    const restartAt = [0.33, 0.66].map(
+    const restartAt = RESTART_AT.map(
       (fraction) => startedAt + minutes * 60_000 * fraction,
     );
     // Memory is sampled every minute on its own timer, so a round that
     // hangs cannot hold back the samples that would show why.
     let sampling = true;
+    let baselineDue = checkRetainedHeap;
     let sampleTimer = null;
     let wakeSampler = () => undefined;
     const sampler = (async () => {
@@ -373,6 +471,22 @@ export async function runSoak({ minutes, local = false, progress = {} }) {
         await sample(startedAt, [a, b, c]).catch((error) => {
           report.sampleFailures.push(String(error).slice(0, 200));
         });
+        if (
+          baselineDue &&
+          Date.now() - startedAt >= RETAINED_HEAP_BASELINE_MINUTE * 60_000
+        ) {
+          baselineDue = false;
+          report.retainedHeap.baselineAtMinute =
+            Math.round((Date.now() - startedAt) / 6_000) / 10;
+          report.retainedHeap.baseline = await readRetainedHeap([
+            a,
+            b,
+            c,
+          ]).catch((error) => {
+            report.retainedHeap.failures.push(String(error).slice(0, 200));
+            return null;
+          });
+        }
       }
     })();
     stopSampling = async () => {
@@ -459,6 +573,8 @@ export async function runSoak({ minutes, local = false, progress = {} }) {
       });
     };
 
+    let failingSince = null;
+    let backoffStep = 0;
     while (Date.now() < deadline) {
       // One restart at a time: the next waits until the previous one has
       // recovered, so each restart record has its own recovery.
@@ -487,9 +603,13 @@ export async function runSoak({ minutes, local = false, progress = {} }) {
         roundWork(report, targets, round, localDir),
       );
       report.operations += settled.length;
+      let overlappedRestart = false;
+      let roundStartedAt = Date.now();
       for (const result of settled) {
         const record =
           result.status === 'fulfilled' ? result.value : result.reason.record;
+        if (overlapsOutage(record)) overlappedRestart = true;
+        roundStartedAt = Math.min(roundStartedAt, record.startedAt);
         for (const outage of outages) {
           if (overlaps(record, outage)) outage.operations += 1;
         }
@@ -499,6 +619,46 @@ export async function runSoak({ minutes, local = false, progress = {} }) {
         } else {
           report.failures.push({ round, error: result.reason.message });
         }
+      }
+      const inOutage = outages.some((outage) => outage.endedAt === null);
+      if (
+        settled.length > 0 &&
+        settled.every((result) => result.status === 'rejected') &&
+        !inOutage &&
+        !overlappedRestart
+      ) {
+        // A restart's own deadline judges the time around it, so a streak
+        // counts from the end of the latest restart at the earliest.
+        const lastRestartEnd = Math.max(
+          0,
+          ...outages.map((outage) => outage.endedAt ?? 0),
+        );
+        // From the start of the round, so time a round spent waiting on a
+        // suspended session counts.
+        failingSince = Math.max(failingSince ?? roundStartedAt, lastRestartEnd);
+        const expired = () => Date.now() - failingSince > ALL_FAILING_MAX_MS;
+        if (expired()) {
+          report.allFailingMs = Date.now() - failingSince;
+          break;
+        }
+        // Never past the limit: a restart due next would end the streak.
+        const waitMs = Math.min(
+          FAILED_ROUND_BACKOFF_MAX_MS,
+          FAILED_ROUND_BACKOFF_MIN_MS * 2 ** backoffStep,
+          ALL_FAILING_MAX_MS - (Date.now() - failingSince) + 1,
+        );
+        backoffStep += 1;
+        report.backoff.rounds += 1;
+        report.backoff.ms += waitMs;
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        if (expired()) {
+          report.allFailingMs = Date.now() - failingSince;
+          break;
+        }
+      } else {
+        // A success or a restart ends the streak.
+        failingSince = null;
+        backoffStep = 0;
       }
       // Clean up the round's terminals so PTYs do not accumulate; during an
       // outage the window may not answer, and the next round retries. While
@@ -540,6 +700,13 @@ export async function runSoak({ minutes, local = false, progress = {} }) {
     );
     await stopSampling();
     await sample(startedAt, [a, b, c]);
+    if (checkRetainedHeap)
+      report.retainedHeap.end = await readRetainedHeap([a, b, c]).catch(
+        (error) => {
+          report.retainedHeap.failures.push(String(error).slice(0, 200));
+          return null;
+        },
+      );
   } finally {
     await stopSampling();
     relayWarnings = relay
@@ -558,13 +725,26 @@ export async function runSoak({ minutes, local = false, progress = {} }) {
     (failure) => `round ${String(failure.round)}: ${failure.error}`,
   );
   if (report.rounds === 0) problems.push('the soak ran no rounds');
-  if (!local && report.relayRestarts.length !== 2) {
+  if (report.allFailingMs !== null) {
+    // The rounds' own errors are listed above; this only says why it stopped.
     problems.push(
-      `expected 2 relay restarts, saw ${String(report.relayRestarts.length)}`,
+      `every operation failed for ${String(report.allFailingMs)} ms outside a relay restart, over the ${String(ALL_FAILING_MAX_MS / 1_000)} s limit, so the soak stopped`,
+    );
+  }
+  if (!local && report.relayRestarts.length !== RESTART_AT.length) {
+    problems.push(
+      `expected ${String(RESTART_AT.length)} relay restarts, saw ${String(report.relayRestarts.length)}`,
     );
   }
   for (const failure of report.restartFailures ?? []) {
     problems.push(`a relay restart did not recover: ${failure}`);
+  }
+  for (const restart of report.relayRestarts) {
+    if (restart.recoveredInMs > RESTART_RECOVERY_MAX_MS) {
+      problems.push(
+        `the relay restart at minute ${String(restart.atMinute)} took ${String(restart.recoveredInMs)} ms to recover (the bound is ${String(RESTART_RECOVERY_MAX_MS)} ms)`,
+      );
+    }
   }
   for (const failure of report.sampleFailures) {
     problems.push(`a memory sample failed: ${failure}`);
@@ -595,8 +775,47 @@ export async function runSoak({ minutes, local = false, progress = {} }) {
       );
     }
   }
+  const { baseline, end } = report.retainedHeap;
+  for (const failure of report.retainedHeap.failures) {
+    problems.push(`a post-GC heap reading failed: ${failure}`);
+  }
+  if (report.retainedHeap.skipped !== undefined) {
+    process.stderr.write(
+      `The post-GC heap bound was not checked: ${report.retainedHeap.skipped}.\n`,
+    );
+  } else if (
+    report.retainedHeap.failures.length === 0 &&
+    (baseline === null || end === null)
+  ) {
+    problems.push(
+      `the post-GC heap was not read at minute ${String(RETAINED_HEAP_BASELINE_MINUTE)} and after the final checks`,
+    );
+  }
+  report.retainedHeap.growthMb =
+    report.retainedHeap.skipped === undefined && baseline && end
+      ? Object.fromEntries(
+          Object.keys(end).map((key) => [key, end[key] - baseline[key]]),
+        )
+      : null;
+  for (const [key, growth] of Object.entries(
+    report.retainedHeap.growthMb ?? {},
+  )) {
+    if (growth > RETAINED_HEAP_GROWTH_MAX_MB) {
+      problems.push(
+        `${key} kept ${String(growth)} MB more heap after a full GC than at minute ${String(RETAINED_HEAP_BASELINE_MINUTE)} (${String(baseline[key])} -> ${String(end[key])} MB; the bound is ${String(RETAINED_HEAP_GROWTH_MAX_MB)} MB)`,
+      );
+    }
+  }
+  // Sampled heap includes garbage not yet collected: reported, not judged.
+  const peakHeapMb = Object.fromEntries(
+    ['controller', 'hostB', 'hostC'].map((key) => [
+      key,
+      Math.max(0, ...report.samples.map((entry) => entry[key].heapMb)),
+    ]),
+  );
   return {
     ...report,
+    peakHeapMb,
     relayWarnings,
     invokeMs: latencySummary(report.invokeMs),
     terminalJobMs: latencySummary(report.terminalJobMs),

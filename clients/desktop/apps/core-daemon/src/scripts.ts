@@ -261,6 +261,8 @@ export function daemonScriptRunWriterFence(
     },
     // Never a signal by PID alone (CAN-7520).
     refusesUnidentifiedStop: true,
+    // A Stop ends only a run the daemon started.
+    stopOwnership: 'own',
     stopChild: (child, mode): Promise<ScriptRunChildStop> =>
       isScriptRunChildIdentified(child)
         ? stopScriptRunChild({ child, mode, supervision })

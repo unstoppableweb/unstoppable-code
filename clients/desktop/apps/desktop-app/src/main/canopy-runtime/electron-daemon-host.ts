@@ -55,6 +55,7 @@ import { resolveSecureDataDir } from '@canopy/core-runtime/node/secure-data-dir'
 import { daemonName, type CanopyRuntimeMode } from '@canopy/protocol/brand';
 import {
   CanopyRuntimeDescriptorSchema,
+  CORE_CLIENT_WINDOW_INSTRUCTION_DEFINITIONS,
   CORE_CLOUD_ACCOUNT_CUSTODY_INSTRUCTION_DEFINITIONS,
   CORE_CLOUD_ACCOUNT_CUSTODY_QUERY_DEFINITIONS,
   CORE_CONFIG_DOCUMENT_INSTRUCTION_DEFINITIONS,
@@ -191,6 +192,9 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
     // The worktree terminal record (CAN-7051).
     ...WORKER_TERMINAL_RECORD_INSTRUCTION_DEFINITIONS,
     ...WORKER_TERMINAL_RECORD_LIFECYCLE_INSTRUCTION_DEFINITIONS,
+    // Window tickets and terminal grants for this app's own windows
+    // (CAN-8068); a daemon without them keeps every window on main's relay.
+    ...CORE_CLIENT_WINDOW_INSTRUCTION_DEFINITIONS,
     // And its renderer worktree builds (CAN-5089).
     'worker.codeGraph.build':
       WORKER_CODE_GRAPH_INSTRUCTION_DEFINITIONS['worker.codeGraph.build'],
@@ -226,6 +230,8 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
     // A finished run's clear, keyed (CAN-7663).
     'worker.script.execution.clear':
       WORKER_SCRIPT_INSTRUCTION_DEFINITIONS['worker.script.execution.clear'],
+    'worker.script.execution.stop':
+      WORKER_SCRIPT_INSTRUCTION_DEFINITIONS['worker.script.execution.stop'],
     // CAN-5092 S1a: typing only, as the operation record queries.
     ...OPERATION_INSTRUCTION_DEFINITIONS,
     // CAN-5092 S1b: typing only, as the definition queries. No import: it is

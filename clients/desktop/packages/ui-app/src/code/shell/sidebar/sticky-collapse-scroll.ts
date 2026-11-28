@@ -14,6 +14,40 @@
  * header actually ended up above the sticky line, so collapses that naturally
  * keep the header on screen are left untouched.
  */
+/**
+ * Scroll anchoring suspensions in flight, per viewport. Two collapses in one
+ * frame used to each save the inline value and restore it later, so the
+ * second saved the first's `'none'` and restored that last, leaving anchoring
+ * off for good. The first suspension keeps the caller's value; the last
+ * resume puts it back.
+ */
+const anchorSuspensions = new WeakMap<
+  HTMLElement,
+  { depth: number; previous: string }
+>();
+
+function suspendOverflowAnchor(viewport: HTMLElement): void {
+  const held = anchorSuspensions.get(viewport);
+  if (held) {
+    held.depth += 1;
+    return;
+  }
+  anchorSuspensions.set(viewport, {
+    depth: 1,
+    previous: viewport.style.overflowAnchor,
+  });
+  viewport.style.overflowAnchor = 'none';
+}
+
+function resumeOverflowAnchor(viewport: HTMLElement): void {
+  const held = anchorSuspensions.get(viewport);
+  if (!held) return;
+  held.depth -= 1;
+  if (held.depth > 0) return;
+  anchorSuspensions.delete(viewport);
+  viewport.style.overflowAnchor = held.previous;
+}
+
 export function scheduleStickyCollapseScrollAdjust(
   sectionRoot: HTMLElement | null,
 ): void {
@@ -43,13 +77,19 @@ export function scheduleStickyCollapseScrollAdjust(
     header.getBoundingClientRect().top -
     sectionRoot.getBoundingClientRect().top;
   if (!ownsProjectedSlot && stuckOffset <= 1) return;
+  // Where the projected copy is drawn right now. Under another project's
+  // selected pin the slot sits below the controls, and the flow header must
+  // land there: lined up with the controls it would sit behind that pin.
+  const projectedSlotTop =
+    ownsProjectedSlot && stickySlot
+      ? stickySlot.getBoundingClientRect().top
+      : null;
 
   // The rows removed by the collapse sit above most visible workspaces. Native
   // scroll anchoring otherwise keeps one of those trailing rows stationary and
   // can undo the correction below, leaving this header covered even though we
   // wrote the right scrollTop. Suppress it across the collapse layout pass.
-  const previousOverflowAnchor = viewport.style.overflowAnchor;
-  viewport.style.overflowAnchor = 'none';
+  suspendOverflowAnchor(viewport);
   requestAnimationFrame(() => {
     try {
       // Only correct while the collapse is still in effect: a collapse that
@@ -65,7 +105,11 @@ export function scheduleStickyCollapseScrollAdjust(
       const headerTop = header.getBoundingClientRect().top;
       // Align with the projected slot, not below its occlusion band. The slot
       // represents this header even when collapse removes its rows container.
-      const visibleHeaderTop = controls.getBoundingClientRect().bottom;
+      const controlsBottom = controls.getBoundingClientRect().bottom;
+      const visibleHeaderTop =
+        projectedSlotTop === null
+          ? controlsBottom
+          : Math.max(controlsBottom, projectedSlotTop);
       if (headerTop >= visibleHeaderTop - 0.5) return;
       // The collapsed section is header-only, so the header tracks scroll 1:1.
       viewport.scrollTop = Math.max(
@@ -81,7 +125,7 @@ export function scheduleStickyCollapseScrollAdjust(
       // callback. Keep it disabled through that paint, then restore the
       // caller's prior inline value on the next frame.
       requestAnimationFrame(() => {
-        viewport.style.overflowAnchor = previousOverflowAnchor;
+        resumeOverflowAnchor(viewport);
       });
     }
   });

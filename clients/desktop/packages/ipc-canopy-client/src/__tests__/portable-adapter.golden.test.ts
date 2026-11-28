@@ -5679,6 +5679,22 @@ const COMMAND_SCENARIOS: CommandScenarios = {
       ],
     },
     {
+      name: 'returns the instruction revision acknowledged by the host',
+      args: { instructions: { content: 'Edited', revision: 'loaded' } },
+      replies: {
+        [C.appAdvisorSettingsPatch]: () => ({
+          ok: true,
+          instructionsRevision: 'saved',
+        }),
+      },
+      calls: [
+        call(C.appAdvisorSettingsPatch, {
+          instructions: { content: 'Edited', revision: 'loaded' },
+        }),
+      ],
+      result: (value) => expect(value).toBe('saved'),
+    },
+    {
       name: "rejects with the computer's refusal",
       args: { autoArchiveDays: 0 },
       replies: {

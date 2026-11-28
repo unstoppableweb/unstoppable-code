@@ -194,13 +194,16 @@ export function createCoreConfigDocumentHandlers(
   const updates = keyed<ConfigDocumentUpdateResult>();
   const ownerUpdates = keyed<ConfigDocumentGetResult>();
 
+  /** Every answer: the stored record and its projection (CAN-8045). */
   const documentOf = (
     stored: DaemonStoredPreferences,
   ): ConfigDocumentGetResult => {
     const value: unknown = JSON.parse(JSON.stringify(codec.project(stored)));
+    const record: unknown = JSON.parse(JSON.stringify(stored));
     return ConfigDocumentGetResultSchema.parse({
       revision: configDocumentRevision(stored),
       value,
+      stored: record,
       enforcedPaths: [...enforcedPaths()],
       loadError: projectLoadError(repository.peekLoadError()),
     });

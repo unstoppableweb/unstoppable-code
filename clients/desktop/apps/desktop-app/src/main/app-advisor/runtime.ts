@@ -1,3 +1,7 @@
+import {
+  AUTOMATION_TURN_SCHEDULE_ERROR,
+  refusesAutomationTurnScheduleMutation,
+} from '../automations/schedule-mutation-policy';
 import { createChatHistoryActionFamily } from '@canopy/agent-actions/families/chat-history';
 import { desktopChatHistoryPort } from '../agent-actions/desktop-chat-history-port';
 import { windowAgentInterfacePort } from '../agents/agent-interface-port';
@@ -1908,6 +1912,12 @@ export function createAppAdvisorToolRuntime(
         { ok: true }
       > | null = null;
       if (inlineWatchers && action.type === 'automation.run_now') {
+        if (await refusesAutomationTurnScheduleMutation(destination))
+          return {
+            requestId,
+            ok: false,
+            error: AUTOMATION_TURN_SCHEDULE_ERROR,
+          };
         const setup = await runtime.setupWatchers(
           {
             watchers: inlineWatchers.map((watcher) => ({

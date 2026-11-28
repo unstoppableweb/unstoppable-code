@@ -2,7 +2,9 @@ import { toAppError } from '@canopy/protocol/app-errors';
 import { randomBytes } from 'node:crypto';
 import * as zlib from 'node:zlib';
 import {
+  DEVICE_RELAY_CLOSE_CODES,
   decodeDeviceRelayDataFrame,
+  deviceRelayTokenFromSubprotocols,
   encodeDeviceRelayDataFrame,
   parseDeviceRelayClientMessage,
   type DeviceRelayDeviceInfo,
@@ -2386,5 +2388,304 @@ describe('socket-backed relay sessions', () => {
     await expect(link.controllerRpc.request('echo', 'after')).resolves.toBe(
       'after',
     );
+  });
+});
+
+/**
+ * A relay that can be restarted and can refuse a token, for the relay
+ * client's reconnect and token rules (CAN-8048). While it is down, every new
+ * socket fails as an unreachable server does (1006). It records the token
+ * each socket offered.
+ */
+class RestartingRelay {
+  up = true;
+  /** Tokens the relay refuses with its unauthorized close code. */
+  readonly refused = new Set<string>();
+  readonly offered: string[] = [];
+  private readonly open = new Set<RelaySocketHandlers>();
+
+  readonly createSocket: RelaySocketFactory = (_url, protocols, handlers) => {
+    const token = deviceRelayTokenFromSubprotocols(protocols) ?? '';
+    this.offered.push(token);
+    setImmediate(() => {
+      if (!this.up) {
+        handlers.onClose(1006, '', false);
+      } else if (this.refused.has(token)) {
+        handlers.onClose(
+          DEVICE_RELAY_CLOSE_CODES.unauthorized,
+          'unauthorized',
+          true,
+        );
+      } else {
+        this.open.add(handlers);
+        handlers.onOpen();
+      }
+    });
+    return {
+      bufferedAmount: 0,
+      transmit: (data): void => {
+        if (typeof data !== 'string') return;
+        const message = parseDeviceRelayClientMessage(data);
+        if (message?.type !== 'hello' || !this.open.has(handlers)) return;
+        setImmediate(() =>
+          handlers.onText(
+            JSON.stringify({
+              type: 'ready',
+              deviceId: message.device.deviceId,
+              peers: [],
+            }),
+          ),
+        );
+      },
+      close: (): void => {
+        this.open.delete(handlers);
+      },
+    };
+  };
+
+  /** Shuts down as for a deploy: open sockets close, new ones fail. */
+  stop(): void {
+    this.up = false;
+    for (const handlers of Array.from(this.open)) {
+      this.open.delete(handlers);
+      setImmediate(() =>
+        handlers.onClose(DEVICE_RELAY_CLOSE_CODES.shuttingDown, '', true),
+      );
+    }
+  }
+}
+
+describe('relay client reconnects across relay restarts (CAN-8048)', () => {
+  const clients: RelayClient[] = [];
+  afterEach(() => {
+    for (const client of clients.splice(0)) client.stop();
+    jest.useRealTimers();
+  });
+
+  function tokenResponse(
+    token: string,
+    lifetimeMs = 600_000,
+  ): DeviceRelayTokenResponse {
+    return {
+      token,
+      relayUrl: 'wss://relay.test',
+      expiresAt: new Date(Date.now() + lifetimeMs).toISOString(),
+    };
+  }
+
+  function startClient(
+    relay: RestartingRelay,
+    fetchToken: () => Promise<DeviceRelayTokenResponse>,
+  ): { client: RelayClient; diagnostics: RelayClientDiagnostic[] } {
+    const diagnostics: RelayClientDiagnostic[] = [];
+    const identity = generateDeviceKeyPair();
+    const client = new RelayClient({
+      fetchToken,
+      deviceInfo: (): DeviceRelayDeviceInfo => ({
+        deviceId: identity.deviceId,
+        name: 'Controller',
+        platform: 'darwin',
+        appVersion: '1.0.0',
+        publicKey: identity.publicKey,
+        acceptsRemoteControl: true,
+      }),
+      createSocket: relay.createSocket,
+      onDiagnostic: (diagnostic): void => {
+        diagnostics.push(diagnostic);
+      },
+      minReconnectDelayMs: 100,
+      maxReconnectDelayMs: 400,
+    });
+    clients.push(client);
+    client.start();
+    return { client, diagnostics };
+  }
+
+  async function advanceUntil(
+    check: () => boolean,
+    label: string,
+  ): Promise<void> {
+    const deadline = Date.now() + 30_000;
+    while (!check()) {
+      if (Date.now() > deadline) throw new Error(`Timed out waiting: ${label}`);
+      await jest.advanceTimersByTimeAsync(10);
+    }
+  }
+
+  /** Lets time pass in steps, so the relay's socket events interleave. */
+  async function advanceBy(ms: number): Promise<void> {
+    for (let elapsed = 0; elapsed < ms; elapsed += 10) {
+      await jest.advanceTimersByTimeAsync(10);
+    }
+  }
+
+  /** Restarts the relay, down long enough for at least four failed connects. */
+  async function restart(
+    relay: RestartingRelay,
+    client: RelayClient,
+  ): Promise<void> {
+    const offeredBefore = relay.offered.length;
+    relay.stop();
+    await advanceUntil(
+      () => relay.offered.length >= offeredBefore + 4,
+      'four connects while the relay is down',
+    );
+    relay.up = true;
+    await advanceUntil(
+      () => client.connectionStatus === 'connected',
+      'reconnected after the restart',
+    );
+  }
+
+  it('reconnects after each of three restarts, refreshing its token after three failed connects', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+    const relay = new RestartingRelay();
+    let fetches = 0;
+    const { client } = startClient(relay, () => {
+      fetches += 1;
+      return Promise.resolve(tokenResponse(`token-${String(fetches)}`));
+    });
+    await advanceUntil(() => client.connectionStatus === 'connected', 'ready');
+    for (let round = 1; round <= 3; round += 1) {
+      await restart(relay, client);
+      expect(client.connectionStatus).toBe('connected');
+      expect(fetches).toBe(round + 1);
+    }
+    expect(relay.offered.at(-1)).toBe('token-4');
+  });
+
+  it('keeps reconnecting with the unexpired cached token while the token service fails', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+    const relay = new RestartingRelay();
+    let serviceUp = true;
+    const { client, diagnostics } = startClient(relay, () =>
+      serviceUp
+        ? Promise.resolve(tokenResponse('cached'))
+        : Promise.reject(
+            Object.assign(new Error('https://cloud.test/api refused'), {
+              code: 'http-error',
+              status: 503,
+              serverCode: 'device_relay_not_configured',
+            }),
+          ),
+    );
+    await advanceUntil(() => client.connectionStatus === 'connected', 'ready');
+    serviceUp = false;
+    for (let round = 0; round < 2; round += 1) {
+      await restart(relay, client);
+      expect(relay.offered.at(-1)).toBe('cached');
+    }
+    const failed = diagnostics.filter(
+      (diagnostic) => diagnostic.type === 'token_failed',
+    );
+    expect(failed.length).toBeGreaterThan(0);
+    for (const diagnostic of failed) {
+      expect(diagnostic).toMatchObject({
+        usedCachedToken: true,
+        error: {
+          status: 503,
+          code: 'http-error',
+          serverCode: 'device_relay_not_configured',
+        },
+      });
+      expect(JSON.stringify(diagnostic)).not.toContain('cloud.test');
+    }
+  });
+
+  it('drops a token the relay refuses as unauthorized and never offers it again', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+    const relay = new RestartingRelay();
+    let serviceUp = true;
+    let issued = 'revoked';
+    const { client } = startClient(relay, () =>
+      serviceUp
+        ? Promise.resolve(tokenResponse(issued))
+        : Promise.reject(new Error('Relay token service is unavailable.')),
+    );
+    await advanceUntil(() => client.connectionStatus === 'connected', 'ready');
+    serviceUp = false;
+    relay.refused.add('revoked');
+    relay.stop();
+    relay.up = true;
+    await advanceUntil(
+      () => relay.offered.filter((token) => token === 'revoked').length >= 2,
+      'the refused attempt',
+    );
+    const offeredAfterRefusal = relay.offered.length;
+    await advanceBy(10_000);
+    // The token service is down and the cached token was refused: nothing
+    // is offered until a new token arrives.
+    expect(relay.offered.length).toBe(offeredAfterRefusal);
+    expect(client.connectionStatus).not.toBe('connected');
+    issued = 'fresh';
+    serviceUp = true;
+    await advanceUntil(() => client.connectionStatus === 'connected', 'ready');
+    expect(relay.offered.slice(offeredAfterRefusal)).toEqual(['fresh']);
+  });
+
+  it.each([401, 403])(
+    'drops the cached token when the token service refuses the refresh with %i',
+    async (status) => {
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+      const relay = new RestartingRelay();
+      let refusing = false;
+      const { client, diagnostics } = startClient(relay, () =>
+        refusing
+          ? Promise.reject(
+              Object.assign(new Error('Refused.'), {
+                code: 'http-error',
+                status,
+              }),
+            )
+          : Promise.resolve(tokenResponse('signed-out')),
+      );
+      await advanceUntil(
+        () => client.connectionStatus === 'connected',
+        'ready',
+      );
+      refusing = true;
+      relay.stop();
+      await advanceUntil(
+        () =>
+          diagnostics.some((diagnostic) => diagnostic.type === 'token_failed'),
+        'the refused refresh',
+      );
+      relay.up = true;
+      const offeredAfterRefusal = relay.offered.length;
+      await advanceBy(10_000);
+      expect(relay.offered.length).toBe(offeredAfterRefusal);
+      expect(client.connectionStatus).not.toBe('connected');
+      for (const diagnostic of diagnostics) {
+        if (diagnostic.type === 'token_failed') {
+          expect(diagnostic.usedCachedToken).toBe(false);
+        }
+      }
+    },
+  );
+
+  it('does not fall back to a cached token that has expired', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+    const relay = new RestartingRelay();
+    let serviceUp = true;
+    const { client, diagnostics } = startClient(relay, () =>
+      serviceUp
+        ? Promise.resolve(tokenResponse('short', 5_000))
+        : Promise.reject(new Error('Relay token service is unavailable.')),
+    );
+    await advanceUntil(() => client.connectionStatus === 'connected', 'ready');
+    serviceUp = false;
+    relay.stop();
+    await advanceBy(6_000);
+    relay.up = true;
+    const offeredAfterExpiry = relay.offered.length;
+    await advanceBy(10_000);
+    expect(relay.offered.length).toBe(offeredAfterExpiry);
+    expect(client.connectionStatus).not.toBe('connected');
+    expect(
+      diagnostics.some(
+        (diagnostic) =>
+          diagnostic.type === 'token_failed' && !diagnostic.usedCachedToken,
+      ),
+    ).toBe(true);
   });
 });

@@ -383,7 +383,8 @@ function extractTriggerInputs(on: PipelineTrigger): ExtractedTriggerInputs {
   return result;
 }
 
-function normalizePipelineInputs(
+/** Normalize input declarations without creating the workflow's jobs or matrix. */
+export function normalizePipelineInputs(
   inputs: Record<string, PipelineInputDef> | undefined,
 ): Record<string, PipelineInputDef> | undefined {
   if (!inputs) {

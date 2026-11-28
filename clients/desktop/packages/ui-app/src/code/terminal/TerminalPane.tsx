@@ -388,7 +388,11 @@ function TerminalPaneImpl({
           );
           entry.lastReplayedSeq = event.seq;
         };
-        const unsubOutput = client.subscribe('terminal.output', handleOutput);
+        // Scoped to this terminal, so unsubscribing on cleanup releases its
+        // stream on a host that streams each terminal (CAN-8069).
+        const unsubOutput = client.subscribe('terminal.output', handleOutput, {
+          terminalId,
+        });
 
         // Attach + replay only bytes this cached instance has not consumed.
         async function maybeRestoreTerminal(): Promise<void> {
@@ -423,8 +427,13 @@ function TerminalPaneImpl({
           try {
             await maybeRestoreTerminal();
             if (!isActive()) return;
+            // Resumes after what this cached instance holds; a host that
+            // ignores it replays its whole window, trimmed below.
             const response = await client.command('terminal.attach', {
               terminalId,
+              ...(current.lastReplayedSeq > 0 && {
+                fromSeq: current.lastReplayedSeq,
+              }),
             });
             if (!isActive()) {
               return;

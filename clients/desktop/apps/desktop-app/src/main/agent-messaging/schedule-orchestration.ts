@@ -26,6 +26,10 @@ import { resolveAuthorizedChat } from '../project-discovery/chat-target';
 import { DiscoveryError } from '../project-discovery/errors';
 import type { ProjectDiscoveryCaller } from '../project-discovery';
 import { getAutomationsService } from '../automations/service';
+import {
+  AUTOMATION_TURN_SCHEDULE_ERROR,
+  refusesAutomationTurnScheduleMutation,
+} from '../automations/schedule-mutation-policy';
 
 /**
  * Capture trusted sender facts once; the automation revalidates them at
@@ -77,6 +81,11 @@ async function scheduleMessage(
     throw new AgentChatSendError(
       'unsupported_action',
       'A pipeline cannot schedule a message.',
+    );
+  if (await refusesAutomationTurnScheduleMutation(trustedCaller.source))
+    throw new AgentChatSendError(
+      AUTOMATION_TURN_SCHEDULE_ERROR.code,
+      AUTOMATION_TURN_SCHEDULE_ERROR.message,
     );
   const source = await canonicalSource(trustedCaller.source);
   if (

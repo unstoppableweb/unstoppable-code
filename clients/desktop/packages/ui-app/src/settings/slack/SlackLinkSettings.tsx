@@ -57,7 +57,6 @@ import {
   SLACK_UNAVAILABLE_TEXT,
   SLACK_UNPAIRED_CHANGE_TEXT,
   SLACK_USE_THIS_COMPUTER_LABEL,
-  slackActiveLinkText,
   slackAttentionText,
   slackCallbackOutcomeText,
   slackCardSubtitle,
@@ -89,8 +88,9 @@ import {
 // Account → Integrations → Slack (CAN-7606): link a Slack account to this
 // account and one computer paired for agents.
 //
-// One row per link, one decision per row. Its actions sit on one line
-// under the text, the fix first, then Change computer, then Disconnect:
+// One row per link, one decision per row. Recovery and change-computer
+// actions sit on one line under the text (the fix first, then Change
+// computer), and Disconnect sits beside the workspace details:
 // - active: the workspace and where mentions go;
 // - paused: says so and points to External agents, where Pause and Resume
 //   live beside the connection's computer and access;
@@ -328,6 +328,10 @@ interface ComputerOption {
   readonly online: boolean;
 }
 
+function workspaceLabel(link: SlackAccountLink): string {
+  return link.workspaceName.trim() || link.workspaceId;
+}
+
 function computerLabel(computer: SlackLinkComputer): string {
   return computer.online ? computer.name : `${computer.name} (offline)`;
 }
@@ -461,7 +465,7 @@ function ChangeComputerForm({
       data-testid="slack-link-change-form"
     >
       <SettingsSelect
-        aria-label={`Computer for ${link.workspaceName}`}
+        aria-label="Computer"
         placeholder="Choose a computer"
         width="field"
         options={options}
@@ -558,7 +562,7 @@ function LinkRow({
   // link it's a quiet link under the text.
   const moveIsTheFix = offline || unpaired;
   const openExternalAgents = useOpenExternalAgents();
-  let detail: JSX.Element;
+  let detail: JSX.Element | null = null;
   if (attention)
     detail = (
       <span data-testid="slack-link-attention">
@@ -587,12 +591,6 @@ function LinkRow({
         {slackOfflineLinkText(link.computer.name, brand.displayName, canChange)}
       </span>
     );
-  else
-    detail = (
-      <span className={privacy.blockClassName}>
-        {slackActiveLinkText(here ? null : link.computer.name)}
-      </span>
-    );
   return (
     <div
       className={`${SETTINGS_CARD_ROW_CLASS} flex-wrap`}
@@ -602,17 +600,24 @@ function LinkRow({
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <p
           className={withPrivacyClass(
-            'text-s font-medium fg-primary',
+            'text-s font-medium wrap-anywhere fg-primary',
             privacy.blockClassName,
           )}
         >
-          {link.workspaceName}
+          {workspaceLabel(link)}
         </p>
-        <p className="text-xs text-pretty fg-secondary">{detail}</p>
-        {/* Every way to act on this connection sits on one line under the
-            text: the fix first, then Change computer, then Disconnect. The
-            text keeps the row's full width. Change computer's form takes
-            the line's place until Save or Cancel. */}
+        <p
+          className="text-xs text-pretty wrap-anywhere fg-secondary"
+          data-testid="slack-link-runs-on"
+        >
+          Runs on:{' '}
+          <span className={privacy.blockClassName}>{link.computer.name}</span>
+        </p>
+        {detail !== null ? (
+          <p className="text-xs text-pretty fg-secondary">{detail}</p>
+        ) : null}
+        {/* Recovery and change-computer actions stay below the computer;
+            Disconnect sits beside the workspace details. */}
         {canChange && changing ? (
           <ChangeComputerForm
             link={link}
@@ -621,7 +626,11 @@ function LinkRow({
             onMove={moveLink}
             onDone={() => onChangingChange(false)}
           />
-        ) : (
+        ) : canChange ||
+          attention ||
+          notListeningHere ||
+          useThisComputer ||
+          link.status === 'paused' ? (
           <div
             className="flex flex-wrap items-center gap-2 pt-1"
             data-testid="slack-link-actions"
@@ -700,20 +709,20 @@ function LinkRow({
                 {SLACK_CHANGE_COMPUTER_LABEL}
               </Button>
             ) : null}
-            <Button
-              size="compact"
-              variant="ghost-destructive"
-              aria-disabled={busy}
-              onClick={() => {
-                if (!busy) onDisconnect(link);
-              }}
-              data-testid="slack-link-disconnect"
-            >
-              Disconnect
-            </Button>
           </div>
-        )}
+        ) : null}
       </div>
+      <Button
+        size="compact"
+        variant="ghost-destructive"
+        aria-disabled={busy || moving}
+        onClick={() => {
+          if (!busy && !moving) onDisconnect(link);
+        }}
+        data-testid="slack-link-disconnect"
+      >
+        Disconnect
+      </Button>
     </div>
   );
 }
@@ -900,7 +909,8 @@ function ConnectView({
       <div className={SETTINGS_CARD_ROW_CLASS} data-testid="slack-link-ready">
         <Button
           size="compact"
-          variant="ghost"
+          variant="secondary"
+          aria-expanded={false}
           onClick={() => setExpanded(true)}
           data-testid="slack-link-connect-another"
         >
@@ -995,12 +1005,21 @@ function DisconnectDialog({
   readonly onClose: () => void;
   readonly changeListening: (listening: boolean) => Promise<void>;
 }): JSX.Element {
+  const privacy = useSettingsPrivacy();
   const thisComputer = useSlackThisComputer();
   const busy = controller.busyLinkId === link.linkId;
+  const blockClass = privacy.blockClassName || undefined;
   return (
     <SettingsConfirmDialog
       title="Disconnect Slack?"
-      message={`Your mentions in ${link.workspaceName} stop reaching ${link.computer.name}. You can connect again any time.`}
+      message={
+        <>
+          Your mentions in{' '}
+          <span className={blockClass}>{workspaceLabel(link)}</span> stop
+          reaching <span className={blockClass}>{link.computer.name}</span>. You
+          can connect again any time.
+        </>
+      }
       confirmLabel="Disconnect"
       busyLabel="Disconnecting…"
       busy={busy}
@@ -1308,7 +1327,11 @@ export function SlackLinkSettings({
       <div className={SETTINGS_CARD_GROUP_CLASS}>
         <ProviderSectionHeader
           icon={
-            <SlackIcon size="md" className="shrink-0 fg-primary" aria-hidden />
+            <SlackIcon
+              size="md"
+              className="order-last shrink-0 fg-primary"
+              aria-hidden
+            />
           }
           title={SLACK_CARD_TITLE}
           status={slackStatus(controller.data, thisComputer)}

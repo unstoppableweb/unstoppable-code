@@ -1,3 +1,4 @@
+import { isAutomationRunInput } from '../agent-messaging/automation-run-source';
 import { DELEGATION_NOTICE_KIND } from '@canopy/agent-actions';
 import { readAutoResumeMetadata } from '@canopy/protocol/remote-control/shell';
 import {
@@ -449,6 +450,8 @@ interface ChatQueueEntry {
   discardedForDeletion?: boolean;
   /** userMessageId of the currently dispatched turn, for stale-release checks. */
   activeTurnUserMessageId?: string;
+  /** In-memory automation origin of the dispatched root, including between its terminal and revival. */
+  automationInputId?: string;
   /** Root accepted by the current revival lease, if one is still current. */
   revivalLeaseRootId?: string;
   /** A current revival lease whose own tagged terminal released the gate. */
@@ -2377,6 +2380,15 @@ export class ChatQueueService {
       delete entry.revivalTerminalReleaseRootId;
     }
     entry.turnActive = true;
+    // Adopting activity without a root cannot prove a successor has started.
+    // Only a confirmed revival can reuse the previous dispatch's origin.
+    if (
+      turnUserMessageId !== undefined &&
+      (source !== 'revived-root' ||
+        entry.automationInputId !== turnUserMessageId)
+    ) {
+      delete entry.automationInputId;
+    }
     if (turnUserMessageId === undefined) {
       delete entry.activeTurnUserMessageId;
     } else {
@@ -2407,7 +2419,10 @@ export class ChatQueueService {
 
   private releaseTurnGate(
     entry: ChatQueueEntry,
-    terminalRootId?: string,
+    {
+      terminalRootId,
+      preserveAutomationInput = false,
+    }: { terminalRootId?: string; preserveAutomationInput?: boolean } = {},
   ): void {
     const key = chatQueueKey(entry.target);
     const pendingInertLease = this.pendingInertRevivalLeases.get(key);
@@ -2437,6 +2452,7 @@ export class ChatQueueService {
       delete entry.revivalTerminalReleaseRootId;
     }
     entry.turnActive = false;
+    if (!preserveAutomationInput) delete entry.automationInputId;
     delete entry.activeTurnUserMessageId;
     delete entry.gateFromCanonical;
     delete entry.queueGateSource;
@@ -3870,6 +3886,7 @@ export class ChatQueueService {
       delete entry.drainTimer;
     }
     if (turnUserMessageId !== undefined && !entry.turnActive) {
+      delete entry.automationInputId;
       entry.turnActive = true;
       entry.activeTurnUserMessageId = turnUserMessageId;
       this.broadcastBestEffort(target, entry);
@@ -4004,7 +4021,18 @@ export class ChatQueueService {
       delete entry.reservation;
     }
     delete entry.externalRetryParked;
-    this.releaseTurnGate(entry, turnUserMessageId);
+    this.releaseTurnGate(entry, {
+      ...(turnUserMessageId !== undefined
+        ? { terminalRootId: turnUserMessageId }
+        : {}),
+      // A tagged release may be repeated or arrive after its gate is idle.
+      // It cannot transfer origin, and only cancellation of that exact root
+      // (or an untagged Stop/destroy) retires it.
+      preserveAutomationInput:
+        turnUserMessageId !== undefined &&
+        (status !== 'cancelled' ||
+          entry.automationInputId !== turnUserMessageId),
+    });
     this.broadcastBestEffort(target, entry);
     this.scheduleDrain(target, entry, status === 'complete' ? 0 : 500);
     this.refreshRestartHold(target);
@@ -4175,7 +4203,9 @@ export class ChatQueueService {
       return false;
     }
 
-    this.releaseTurnGate(entry);
+    // The failed lease cannot confirm again. A fresh acceptance of the same
+    // root can still use the origin established by the original dispatch.
+    this.releaseTurnGate(entry, { preserveAutomationInput: true });
     this.broadcastBestEffort(target, entry);
     if (entry.queue.length > 0) this.scheduleDrain(target, entry, 0);
     return true;
@@ -4774,6 +4804,10 @@ export class ChatQueueService {
     entry.operationEpoch = (entry.operationEpoch ?? 0) + 1;
     delete entry.revivalLeaseRootId;
     delete entry.revivalTerminalReleaseRootId;
+    // Invalidate dormant origin without lifting the guard on a live turn
+    // while Stop or teardown is still in flight.
+    if (entry.activeTurnUserMessageId !== entry.automationInputId)
+      delete entry.automationInputId;
     this.pendingInertRevivalLeases.delete(key);
   }
 
@@ -5514,6 +5548,27 @@ export class ChatQueueService {
     return this.entries.get(chatQueueKey(target))?.activeTurnUserMessageId;
   }
 
+  public runningAutomationTurn(target: ChatQueueTarget): boolean {
+    const entry = this.entries.get(chatQueueKey(target));
+    return (
+      entry?.automationInputId !== undefined &&
+      entry.activeTurnUserMessageId === entry.automationInputId
+    );
+  }
+
+  private dispatchWithAutomationOrigin(
+    entry: ChatQueueEntry,
+    request: ChatSendMessageRequest,
+    dispatch: () => ReturnType<ChatQueueServiceDependencies['dispatch']>,
+  ): ReturnType<ChatQueueServiceDependencies['dispatch']> {
+    if (entry.activeTurnUserMessageId === request.userMessageId) {
+      if (isAutomationRunInput(request))
+        entry.automationInputId = request.userMessageId;
+      else delete entry.automationInputId;
+    }
+    return dispatch();
+  }
+
   /**
    * Host-runtime liveness only: provider sessions, host-owned gates and
    * reservations. Restart reconciliation reads this, so hydrated canonical
@@ -6017,12 +6072,14 @@ export class ChatQueueService {
       const dispatchNow = (): ReturnType<
         ChatQueueServiceDependencies['dispatch']
       > =>
-        this.dependencies.dispatch(
-          dispatchRequest,
-          message.origin,
-          true,
-          authorization,
-          dispatchOptions,
+        this.dispatchWithAutomationOrigin(entry, dispatchRequest, () =>
+          this.dependencies.dispatch(
+            dispatchRequest,
+            message.origin,
+            true,
+            authorization,
+            dispatchOptions,
+          ),
         );
       const outcome = message.request.agentSenderProvenance
         ? await withAgentSenderAuthority(
@@ -6673,12 +6730,14 @@ export class ChatQueueService {
       const dispatchNow = (): ReturnType<
         ChatQueueServiceDependencies['dispatch']
       > =>
-        this.dependencies.dispatch(
-          request,
-          origin,
-          fromQueue,
-          authorization,
-          options,
+        this.dispatchWithAutomationOrigin(entry, request, () =>
+          this.dependencies.dispatch(
+            request,
+            origin,
+            fromQueue,
+            authorization,
+            options,
+          ),
         );
       const outcome = request.agentSenderProvenance
         ? await withAgentSenderAuthority(

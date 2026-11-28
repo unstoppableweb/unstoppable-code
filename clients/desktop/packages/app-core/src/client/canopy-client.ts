@@ -32,6 +32,7 @@ import type {
 } from '@canopy/protocol';
 import type { FeedbackReportClient } from '@canopy/protocol/feedback-report';
 import type { ProviderKeysClient } from './provider-keys-client';
+import type { SharedArtifactsClient } from './shared-artifacts-client';
 import type { HarnessSetupClient } from './harness-setup-client';
 import type { SharedMultiRepoClient } from './shared-multi-repo-client';
 import type {
@@ -1041,7 +1042,7 @@ export interface CommandMap
   };
   'appAdvisor.settings.save': {
     args: RemoteControlAppAdvisorSettingsSavePayload;
-    result: void;
+    result: string | undefined;
   };
   /**
    * Store one composer attachment before the send that carries it: on a
@@ -1297,6 +1298,11 @@ export interface CanopyClient {
    * the host reports `capabilities.providerApiKeys`.
    */
   readonly providerKeys?: ProviderKeysClient;
+  /**
+   * Shared artifact reads, sharing and reports. Present only when the host
+   * reports `capabilities.sharedArtifacts`.
+   */
+  readonly sharedArtifacts?: SharedArtifactsClient;
   /**
    * The computer's agent harness setup: provider runtimes, sign-ins and
    * their progress (gap 1 of CAN-6718). Present only when the host reports

@@ -161,7 +161,42 @@ export type RelayClientDiagnostic =
       type: 'token_failed';
       attempt: number;
       tokenMs: number;
+      /** Why the request failed, as far as its error says (CAN-8048). */
+      error: RelayTokenFailure;
+      /** The attempt went ahead with the unexpired cached token instead. */
+      usedCachedToken: boolean;
     };
+
+/**
+ * A failed token request, by HTTP status and machine-readable codes only:
+ * never the message, which may carry a URL.
+ */
+export interface RelayTokenFailure {
+  status: number | null;
+  /** The request's own failure kind, for example `http-error`. */
+  code: string | null;
+  /** The server's error code, for example `device_relay_not_configured`. */
+  serverCode: string | null;
+}
+
+const MACHINE_CODE = /^[A-Za-z0-9_.-]{1,64}$/;
+
+function machineCode(value: unknown): string | null {
+  return typeof value === 'string' && MACHINE_CODE.test(value) ? value : null;
+}
+
+function tokenFailure(error: unknown): RelayTokenFailure {
+  if (typeof error !== 'object' || error === null) {
+    return { status: null, code: null, serverCode: null };
+  }
+  const status =
+    'status' in error && typeof error.status === 'number' ? error.status : null;
+  return {
+    status,
+    code: 'code' in error ? machineCode(error.code) : null,
+    serverCode: 'serverCode' in error ? machineCode(error.serverCode) : null,
+  };
+}
 
 /** Close reasons the relay itself sends: its error codes and shutdown. */
 const KNOWN_CLOSE_REASONS: ReadonlySet<string> = new Set([
@@ -347,7 +382,10 @@ function relayConnectUrl(relayUrl: string): string {
  * routing, keepalive and reconnect with jittered backoff.
  *
  * A token is reused while it has at least two minutes left, and replaced
- * after three failed connections or when the relay refuses it. Whatever
+ * after three failed connections or when the relay refuses it. When a
+ * replacement cannot be fetched, the cached token is used until it expires,
+ * unless the relay or the token service refused it, which drops it at once
+ * (CAN-8048). Whatever
  * ends a connection (a refused upgrade, a relay restart, a dead network
  * noticed by missed pings, a relay error) takes the same path: peers are
  * reported offline, so the sessions over them suspend (or end, when they
@@ -569,18 +607,36 @@ export class RelayClient implements RelayTransport {
     this.options.onStatusChange?.(status, detail);
   }
 
-  /** The cached token, when it may still be used for a connection. */
+  /** The cached token, when it may still be used without a refresh. */
   private reusableToken(): DeviceRelayTokenResponse | null {
-    const cached = this.cachedToken;
-    if (cached === null) return null;
+    const cached = this.unexpiredToken();
     if (
+      cached === null ||
       this.cachedTokenFailures >= TOKEN_FAILURES_BEFORE_REFRESH ||
       cached.expiresAt - Date.now() < TOKEN_REUSE_MIN_REMAINING_MS
     ) {
-      this.forgetToken();
+      // A refresh is due; the token stays as the fallback if it fails.
       return null;
     }
     return cached.response;
+  }
+
+  /**
+   * The cached token until it expires. A relay that refuses it as
+   * unauthorized has already dropped it (`scheduleReconnect`), so a revoked
+   * token is never offered again.
+   */
+  private unexpiredToken(): {
+    response: DeviceRelayTokenResponse;
+    expiresAt: number;
+  } | null {
+    const cached = this.cachedToken;
+    if (cached === null) return null;
+    if (cached.expiresAt <= Date.now()) {
+      this.forgetToken();
+      return null;
+    }
+    return cached;
   }
 
   private rememberToken(response: DeviceRelayTokenResponse): void {
@@ -602,24 +658,40 @@ export class RelayClient implements RelayTransport {
     this.tokenReused = token !== null;
     if (token === null) {
       const tokenStartedAt = Date.now();
+      let usedCachedToken = false;
       try {
         token = await this.options.fetchToken();
       } catch (error) {
         if (generation !== this.generation) return;
+        // A relay outage often overlaps a cloud one: keep reconnecting with
+        // the token still in hand until it expires (CAN-8048). A refusal
+        // means the account may no longer connect, so the token goes too.
+        const failure = tokenFailure(error);
+        if (failure.status === 401 || failure.status === 403) {
+          this.forgetToken();
+        }
+        const cached = this.unexpiredToken();
         this.emitDiagnostic({
           type: 'token_failed',
           attempt: this.attempt,
           tokenMs: Date.now() - tokenStartedAt,
+          error: failure,
+          usedCachedToken: cached !== null,
         });
-        this.scheduleReconnect('backoff', {
-          detail:
-            error instanceof Error ? error.message : 'Relay is unavailable.',
-        });
-        return;
+        if (cached === null) {
+          this.scheduleReconnect('backoff', {
+            detail:
+              error instanceof Error ? error.message : 'Relay is unavailable.',
+          });
+          return;
+        }
+        token = cached.response;
+        usedCachedToken = true;
       }
       if (generation !== this.generation) return;
       this.tokenMs = Date.now() - tokenStartedAt;
-      this.rememberToken(token);
+      if (usedCachedToken) this.tokenReused = true;
+      else this.rememberToken(token);
     } else {
       this.tokenMs = 0;
     }

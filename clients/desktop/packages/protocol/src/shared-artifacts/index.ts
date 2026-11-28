@@ -127,7 +127,28 @@ export function sharedArtifactContentPath(artifactId: string): string {
   return `/api/v1/shared-artifacts/${encodeURIComponent(artifactId)}/content`;
 }
 
-/** The web route that accepts a staged upload's bytes. */
+/**
+ * The web route that accepts a staged upload's bytes: `PUT` with a desktop
+ * key and exactly the staged `Content-Length`. 204 means stored. 429 (this
+ * account already has 3 uploads in flight on the server) and 503 (the server
+ * is busy, or storage is unavailable) are retried with the same upload: after
+ * `Retry-After` when it is sent, otherwise after a short backoff (5 s,
+ * doubling). 408 means the body took longer than a minute plus 1 second per
+ * 64 KiB; send it again. 409 means the upload expired or was committed:
+ * stage a new one. 404, 411 and 422 are not retried.
+ */
 export function sharedArtifactUploadPath(uploadId: string): string {
   return `/api/v1/shared-artifacts/uploads/${encodeURIComponent(uploadId)}`;
 }
+
+/**
+ * The signed-out report route (CAN-8016): `POST` a `SharedArtifactReportBody`
+ * as JSON. Signed-in viewers may use it or `core.sharedArtifact.report`.
+ */
+export const SHARED_ARTIFACT_REPORT_PATH = '/api/v1/shared-artifacts/reports';
+
+/**
+ * The content route always answers `application/octet-stream`; this header
+ * carries the revision's media type for the viewer to render.
+ */
+export const SHARED_ARTIFACT_MEDIA_TYPE_HEADER = 'x-canopy-artifact-media-type';

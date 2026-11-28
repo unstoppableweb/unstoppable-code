@@ -172,6 +172,167 @@ export function requestAddressesPairedComputer(request: unknown): boolean {
 }
 
 /**
+ * Keys of a local IPC request that hold addresses (CAN-8065), as an object
+ * or a list of them, on top of the operation ones: a feedback report's
+ * `context`, a file read's `workspaceTarget`, a batch's `worktrees`. Every
+ * other value is opaque, such as a workflow's user-defined `inputs`, saved
+ * preferences, a UI snapshot or a message's provenance.
+ */
+export const IPC_ADDRESS_CONTAINERS: ReadonlySet<string> = new Set([
+  ...OPERATION_ADDRESS_CONTAINERS,
+  'context',
+  'workspaceTarget',
+  'origin',
+  'destination',
+  'approvalChat',
+  'archivedContainer',
+  'worktree',
+  'worktrees',
+  'targets',
+  'scopes',
+  'entries',
+  'sourceProjects',
+  'action',
+  'managedCommand',
+  'rootChat',
+  'filters',
+  'params',
+  'watcher',
+  'selectedTab',
+  'destinationTab',
+  'adhocMigrationSource',
+  'request',
+  'owner',
+  'workspaceAssignments',
+  'workspaceSelections',
+]);
+
+/** How many containers deep {@link ipcArgumentsAddressPairedComputer} reads. */
+const IPC_ADDRESS_DEPTH = 6;
+
+/**
+ * How many objects and list entries one argument's scan reads at most; a
+ * list costs its whole length, holes included. A request past it is refused
+ * rather than read on, so no payload can hold main's thread in the scan.
+ */
+const IPC_ADDRESS_BUDGET = 1_000_000;
+
+/** List forms of the address fields: `worktreeIds`, `chatIds`, and so on. */
+const ADDRESS_LIST_FIELDS: readonly string[] = Array.from(
+  ADDRESS_FIELDS,
+  (field) => `${field}s`,
+);
+
+/** A plain object, never bytes or another class instance. */
+function isPlainRecord(
+  value: unknown,
+): value is Readonly<Record<string, unknown>> {
+  if (!isRecord(value)) return false;
+  const prototype: unknown = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+/**
+ * Whether a local IPC call's arguments address a paired computer's project,
+ * task or chat (CAN-8065): an argument, or an entry of a list argument, that
+ * is exactly a paired computer's id, or an address field or its list form
+ * (`worktreeIds`) holding one at the top level of an argument or in its
+ * address containers ({@link IPC_ADDRESS_CONTAINERS}) and lists of them.
+ * Other values are not read, so message text or a search that merely
+ * contains such an id passes, and so do bytes. This computer's IPC serves
+ * only its own ids, which are never qualified.
+ */
+export function ipcArgumentsAddressPairedComputer(
+  args: readonly unknown[],
+): boolean {
+  // One scan, and one budget, for the whole call: arguments that share a
+  // structure cannot make it read again.
+  const scan = createAddressScan();
+  if (scan.charge(args)) return true;
+  return args.some(
+    (arg) =>
+      isWholePairedComputerIdIn(arg) ||
+      scan.listArgumentNamesPairedComputer(arg) ||
+      scan.visit(arg, IPC_ADDRESS_DEPTH),
+  );
+}
+
+function isWholePairedComputerIdIn(value: unknown): boolean {
+  return typeof value === 'string' && isWholePairedComputerId(value);
+}
+
+/**
+ * A string that is a paired computer's id and nothing more: its local part
+ * is one token, so text that starts with such an id is not one.
+ */
+function isWholePairedComputerId(value: string): boolean {
+  if (!value.startsWith(PAIRED_COMPUTER_AUTHORITY_PREFIX)) return false;
+  const parsed = parseAuthorityQualifiedId(value);
+  return (
+    parsed?.authority.kind === 'paired-computer' &&
+    /^[A-Za-z0-9._~-]+$/.test(parsed.localId)
+  );
+}
+
+function createAddressScan(): {
+  charge: (value: object) => boolean;
+  listArgumentNamesPairedComputer: (argument: unknown) => boolean;
+  visit: (value: unknown, depth: number) => boolean;
+} {
+  // A shared object or list is read again only when reached with more depth
+  // left, and an id list or list argument only once, so repeated references
+  // cannot multiply the work; every object and list entry read is charged to
+  // one budget.
+  const seen = new Map<object, number>();
+  const listArguments = new Set<object>();
+  let budget = IPC_ADDRESS_BUDGET;
+  const charge = (value: object): boolean => {
+    budget -= Array.isArray(value) ? value.length + 1 : 1;
+    return budget < 0;
+  };
+  /** Whether a list form of an address field holds a paired computer's id. */
+  const listsPairedComputer = (
+    fields: Readonly<Record<string, unknown>>,
+  ): boolean => {
+    for (const field of ADDRESS_LIST_FIELDS) {
+      const value = fields[field];
+      if (!Array.isArray(value) || seen.has(value)) continue;
+      seen.set(value, Number.POSITIVE_INFINITY);
+      if (charge(value)) return true;
+      if (
+        value.some(
+          (item) => typeof item === 'string' && isPairedComputerId(item),
+        )
+      )
+        return true;
+    }
+    return false;
+  };
+  const visit = (value: unknown, depth: number): boolean => {
+    if (typeof value !== 'object' || value === null) return false;
+    const deepest = seen.get(value);
+    if (deepest !== undefined && deepest >= depth) return false;
+    seen.set(value, depth);
+    if (charge(value)) return true;
+    if (Array.isArray(value)) return value.some((item) => visit(item, depth));
+    if (!isPlainRecord(value)) return false;
+    if (namesPairedComputer(value) || listsPairedComputer(value)) return true;
+    if (depth === 0) return false;
+    for (const container of IPC_ADDRESS_CONTAINERS) {
+      if (visit(value[container], depth - 1)) return true;
+    }
+    return false;
+  };
+  /** Whether a list argument has an entry that is a paired computer's id. */
+  const listArgumentNamesPairedComputer = (argument: unknown): boolean => {
+    if (!Array.isArray(argument) || listArguments.has(argument)) return false;
+    listArguments.add(argument);
+    return charge(argument) || argument.some(isWholePairedComputerIdIn);
+  };
+  return { charge, listArgumentNamesPairedComputer, visit };
+}
+
+/**
  * Whether core operation parameters address a paired computer's project,
  * task or chat: an address field at the top level, or inside an address
  * container (see {@link OPERATION_ADDRESS_CONTAINERS}) or a list of them, up

@@ -18,7 +18,7 @@ import { CanopyAppDriver } from '../../electron/canopyApp.mjs';
 import { closeCanopy } from '../../electron/launchCanopy.mjs';
 import { seedWorktreeChat } from '../../electron/seeders/index.mjs';
 import { registerScenario } from '../../electron/seeders/registerScenario.mjs';
-import { PERFORMANCE_MOCK_BASE_URL } from '../mock-server.mjs';
+import { currentMockBaseUrl } from '../mock-server.mjs';
 import {
   keyToPaintVerdict,
   latencySummary,
@@ -695,19 +695,19 @@ async function runProfile(relay, profile) {
       targetPort: relay.port,
       oneWayDelayMs: profile.oneWayDelayMs,
     });
-    await registerScenario(PERFORMANCE_MOCK_BASE_URL, hostApiKey, {
+    await registerScenario(currentMockBaseUrl(), hostApiKey, {
       cloud: {
         deviceRelay: { url: hostProxy.url, secret: relay.secret, userId },
       },
     });
-    await registerScenario(PERFORMANCE_MOCK_BASE_URL, controllerApiKey, {
+    await registerScenario(currentMockBaseUrl(), controllerApiKey, {
       cloud: {
         deviceRelay: { url: controllerProxy.url, secret: relay.secret, userId },
       },
     });
     await Promise.all(
       backgroundMarkers.map((backgroundMarker) =>
-        registerScenario(PERFORMANCE_MOCK_BASE_URL, backgroundMarker, {
+        registerScenario(currentMockBaseUrl(), backgroundMarker, {
           llm: { steps: [BACKGROUND_STREAM_STEP] },
         }),
       ),
@@ -756,7 +756,7 @@ async function runProfile(relay, profile) {
         ['local', host.window],
       ]) {
         const roundMarker = `${marker}${side.toUpperCase()}${String(round)}`;
-        await registerScenario(PERFORMANCE_MOCK_BASE_URL, roundMarker, {
+        await registerScenario(currentMockBaseUrl(), roundMarker, {
           llm: { steps: [STREAM_STEP] },
         });
         chatRounds.push({

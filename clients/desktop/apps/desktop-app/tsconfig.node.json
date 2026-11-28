@@ -38,6 +38,7 @@
     { "path": "../../packages/plugin-interop" },
     { "path": "../../packages/desktop-shared" },
     { "path": "../../packages/execution-engine" },
+    { "path": "../../packages/memory-store" },
     { "path": "../../packages/desktop-instrumentation" },
     { "path": "../../packages/ui-shared" },
     { "path": "../../packages/ui-app" },

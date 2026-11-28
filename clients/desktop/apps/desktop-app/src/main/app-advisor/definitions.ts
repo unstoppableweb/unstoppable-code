@@ -127,7 +127,7 @@ import {
   NAVIGATION_PAGE_MAP,
   WORKFLOW_EDIT_SECTIONS,
 } from '@canopy/desktop-shared/types';
-import { isBotProjectId } from '@canopy/protocol/chat-targets';
+import { isBotId, isBotProjectId } from '@canopy/protocol/chat-targets';
 import type {
   AppAdvisorAction,
   AutomationCreateRequest,
@@ -2429,6 +2429,7 @@ const nonPanelAppAdvisorActionSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('pipeline.list'),
+    targetBotId: z.string().min(1).refine(isBotId).optional(),
     projectId: z.string().optional(),
     worktreeId: z.string().optional(),
     query: z.string().optional(),
@@ -2721,6 +2722,7 @@ const nonPanelAppAdvisorActionSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('automation.list'),
+    targetBotId: z.string().min(1).refine(isBotId).optional(),
     includeRuns: z.boolean().optional(),
   }),
   z.object({ type: z.literal('automation.get'), id: z.string() }),

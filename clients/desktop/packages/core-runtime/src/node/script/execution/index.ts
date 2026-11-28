@@ -53,6 +53,7 @@ export {
   type ScriptRunChildReapOptions,
   type ScriptRunReapPass,
   type ScriptRunSpawner,
+  type ScriptRunStopOwnership,
   type ScriptRunWriterFence,
   type ScriptRunWriterState,
 } from './script-run-log';

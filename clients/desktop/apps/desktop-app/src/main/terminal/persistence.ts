@@ -685,8 +685,10 @@ export function enqueueTerminalRecordOp(
     ops.push(op);
     return;
   }
+  // Newest first: every earlier output op of this history, and the ones whose
+  // text the merge keeps (up to and including the newest replacement).
   const indices: number[] = [];
-  let text = op.text;
+  const kept: PendingOutputOp[] = [];
   let replacement = false;
   for (let index = ops.length - 1; index >= 0; index -= 1) {
     const earlier = ops[index];
@@ -703,12 +705,15 @@ export function enqueueTerminalRecordOp(
     if (earlier.op !== 'output.append' && earlier.op !== 'output.replace')
       continue;
     indices.push(index);
-    if (!replacement)
-      text = `${earlier.op === 'output.append' ? earlier.text : earlier.lines.join('\n')}${text}`;
+    if (!replacement) kept.push(earlier);
     if (earlier.op === 'output.replace') {
       replacement = true;
     }
   }
+  if (extendCoalescedOutput(ops, op, indices)) return;
+  let text = op.text;
+  for (const earlier of kept)
+    text = `${earlier.op === 'output.append' ? earlier.text : earlier.lines.join('\n')}${text}`;
   // Trimming one long line does not supersede older lines in the record.
   const lines = text
     .split('\n')
@@ -720,29 +725,158 @@ export function enqueueTerminalRecordOp(
       WORKER_TERMINAL_RECORD_HISTORY_MAX_BYTES;
   for (const index of indices) ops.splice(index, 1);
   if (replacement) {
-    ops.push({
+    const pushed: WorkerTerminalRecordOp = {
       op: 'output.replace',
       terminalId: op.terminalId,
       lines: retained,
-    });
+    };
+    ops.push(pushed);
+    coalescedOutput.set(pushed, { ops: [pushed], replaced: retained });
     return;
   }
   text = retained.join('\n');
+  const pushed = pushOutputChunks(ops, op.terminalId, text);
+  if (pushed.length > 0)
+    coalescedOutput.set(pushed[pushed.length - 1], {
+      ops: pushed,
+      lines: retained.length,
+      bytes: Buffer.byteLength(text),
+      lastLineBytes: Buffer.byteLength(retained[retained.length - 1]),
+    });
+}
+
+type PendingOutputOp = Extract<
+  WorkerTerminalRecordOp,
+  { op: 'output.append' | 'output.replace' }
+>;
+
+/**
+ * What the last merge of a history's pending output pushed, by its newest op,
+ * so the next append can extend it instead of re-splitting, re-measuring and
+ * re-joining all of it on every PTY chunk (CAN-7859). Ops are never mutated,
+ * so an entry stays true for as long as its ops are the ones a merge finds.
+ */
+type CoalescedOutput =
+  | {
+      readonly ops: readonly WorkerTerminalRecordOp[];
+      /** The merged lines, as {@link retainScrollbackLines} kept them; never mutated. */
+      readonly replaced: string[];
+    }
+  | {
+      readonly ops: readonly Extract<
+        WorkerTerminalRecordOp,
+        { op: 'output.append' }
+      >[];
+      /** Lines in the merged text, its UTF-8 bytes and its last line's. */
+      readonly lines: number;
+      readonly bytes: number;
+      readonly lastLineBytes: number;
+    };
+
+const coalescedOutput = new WeakMap<WorkerTerminalRecordOp, CoalescedOutput>();
+
+/** Splits text into wire-sized appends, never between a surrogate pair. */
+function pushOutputChunks(
+  ops: WorkerTerminalRecordOp[],
+  terminalId: string,
+  text: string,
+): Extract<WorkerTerminalRecordOp, { op: 'output.append' }>[] {
+  const pushed: Extract<WorkerTerminalRecordOp, { op: 'output.append' }>[] = [];
   for (let start = 0; start < text.length; ) {
     let end = Math.min(
       text.length,
       start + WORKER_TERMINAL_RECORD_TEXT_MAX_CHARS,
     );
     // Byte retention must never see half a pair as a complete wire chunk.
-    const last = text.charCodeAt(end - 1);
-    if (end < text.length && last >= 0xd800 && last <= 0xdbff) end -= 1;
-    ops.push({
+    // Read only at a split, so a growing tail is never flattened per append.
+    if (end < text.length) {
+      const last = text.charCodeAt(end - 1);
+      if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+    }
+    const chunk: WorkerTerminalRecordOp = {
       op: 'output.append',
-      terminalId: op.terminalId,
+      terminalId,
       text: text.slice(start, end),
-    });
+    };
+    ops.push(chunk);
+    pushed.push(chunk);
     start = end;
   }
+  return pushed;
+}
+
+/**
+ * Appends `op` to the merge an earlier append left, when the merge found
+ * exactly that merge's ops: the result is what re-merging everything would
+ * give, at the cost of the new text. Returns false, changing nothing, for
+ * anything else, including output that needs clipping or crosses into a
+ * replacement; the full merge handles those.
+ */
+function extendCoalescedOutput(
+  ops: WorkerTerminalRecordOp[],
+  op: Extract<WorkerTerminalRecordOp, { op: 'output.append' }>,
+  indices: readonly number[],
+): boolean {
+  if (indices.length === 0) return false;
+  const previous = coalescedOutput.get(ops[indices[0]]);
+  if (previous?.ops.length !== indices.length) return false;
+  for (let index = 0; index < indices.length; index += 1)
+    if (ops[indices[indices.length - 1 - index]] !== previous.ops[index])
+      return false;
+  if ('replaced' in previous) {
+    const lines = appendScrollbackLines(previous.replaced, op.text);
+    ops.splice(indices[0], 1);
+    const pushed: WorkerTerminalRecordOp = {
+      op: 'output.replace',
+      terminalId: op.terminalId,
+      lines,
+    };
+    ops.push(pushed);
+    coalescedOutput.set(pushed, { ops: [pushed], replaced: lines });
+    return true;
+  }
+  const maxLineBytes = WORKER_TERMINAL_RECORD_TEXT_MAX_CHARS;
+  const tail = previous.ops[previous.ops.length - 1].text;
+  const parts = op.text.split('\n');
+  const first = parts[0];
+  // Two separately sent surrogate halves become one UTF-8 code point.
+  const low = first.charCodeAt(0);
+  const high =
+    low >= 0xdc00 && low <= 0xdfff ? tail.charCodeAt(tail.length - 1) : 0;
+  const joined = high >= 0xd800 && high <= 0xdbff ? 2 : 0;
+  const boundaryBytes =
+    previous.lastLineBytes + Buffer.byteLength(first) - joined;
+  let lastLineBytes = boundaryBytes;
+  for (let index = 1; index < parts.length; index += 1) {
+    lastLineBytes = Buffer.byteLength(parts[index]);
+    if (lastLineBytes > maxLineBytes) return false;
+  }
+  const lines = previous.lines + parts.length - 1;
+  const bytes = previous.bytes + Buffer.byteLength(op.text) - joined;
+  if (
+    boundaryBytes > maxLineBytes ||
+    lines > TERMINAL_PERSISTED_SCROLLBACK_MAX_LINES ||
+    bytes > WORKER_TERMINAL_RECORD_HISTORY_MAX_BYTES
+  )
+    return false;
+  for (const index of indices) ops.splice(index, 1);
+  const pushed = previous.ops.slice(0, -1).map((chunk) => {
+    const copy: Extract<WorkerTerminalRecordOp, { op: 'output.append' }> = {
+      op: 'output.append',
+      terminalId: op.terminalId,
+      text: chunk.text,
+    };
+    ops.push(copy);
+    return copy;
+  });
+  pushed.push(...pushOutputChunks(ops, op.terminalId, `${tail}${op.text}`));
+  coalescedOutput.set(pushed[pushed.length - 1], {
+    ops: pushed,
+    lines,
+    bytes,
+    lastLineBytes,
+  });
+  return true;
 }
 
 // Keeps an `apply` under the daemon's 8 MiB frame, and each outbox line short.

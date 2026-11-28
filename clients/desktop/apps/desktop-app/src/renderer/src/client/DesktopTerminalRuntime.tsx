@@ -1,6 +1,8 @@
 import { useLayoutEffect } from 'react';
+import type { TerminalClient } from '@canopy/app-core';
 import { bindTerminalClient } from '@canopy/app-state/terminal';
 import { cloudTerminalsEnabled } from '@/lib/web-core-scope-capabilities';
+import { recordTerminalOutputApplied } from '@/lib/renderer-diagnostics/recorder';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { createDesktopCloudTerminalClient } from './cloud-terminal-client';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
@@ -9,6 +11,23 @@ import {
   isConclusiveAccountRead,
 } from '@canopy/desktop-shared/lib/canopy-cloud-account-read';
 import { ipcTerminalClient } from './ipc-terminal-client';
+import { createWindowTerminalRouter } from './window-terminal-router';
+
+let windowRouter: TerminalClient | null = null;
+
+/**
+ * One router per window (CAN-8070): main keeps one grant per terminal for a
+ * window, so only one router may order that terminal's route and release.
+ */
+function localTerminalClient(): TerminalClient {
+  windowRouter ??= createWindowTerminalRouter({
+    relay: ipcTerminalClient,
+    window: window.api.terminalWindow,
+    observeOutput: (event, startedAt) =>
+      recordTerminalOutputApplied(event.terminalId, event.seq, startedAt),
+  });
+  return windowRouter;
+}
 
 /** Owns the local terminal binding before sibling renderer effects use it. */
 export function DesktopTerminalRuntime(): null {
@@ -16,9 +35,12 @@ export function DesktopTerminalRuntime(): null {
     cloudTerminalsEnabled(s.isEnabled),
   );
   useLayoutEffect(() => {
+    // Daemon terminals main grants this window stream on its own connection
+    // (CAN-8070); every other terminal keeps main's relay.
+    const local = localTerminalClient();
     const bind = (): (() => void) => {
-      if (!cloudTerminals) return bindTerminalClient(ipcTerminalClient);
-      const cloud = createDesktopCloudTerminalClient(ipcTerminalClient);
+      if (!cloudTerminals) return bindTerminalClient(local);
+      const cloud = createDesktopCloudTerminalClient(local);
       const unbind = bindTerminalClient(cloud.client);
       return (): void => {
         unbind();

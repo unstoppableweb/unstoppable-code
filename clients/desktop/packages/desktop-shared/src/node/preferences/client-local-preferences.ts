@@ -1,6 +1,7 @@
 import {
   CLIENT_LOCAL_PREFERENCE_KEYS,
   type ClientLocalPreferenceKey,
+  type ClientLocalPreferences,
   type DomainPreferencesData,
   type PreferencesCodec,
   type StoredDomainPreferences,
@@ -35,18 +36,13 @@ import {
 
 export {
   storedClientLocalValues,
+  type ClientLocalPreferences,
   type DomainPreferencesData,
   type StoredDomainPreferences,
 } from '@canopy/core-runtime/node/preferences';
 
 const CHECKED_CLIENT_LOCAL_KEYS =
   CLIENT_LOCAL_PREFERENCE_KEYS satisfies readonly (keyof PreferencesData)[];
-
-/** Window geometry, appearance and pure view state: this client's own document (CAN-4472). */
-export type ClientLocalPreferences = Pick<
-  PreferencesData,
-  ClientLocalPreferenceKey
->;
 
 const DEFAULT = DEFAULT_CLIENT_LOCAL_PREFERENCES;
 

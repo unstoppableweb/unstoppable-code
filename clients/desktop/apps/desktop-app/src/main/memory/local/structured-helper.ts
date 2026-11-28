@@ -22,7 +22,7 @@ import {
 } from '../../integration/structured-helper-dispatch';
 import type { LocalMemoryHelperModel } from './helper-model';
 import { isLocalMemoryModelBlockedByPolicy } from './model-policy';
-import { ensureOwnerOnlyDir } from './memory-files';
+import { ensureOwnerOnlyDir } from '@canopy/memory-store/memory-files';
 
 /**
  * Consolidation reads up to a few hundred KB of memory and rewrites the whole
@@ -113,7 +113,9 @@ export async function runLocalMemoryStructuredHelper<T>(
   // The helper process starts in the scope folder, and a spawn into a
   // missing working directory fails as ENOENT. A user who has never saved a
   // memory has no user scope folder yet.
-  await ensureOwnerOnlyDir(options.scopeDir);
+  await ensureOwnerOnlyDir(options.scopeDir, {
+    trustedScopeRoot: options.scopeDir,
+  });
   const timeoutMs = options.timeoutMs ?? LOCAL_MEMORY_HELPER_TIMEOUT_MS;
   const abortController = new AbortController();
   const unlinkCaller = options.signal

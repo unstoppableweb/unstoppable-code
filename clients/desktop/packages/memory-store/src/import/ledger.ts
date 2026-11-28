@@ -1,7 +1,7 @@
 import { readFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isMemoryUlid } from '@canopy/protocol/memory-sync';
-import { isRecord } from '../../../lib/type-guards';
+import { isRecord } from '@canopy/execution-engine/node/lib/type-guards';
 import { writeMemoryFileAtomically } from '../memory-files';
 import type { MemoryImportSourceTool } from '@canopy/memory-consolidation/input-budget';
 

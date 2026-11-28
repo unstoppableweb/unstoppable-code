@@ -5,6 +5,7 @@ export * from './chat-recovery-client';
 export * from './terminal-client';
 export * from './billing-client';
 export * from './provider-keys-client';
+export * from './shared-artifacts-client';
 export * from './harness-setup-client';
 export * from './review-approvals-client';
 export * from './external-agents-client';

@@ -8,18 +8,14 @@
  */
 import { CODEX_SPEEDS, isCodexSpeed } from '@canopy/protocol/automations';
 import type { CodexSpeed } from '@canopy/protocol/automations';
+import { codexSpeedFastMode } from '@canopy/protocol/agent-model-config';
 import type { AgentModelConfig } from '../execution-types';
 
-export { CODEX_SPEEDS, isCodexSpeed };
+export { CODEX_SPEEDS, codexSpeedFastMode, isCodexSpeed };
 export type { CodexSpeed };
 
 /** Speed used when neither a selection nor a default records one. */
 export const DEFAULT_CODEX_SPEED: CodexSpeed = 'standard';
-
-/** Legacy boolean projection of a speed: only Fast maps to `true`. */
-export function codexSpeedFastMode(speed: CodexSpeed): boolean {
-  return speed === 'fast';
-}
 
 /** Interpret an explicit legacy boolean command: true → Fast, false → Regular. */
 export function codexSpeedFromFastMode(enabled: boolean): CodexSpeed {

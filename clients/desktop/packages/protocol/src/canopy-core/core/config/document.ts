@@ -155,6 +155,13 @@ const ConfigDocumentStateSchema = z
     revision: ConfigDocumentRevisionSchema,
     /** The runtime projection of the stored record. Holds no secret. */
     value: PreferenceRecordSchema,
+    /**
+     * The stored record itself, the persisted view `revision` hashes
+     * (CAN-8045). A client that saves what it read builds on this one: a
+     * projection's fallback for a fact this core lacks, saved back, would
+     * overwrite the stored choice. A core that omits it serves `value` only.
+     */
+    stored: PreferenceRecordSchema.optional(),
     /** Keys an organization enforces; a write to one keeps the enforced value. */
     enforcedPaths: z.array(z.string()).max(CONFIG_DOCUMENT_MAX_KEYS),
     /** The load failure whose notice nobody has acknowledged yet. */

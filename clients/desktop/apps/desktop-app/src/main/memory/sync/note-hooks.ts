@@ -3,7 +3,7 @@ import {
   type MemoryDeviceRef,
   type MemoryNoteOp,
 } from '@canopy/protocol/memory-sync';
-import { memoryNoteId } from '../local/note-identity';
+import { memoryNoteId } from '@canopy/memory-store/note-identity';
 import {
   LocalMemoryNoteUnsyncableError,
   LocalMemoryReplicaUnavailableError,

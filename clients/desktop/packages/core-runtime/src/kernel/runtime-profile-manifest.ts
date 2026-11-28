@@ -6,6 +6,7 @@ import {
   CORE_CLOUD_ACCOUNT_CUSTODY_INSTRUCTION_DEFINITIONS,
   CORE_CLOUD_ACCOUNT_CUSTODY_QUERY_DEFINITIONS,
   CORE_CLOUD_ACCOUNT_INSTRUCTION_DEFINITIONS,
+  CORE_CLIENT_WINDOW_INSTRUCTION_DEFINITIONS,
   CORE_VAULT_QUERY_DEFINITIONS,
   CORE_VAULT_INSTRUCTION_DEFINITIONS,
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
@@ -28,6 +29,7 @@ import {
   WORKER_TERMINAL_RECORD_INSTRUCTION_DEFINITIONS,
   WORKER_TERMINAL_RECORD_QUERY_DEFINITIONS,
   WORKER_TERMINAL_SESSION_INSTRUCTION_DEFINITIONS,
+  WORKER_TERMINAL_EVENTS_STREAM_DEFINITIONS,
   WORKER_TERMINAL_STREAM_DEFINITIONS,
   type CanopyInstructionDefinitionMap,
   type CanopyOperationPlacement,
@@ -82,6 +84,8 @@ const CATALOG = {
     // Admission only: the ledger owner's internal writes (CAN-6986 L3); the
     // daemon installs these, never Electron, and no interface profile.
     ...CORE_OPERATION_LEDGER_INSTRUCTION_DEFINITIONS,
+    // Window admission (CAN-8039); the daemon installs these, never Electron.
+    ...CORE_CLIENT_WINDOW_INSTRUCTION_DEFINITIONS,
     // The W5 metadata commands the qualification daemon composes (W7a-3);
     // their own registries, not re-listed.
     'core.workspace.update':
@@ -97,6 +101,8 @@ const CATALOG = {
     ...CANOPY_STREAM_DEFINITIONS,
     ...CORE_TRANSPORT_STREAM_DEFINITIONS,
     ...WORKER_TERMINAL_STREAM_DEFINITIONS,
+    // The terminal events stream the daemon's terminal module composes (CAN-8038).
+    ...WORKER_TERMINAL_EVENTS_STREAM_DEFINITIONS,
     // The script output stream the daemon's script module composes (CAN-5087).
     ...WORKER_SCRIPT_STREAM_DEFINITIONS,
     // The generation queue stream the daemon's code-graph module composes (CAN-5628).

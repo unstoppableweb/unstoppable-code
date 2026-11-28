@@ -33,7 +33,18 @@ import {
   type PreferencesUpdater,
 } from '@canopy/core-runtime/node/preferences';
 import { DESKTOP_PREFERENCES_CODEC } from '@canopy/desktop-shared/node/preferences/desktop-preferences-codec';
-import type { StoredDomainPreferences } from '@canopy/desktop-shared/node/preferences/client-local-preferences';
+import { installPreferencesNormalizationEnvironment } from '@canopy/desktop-shared/node/preferences/normalization-environment';
+import { createCatalogPreferencesModelFacts } from '@canopy/desktop-shared/node/preferences/catalog-model-facts';
+import type {
+  DomainPreferencesData,
+  StoredDomainPreferences,
+} from '@canopy/desktop-shared/node/preferences/client-local-preferences';
+import {
+  initClaudeModels,
+  initCodexModels,
+  initOllamaModels,
+  resolveKnownModel,
+} from '@canopy/desktop-shared/types';
 import {
   CoreEventsAckParamsSchema,
   CoreEventsSubscribeParamsSchema,
@@ -157,14 +168,17 @@ afterEach(() => {
   markPreferencesAuthorityConfirmed();
 });
 
-function openPreferences(root: string): {
+function openPreferences(
+  root: string,
+  inner: PreferencesCodec<Record<string, unknown>> = codec,
+): {
   preferences: DaemonPreferences;
   events: ReturnType<typeof createConfigCommitEvents>;
 } {
   const events = createConfigCommitEvents({ epoch: randomUUID() });
   const preferences = createDaemonPreferences({
     dataRoot: root,
-    codec,
+    codec: inner,
     usageDataKeys: USAGE,
     syncDirectory: () => Promise.resolve('flushed'),
     ownership: FLIPPED,
@@ -198,8 +212,11 @@ interface Daemon {
   root: string;
 }
 
-function startDaemon(root = freshRoot()): Daemon {
-  const { preferences, events } = openPreferences(root);
+function startDaemon(
+  root = freshRoot(),
+  inner: PreferencesCodec<Record<string, unknown>> = codec,
+): Daemon {
+  const { preferences, events } = openPreferences(root, inner);
   return {
     handlers: createCoreConfigDocumentHandlers({ preferences, events }),
     events,
@@ -1247,7 +1264,7 @@ describe('the daemon preferences client before it is selected (CAN-7991)', () =>
       ]);
     } finally {
       stop();
-      client.close();
+      client.dispose();
     }
   });
 
@@ -1411,7 +1428,7 @@ describe('the daemon preferences client before it is selected (CAN-7991)', () =>
       expect(warn).not.toHaveBeenCalled();
       expect(clientErrors).not.toHaveBeenCalled();
     } finally {
-      client.close();
+      client.dispose();
       await route.close();
     }
   });
@@ -1445,7 +1462,141 @@ describe('the daemon preferences client before it is selected (CAN-7991)', () =>
       ).toBe(daemonPort);
       expect(selectDomainPreferences(repository, sources)).not.toBe(daemonPort);
     } finally {
-      daemonPort.close();
+      daemonPort.dispose();
     }
+  });
+});
+
+describe('the daemon preferences client keeps the stored record beside its projection (CAN-8045)', () => {
+  const recordOf = (value: object): Record<string, unknown> => ({ ...value });
+  /** The desktop codec over the daemon module's opaque records. */
+  const desktopRecords: PreferencesCodec<Record<string, unknown>> = {
+    defaults: recordOf(DESKTOP_PREFERENCES_CODEC.defaults),
+    normalize: (payload, view) =>
+      recordOf(DESKTOP_PREFERENCES_CODEC.normalize(payload, view)),
+    project: (value) =>
+      recordOf(DESKTOP_PREFERENCES_CODEC.normalize(value, 'runtime')),
+    inspect: (payload) => DESKTOP_PREFERENCES_CODEC.inspect(payload),
+    merge: (existing, patch, mergeContext) => {
+      // The patch's own keys, typed by the persisted view (which keeps them).
+      const typed: Partial<DomainPreferencesData> = {
+        ...DESKTOP_PREFERENCES_CODEC.normalize(
+          { ...existing, ...patch },
+          'persisted',
+        ),
+      };
+      for (const key of Object.keys(typed))
+        if (!(key in patch)) Reflect.deleteProperty(typed, key);
+      return recordOf(
+        DESKTOP_PREFERENCES_CODEC.merge(
+          DESKTOP_PREFERENCES_CODEC.normalize(existing, 'persisted'),
+          typed,
+          mergeContext,
+        ),
+      );
+    },
+  };
+  const QWEN = {
+    id: 'ollama-qwen3-coder',
+    rawModelId: 'qwen3-coder',
+    label: 'qwen3-coder',
+    show: { capabilities: ['completion', 'tools'] },
+  };
+  const SONNET = { model: 'sonnet', thinkingLevel: 'high' };
+  const OPUS = { model: 'opus[1m]', thinkingLevel: 'high' };
+  const OLLAMA = { model: 'ollama-qwen3-coder', thinkingLevel: 'high' };
+  const SAVED = {
+    defaultChatProvider: 'ollama',
+    defaultChatModelByProvider: {
+      claude: SONNET,
+      codex: { model: 'gpt-6.1-sol', thinkingLevel: 'high' },
+      ollama: OLLAMA,
+      aiCredits: null,
+    },
+  };
+  beforeEach(() => {
+    initClaudeModels([
+      { id: 'opus[1m]', label: 'Opus' },
+      { id: 'sonnet', label: 'Sonnet' },
+    ]);
+    initCodexModels([{ id: 'gpt-6.1-sol', label: 'Codex default' }]);
+    initOllamaModels([QWEN]);
+    installPreferencesNormalizationEnvironment(
+      createCatalogPreferencesModelFacts({
+        status: (model) =>
+          resolveKnownModel(model) ? 'available' : 'unavailable',
+        ollamaEnabled: () => true,
+        shortcutPlatform: () => 'darwin',
+      }),
+    );
+  });
+  afterEach(() => initOllamaModels([QWEN]));
+
+  const seeded = (): string => {
+    const root = freshRoot();
+    writeFileSync(
+      join(root, 'preferences.json'),
+      JSON.stringify({ version: 1, preferences: SAVED }),
+    );
+    return root;
+  };
+  const byProviderOf = (value: Stored): Record<string, unknown> => {
+    const byProvider = value.defaultChatModelByProvider;
+    return isObject(byProvider) ? byProvider : {};
+  };
+  const savedOn = (root: string): Record<string, unknown> => {
+    const parsed: unknown = JSON.parse(
+      readFileSync(join(root, 'preferences.json'), 'utf8'),
+    );
+    if (!isObject(parsed) || !isObject(parsed.preferences))
+      throw new Error('no stored record');
+    return parsed.preferences;
+  };
+
+  it('keeps a stored Ollama default through a {...byProvider, claude} save while Ollama is undiscovered', async () => {
+    const daemon = { current: startDaemon(seeded(), desktopRecords) };
+    const client = createDaemonPreferencesClient<Stored>({
+      route: connect(daemon).route,
+      codec: daemon.current.preferences.codec,
+      paths: { document: '/data/preferences.json', lastGood: '/data/lg' },
+      log: { error: jest.fn() },
+    });
+    const localRoot = seeded();
+    const local = openPreferences(localRoot, desktopRecords).preferences;
+    // Discovery is asynchronous, so a save can land before it.
+    initOllamaModels([]);
+
+    // As ChatTab saves one provider's default over Settings' persisted read.
+    const chatTabSave = (settings: Stored) => (): Partial<Stored> => ({
+      defaultChatModelByProvider: { ...byProviderOf(settings), claude: OPUS },
+    });
+    const change = await client.update(
+      chatTabSave(await client.read('persisted')),
+      undefined,
+      CALLER,
+    );
+    expect(savedOn(daemon.current.root)).toMatchObject({
+      defaultChatProvider: 'ollama',
+      defaultChatModelByProvider: { claude: OPUS, ollama: OLLAMA },
+    });
+    expect(change).toEqual(
+      await local.repository.update(
+        chatTabSave(await local.repository.read('persisted')),
+      ),
+    );
+    expect(await client.read('persisted')).toEqual(change.next);
+
+    // The runtime view is projected here, with this client's live catalog.
+    const projected = await client.read('runtime');
+    expect(projected.defaultChatProvider).toBe('claude');
+    expect(byProviderOf(projected).ollama).toBeNull();
+    expect(
+      (await client.readAuthority()).preferences.defaultChatModelByProvider,
+    ).toEqual(byProviderOf(projected));
+    initOllamaModels([QWEN]);
+    const discovered = await client.read('runtime');
+    expect(discovered.defaultChatProvider).toBe('ollama');
+    expect(byProviderOf(discovered).ollama).toEqual(OLLAMA);
+    client.dispose();
   });
 });

@@ -1,5 +1,8 @@
 import { sanitizeImportedUserText } from './terminal-user-text';
-import type { ChatInputDeliveryRow } from '@canopy/protocol/remote-control/shell';
+import type {
+  ChatInputAttempt,
+  ChatInputDeliveryRow,
+} from '@canopy/protocol/remote-control/shell';
 import { observeInputDelivery } from '../services/chat-input-delivery-state';
 import { formatPendingSystemInstructionBlock } from '@canopy/desktop-shared/lib/pending-system-instructions';
 import { isInputLedger } from '@canopy/desktop-shared/chat-input-delivery';
@@ -12,24 +15,34 @@ import type {
 function terminalRequestFromRow(
   tabId: string,
   row: ChatInputDeliveryRow<ChatSendMessageRequest> | undefined,
+  includeNativeAutomation = false,
 ): ChatSendMessageRequest | undefined {
-  const request = row?.attempts.some(
+  const request = row && retainedTerminalAttempt(row) ? row.payload : undefined;
+  if (!request || request.userMessageId !== row?.id || request.chatId !== tabId)
+    return undefined;
+  if (
+    includeNativeAutomation &&
+    request.nativeAutomationRunInputId === request.userMessageId
+  )
+    return request;
+  if (
+    request.agentSent &&
+    request.agentSenderProvenance?.acceptedInputId === row.id &&
+    request.hiddenContext?.kind === 'agent-sender-context'
+  )
+    return request;
+  return undefined;
+}
+
+function retainedTerminalAttempt(
+  row: ChatInputDeliveryRow<ChatSendMessageRequest>,
+): ChatInputAttempt<ChatSendMessageRequest> | undefined {
+  return row.attempts.find(
     (attempt) =>
+      attempt.id === row.currentAttemptId &&
       attempt.generation === 'managed-terminal' &&
       attempt.withdrawnAt === undefined,
-  )
-    ? row.payload
-    : undefined;
-  if (
-    !request?.agentSent ||
-    !request.agentSenderProvenance ||
-    request.agentSenderProvenance.acceptedInputId !== row?.id ||
-    request.userMessageId !== row?.id ||
-    request.chatId !== tabId ||
-    request.hiddenContext?.kind !== 'agent-sender-context'
-  )
-    return undefined;
-  return request;
+  );
 }
 
 /** Lookup only main-retained evidence. A public message id is correlation, not authority. */
@@ -42,6 +55,46 @@ export function retainedTerminalAgentInput(
     tab.id,
     tab.inputDelivery.rows.find((candidate) => candidate.id === userMessageId),
   );
+}
+
+/** Native scheduler handoffs and agent sends share the durable terminal ledger. */
+export function retainedTerminalInput(
+  tab: PersistedChatTab,
+  userMessageId: string,
+): ChatSendMessageRequest | undefined {
+  if (!isInputLedger(tab.inputDelivery)) return undefined;
+  return terminalRequestFromRow(
+    tab.id,
+    tab.inputDelivery.rows.find((candidate) => candidate.id === userMessageId),
+    true,
+  );
+}
+
+/** Update only the current, non-withdrawn attempt correlated to this input. */
+export function observeTerminalInputDelivery(
+  tab: PersistedChatTab,
+  inputId: string,
+  now: number,
+  phase: 'picked-up' | 'unknown' = 'picked-up',
+): PersistedChatTab {
+  const ledger = tab.inputDelivery;
+  if (!isInputLedger(ledger)) return tab;
+  const row = ledger.rows.find((candidate) => candidate.id === inputId);
+  if (!row || !terminalRequestFromRow(tab.id, row, true)) return tab;
+  const attempt = retainedTerminalAttempt(row);
+  if (!attempt) return tab;
+  const updated = observeInputDelivery(
+    ledger,
+    {
+      type: 'canopy_input_delivery',
+      provider: attempt.provider,
+      generation: attempt.generation,
+      attemptId: attempt.id,
+      phase,
+    },
+    now,
+  );
+  return updated === ledger ? tab : { ...tab, inputDelivery: updated };
 }
 
 /** Mirrors the terminal transport's path-only attachment suffix, not message authority. */
@@ -189,28 +242,11 @@ export function settleTerminalAgentImports(
       )
       .map((message) => message.id),
   );
-  let ledger = tab.inputDelivery;
+  let updated = tab;
   for (const row of tab.inputDelivery.rows) {
     if (!delivered.has(row.id) || !terminalRequestFromRow(tab.id, row))
       continue;
-    const attempt = row.attempts.find(
-      (candidate) =>
-        candidate.id === row.currentAttemptId &&
-        candidate.generation === 'managed-terminal' &&
-        candidate.withdrawnAt === undefined,
-    );
-    if (!attempt) continue;
-    ledger = observeInputDelivery(
-      ledger,
-      {
-        type: 'canopy_input_delivery',
-        provider: attempt.provider,
-        generation: attempt.generation,
-        attemptId: attempt.id,
-        phase: 'picked-up',
-      },
-      now,
-    );
+    updated = observeTerminalInputDelivery(updated, row.id, now);
   }
-  return ledger === tab.inputDelivery ? tab : { ...tab, inputDelivery: ledger };
+  return updated;
 }

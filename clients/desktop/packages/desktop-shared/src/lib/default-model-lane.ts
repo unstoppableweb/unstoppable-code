@@ -18,18 +18,8 @@ import {
 import type { BillingLane } from '@canopy/protocol/preferences';
 import { findEquivalentModel } from './model-identity';
 
+export { BILLING_LANES, isBillingLane } from '@canopy/protocol/preferences';
 export type { BillingLane } from '@canopy/protocol/preferences';
-
-export const BILLING_LANES = [
-  'claude-native',
-  'codex-native',
-  'ai-credits',
-  'ollama',
-] as const satisfies readonly BillingLane[];
-
-export function isBillingLane(value: unknown): value is BillingLane {
-  return BILLING_LANES.some((lane) => lane === value);
-}
 
 export interface BillingLaneAvailability {
   claudeNativeAuth: boolean | undefined;

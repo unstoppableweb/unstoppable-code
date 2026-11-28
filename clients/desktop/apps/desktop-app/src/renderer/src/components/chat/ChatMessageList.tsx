@@ -215,6 +215,11 @@ import { createScrollButtonVisibility } from './transcript-scroll-button-visibil
 import { ForkedFromLink } from './ForkedFromLink';
 import {
   computeIncrementalTurnGroups,
+  rowIdsByTurnGroup,
+  runPromptIdsByTurnGroup,
+  indexedRunDenialsByTurnGroup,
+  type IndexedRunDenials,
+  wakeGroupPromptRuns,
   createEmptyTurnGroupCache,
   findLastForkableTurnGroupIndex,
   searchTurnGroupId,
@@ -254,6 +259,7 @@ import {
   activeContinuationPromptIds,
   continuationDiffOwners,
   continuationPromptId,
+  spanTurnFiles,
   continuationTranscriptTurns,
   promptTurnOwnerId,
 } from './continuation-transcript-turns';
@@ -390,6 +396,7 @@ function useIncrementalTurnGroups(
   messages: ChatMessage[],
   agentUsage: Record<string, AgentUsage> | undefined,
   trailingTurnSettled: boolean,
+  compactedTurnIds: ReadonlySet<string>,
 ): TurnGroupOrMessage[] {
   const cacheRef = useRef(createEmptyTurnGroupCache());
   return useMemo(
@@ -400,8 +407,9 @@ function useIncrementalTurnGroups(
         agentUsage,
         cacheRef.current,
         trailingTurnSettled,
+        compactedTurnIds,
       ),
-    [chatId, messages, agentUsage, trailingTurnSettled],
+    [chatId, messages, agentUsage, trailingTurnSettled, compactedTurnIds],
   );
 }
 
@@ -1123,11 +1131,24 @@ export function ChatMessageList({
       tab.kind !== 'file' &&
       localTurnActivity(tab, Date.now(), runtime) === 'idle',
   );
+  // Completed turns with rows still unloaded before a history cursor: a wake
+  // only another chat's message started stays in their turn, where the
+  // turn's final reply and its cursor cover it, until the turn fully loads.
+  const compactedTurnIds = useMemo(
+    () =>
+      new Set(
+        transcriptTurns
+          ?.filter((turn) => turn.complete && turn.before !== undefined)
+          .map((turn) => turn.id),
+      ),
+    [transcriptTurns],
+  );
   const turnGroups = useIncrementalTurnGroups(
     chatId,
     framedMessages,
     agentUsage,
     trailingTurnSettled,
+    compactedTurnIds,
   );
   const continuationDiffOwnerByPrompt = useMemo(
     () => continuationDiffOwners(turnGroups),
@@ -2806,6 +2827,62 @@ export function ChatMessageList({
     () => continuationTranscriptTurns(transcriptTurns),
     [transcriptTurns],
   );
+  // The prompt whose indexed turn spans each wake's group: a wake's rows,
+  // and their files, are in that turn's index.
+  const spanPromptByWake = useMemo(() => {
+    const spans = new Map<string, string>();
+    let promptId: string | undefined;
+    for (const item of turnGroups) {
+      if (item.kind !== 'turn-group') continue;
+      if (item.userMessage.role === 'user') promptId = item.userMessage.id;
+      else if (promptId !== undefined) spans.set(item.userMessage.id, promptId);
+    }
+    return spans;
+  }, [turnGroups]);
+  // Each group's rows from the messages before grouping, which drops rows
+  // whose blocks are still paged out: their indexed files stay with them.
+  const rowIdsCacheRef = useRef(new Map<string, readonly string[]>());
+  const rowIdsByGroup = useMemo(
+    () => rowIdsByTurnGroup(framedMessages, turnGroups, rowIdsCacheRef.current),
+    [framedMessages, turnGroups],
+  );
+  const runPromptIdsCacheRef = useRef(new Map<string, readonly string[]>());
+  const runPromptIdsByGroup = useMemo(
+    () =>
+      runPromptIdsByTurnGroup(
+        framedMessages,
+        rowIdsByGroup,
+        runPromptIdsCacheRef.current,
+      ),
+    [framedMessages, rowIdsByGroup],
+  );
+  const { promptsWithLaterRuns, recordPromptByGroup } = useMemo(
+    () => wakeGroupPromptRuns(turnGroups, runPromptIdsByGroup),
+    // The prompt-id map is updated in place, with the messages.
+    [turnGroups, runPromptIdsByGroup, framedMessages],
+  );
+  const indexedRunDenialsCacheRef = useRef(
+    new Map<string, IndexedRunDenials>(),
+  );
+  const indexedRunDenialsByGroup = useMemo(
+    () =>
+      indexedRunDenialsByTurnGroup(
+        runPromptIdsByGroup,
+        (promptId) => transcriptTurnById.get(promptId)?.deniedToolUseIds,
+        indexedRunDenialsCacheRef.current,
+      ),
+    // The prompt-id map is updated in place, with the messages.
+    [framedMessages, runPromptIdsByGroup, transcriptTurnById],
+  );
+  // Each prompt span's indexed files, once per page of turns, so a wake row
+  // gets the same list on every render.
+  const spanFilesByPrompt = useMemo(
+    () =>
+      new Map(
+        (transcriptTurns ?? []).map((turn) => [turn.id, spanTurnFiles(turn)]),
+      ),
+    [transcriptTurns],
+  );
 
   // --- Deep-linked turn focus (ECW-8684) -----------------------------------
   // An automation run row (and any future caller) can ask the transcript to
@@ -3215,6 +3292,12 @@ export function ChatMessageList({
     const historyTurn =
       promptId === undefined ? undefined : transcriptTurnById.get(promptId);
     const pagingId = ownTurn?.id ?? historyTurn?.id ?? groupId;
+    const spanPromptId =
+      ownTurn === undefined ? spanPromptByWake.get(groupId) : undefined;
+    const span =
+      spanPromptId === undefined
+        ? undefined
+        : spanFilesByPrompt.get(spanPromptId);
     const diffMovedOn = continuationDiffOwnerByPrompt.has(groupId);
     const diffTurnId =
       item.kind === 'turn-group'
@@ -3235,6 +3318,13 @@ export function ChatMessageList({
               : undefined
           }
           transcriptTurn={ownTurn}
+          spanFiles={span?.files}
+          spanEvidenceByRow={span?.evidenceByRow}
+          ownRowIds={rowIdsByGroup.get(groupId)}
+          runPromptIds={runPromptIdsByGroup.get(groupId)}
+          indexedRunDenials={indexedRunDenialsByGroup.get(groupId)}
+          promptRunsLater={promptsWithLaterRuns.has(groupId)}
+          recordPromptId={recordPromptByGroup.get(groupId)}
           historyTurn={historyTurn}
           onLoadHistory={rowLoadHistory}
           historyLoading={turnLoading && turnPageId === pagingId}

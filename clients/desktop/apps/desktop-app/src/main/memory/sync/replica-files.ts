@@ -13,7 +13,7 @@ import {
   isNodeError,
   writeMemoryFileAtomically,
   writeMemoryFileDurably,
-} from '../local/memory-files';
+} from '@canopy/memory-store/memory-files';
 import {
   memoryReplicaAccountFile,
   memorySyncOutboxFile,

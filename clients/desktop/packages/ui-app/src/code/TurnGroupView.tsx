@@ -675,6 +675,7 @@ function TurnGroupViewImpl({
               event={turnGroup.wake.event === true}
               scheduled={turnGroup.wake.scheduled === true}
               toolsLoaded={turnGroup.wake.toolsLoaded === true}
+              peerMessage={turnGroup.wake.peerMessage === true}
               onShowSpawningTurn={
                 (spawningToolUseId !== undefined ||
                   spawningUserMessageId !== undefined) &&

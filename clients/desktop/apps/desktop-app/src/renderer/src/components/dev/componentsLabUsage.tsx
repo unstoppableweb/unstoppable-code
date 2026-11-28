@@ -237,6 +237,7 @@ const WAKE_BOUNDARIES: readonly {
   },
   { label: 'scheduled, unnamed', props: { scheduled: true } },
   { label: 'after loading tools', props: { toolsLoaded: true } },
+  { label: 'message from another chat', props: { peerMessage: true } },
   {
     label: 'fired watcher',
     props: {

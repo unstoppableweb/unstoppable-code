@@ -1,6 +1,6 @@
 'use client';
 
-import { ControlButton } from '../primitives/Button';
+import { Button, ControlButton } from '../primitives/Button';
 import {
   useId,
   useEffect,
@@ -21,12 +21,12 @@ import {
   sidebarItemGroupColorLabel,
   type SidebarItemGroup as GroupData,
   type SidebarItemGroupColor,
+  type SidebarItemGroupUpdateRequest,
 } from '@canopy/protocol/sidebar';
 export { sidebarItemGroupColorLabel };
 import {
   ChevronDownMediumIcon,
   ChevronTopMediumIcon,
-  CloseIcon,
   MinusIcon,
   MoreHorizontalIcon,
   PlusIcon,
@@ -39,9 +39,12 @@ import {
 } from '../primitives/ActionMenuItems';
 import { ColorSwatchPicker, type ColorSwatchOption } from './ColorSwatchPicker';
 import { DisclosureChevron, DisclosureToggle } from '../primitives/Disclosure';
-import { MenuDivider, MenuItem, MenuLabel } from '../primitives/MenuItem';
+import { MenuLabel } from '../primitives/MenuItem';
 import { Menu } from '../primitives/Menu';
-import { TextInput } from '../primitives/Field';
+import { FieldError, TextInput } from '../primitives/Field';
+import { FormField } from '../primitives/FormField';
+import { Heading } from '../primitives/Heading';
+import { OverlayScrollArea } from '../primitives/OverlayScrollArea';
 import { RailIconButton } from './RailIconButton';
 import {
   SIDEBAR_ROW_TRAILING_CELL_CLASSNAME,
@@ -66,14 +69,10 @@ export interface SidebarItemGroupUnitLabel {
   singular: string;
   plural: string;
 }
-export interface SidebarItemGroupLabelCommit {
-  name: string;
-  /**
-   * Present only when the choice differs from what a host derives from the
-   * name alone, so a plain rename stays valid for hosts without this field.
-   */
-  labelHidden?: boolean;
-}
+type SidebarItemGroupSettings = Pick<
+  SidebarItemGroupUpdateRequest,
+  'name' | 'labelHidden' | 'color' | 'keepWhenEmpty'
+>;
 export function sidebarItemGroupCountLabel(
   count: number,
   unitLabel: SidebarItemGroupUnitLabel,
@@ -84,15 +83,8 @@ export interface SidebarItemGroupActions {
   onToggle: () => void;
   onCreate: () => void;
   onUngroup: () => void;
-  /**
-   * Hosts that return the update's promise let the editor wait for its own
-   * queued commits before reconciling with the group.
-   */
-  onLabelCommit: (
-    label: SidebarItemGroupLabelCommit,
-  ) => void | Promise<unknown>;
-  onColorChange: (color: SidebarItemGroupColor) => void;
-  onKeepWhenEmptyChange: (keepWhenEmpty: boolean) => void;
+  /** A host that reports a failed update returns false so the draft stays open. */
+  onSave: (patch: SidebarItemGroupSettings) => void | Promise<void | false>;
 }
 type ActivatorProps = Pick<
   ButtonHTMLAttributes<HTMLButtonElement>,
@@ -436,19 +428,15 @@ export function SidebarItemGroupMenu({
 /** A switch with its text; a click on the text flips it, as in a Settings row. */
 function EditorSwitchRow({
   label,
-  onTextPress,
   children,
 }: {
   readonly label: string;
-  /** Runs before the field's blur when a press on the text will flip the switch. */
-  readonly onTextPress?: () => void;
   readonly children: ReactNode;
 }): JSX.Element {
   const { controlRef, onRowClick } = useRowToggleClick();
   return (
     <div
-      className="flex items-center justify-between gap-2"
-      onPointerDown={onTextPress}
+      className="flex items-center justify-between gap-2 pointer-coarse:min-h-11"
       onClick={onRowClick}
     >
       <span className="text-s fg-secondary">{label}</span>
@@ -459,322 +447,251 @@ function EditorSwitchRow({
   );
 }
 
-/** Mount per open session, so Escape can discard the draft without a blur commit. */
+/** Mount per open session so dismissing the editor discards its draft. */
 export function SidebarItemGroupEditor({
   group,
   groups,
   onEditorChange,
-  unitLabel,
   anchorRef,
   returnFocusRef,
   onClose,
-  onLabelCommit,
-  onColorChange,
-  onKeepWhenEmptyChange,
-  onCreate,
-  onUngroup,
-  canCreate = true,
+  onSave,
 }: {
-  onEditorChange?: (groupId: string | null) => void;
   group: GroupData;
   groups: readonly Pick<GroupData, 'id' | 'name'>[];
-  unitLabel: SidebarItemGroupUnitLabel;
+  onEditorChange?: (groupId: string | null) => void;
   anchorRef: RefObject<HTMLElement | null>;
   returnFocusRef: RefObject<HTMLElement | null>;
-  onClose: (returnFocus?: boolean) => void;
-  /** Offer "New … in group". Default `true`. */
-  canCreate?: boolean;
-} & Pick<
-  SidebarItemGroupActions,
-  | 'onLabelCommit'
-  | 'onColorChange'
-  | 'onKeepWhenEmptyChange'
-  | 'onCreate'
-  | 'onUngroup'
->): JSX.Element {
+  onClose: (restoreFocus: boolean) => void;
+  onSave: SidebarItemGroupActions['onSave'];
+}): JSX.Element {
   useEffect(() => {
     onEditorChange?.(group.id);
     return (): void => onEditorChange?.(null);
   }, [group.id, onEditorChange]);
-  const [name, setName] = useState(() =>
-    isDefaultSidebarItemGroupName(group.name) ? '' : group.name,
-  );
-  const [showName, setShowName] = useState(!group.labelHidden);
-  const cancelled = useRef(false);
-  // A press on the Show name text flips the switch, which commits; the name
-  // field's blur in between must not commit the old choice first.
-  const showNameTextPress = useRef(false);
-  const initialName = isDefaultSidebarItemGroupName(group.name)
-    ? ''
-    : group.name;
-  const committed = useRef<Required<SidebarItemGroupLabelCommit>>({
-    name: normalizeSidebarItemGroupName(initialName),
-    labelHidden: group.labelHidden === true,
-  });
-  // A host can reject a commit and roll the group back. Follow the group then,
-  // so the switch and the next commit start from what the host actually holds.
-  // While this editor's own commits are still in flight the group can show
-  // an earlier one of them, so reconciling waits until they have settled.
-  const hostName = normalizeSidebarItemGroupName(
-    isDefaultSidebarItemGroupName(group.name) ? '' : group.name,
-  );
-  const hostLabelHidden = group.labelHidden === true;
-  const host = useRef({ name: hostName, labelHidden: hostLabelHidden });
-  host.current = { name: hostName, labelHidden: hostLabelHidden };
-  const pendingCommits = useRef(0);
-  const mounted = useRef(true);
-  useEffect(
-    () => (): void => {
-      mounted.current = false;
-    },
-    [],
-  );
-  // The name the editor and the host last agreed on. A draft that still equals
-  // it was not edited here, so it follows a rename made on another surface
-  // instead of committing the old name back when the editor closes.
-  const draftBase = useRef(committed.current.name);
-  const followHost = (): void => {
-    if (pendingCommits.current > 0 || !mounted.current) return;
-    if (
-      committed.current.name === host.current.name &&
-      committed.current.labelHidden === host.current.labelHidden
-    ) {
-      draftBase.current = host.current.name;
-      return;
-    }
-    const untouched = normalizeSidebarItemGroupName(name) === draftBase.current;
-    committed.current = { ...host.current };
-    setShowName(!host.current.labelHidden);
-    if (untouched) {
-      draftBase.current = host.current.name;
-      setName(host.current.name);
-    }
-  };
-  const followHostRef = useRef(followHost);
-  followHostRef.current = followHost;
-  useEffect(() => {
-    followHostRef.current();
-  }, [hostName, hostLabelHidden]);
+
+  const [draft, setDraft] = useState<SidebarItemGroupSettings>({});
+  const [saving, setSaving] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
+  const failedPatch = useRef<SidebarItemGroupSettings>({});
+  const headingId = useId();
+  const saveErrorId = useId();
+  const dialogRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const inputId = useId();
-  const showNameId = useId();
+  const hasDefaultName = isDefaultSidebarItemGroupName(group.name);
+  const name = draft.name ?? (hasDefaultName ? '' : group.name);
   const normalizedName = normalizeSidebarItemGroupName(name);
   const canShowName =
     normalizedName !== '' && !isDefaultSidebarItemGroupName(normalizedName);
-  const checked = canShowName && showName;
+  const showName = canShowName && !(draft.labelHidden ?? group.labelHidden);
+  const color = draft.color ?? group.color;
+  const keepWhenEmpty = draft.keepWhenEmpty ?? group.keepWhenEmpty === true;
   const otherGroups = groups.filter((candidate) => candidate.id !== group.id);
-  // The placeholder is the name a blank input keeps or would be given.
-  const placeholder = isDefaultSidebarItemGroupName(group.name)
+  const placeholder = hasDefaultName
     ? group.name
     : defaultSidebarItemGroupName(otherGroups);
-  const commit = (nextShowName = showName): void => {
-    if (cancelled.current) return;
-    const next: Required<SidebarItemGroupLabelCommit> = {
-      name: normalizeSidebarItemGroupName(name),
-      labelHidden:
-        !normalizedName ||
-        isDefaultSidebarItemGroupName(normalizedName) ||
-        !nextShowName,
-    };
-    if (
-      committed.current.name !== next.name ||
-      committed.current.labelHidden !== next.labelHidden
-    ) {
-      // Compare against this editor's last commit, not the group: an earlier
-      // commit may still be queued, and the group would then be one step behind.
-      const derived = resolveSidebarItemGroupLabel({
-        name: next.name,
-        previous: {
-          name: committed.current.name || placeholder,
-          labelHidden: committed.current.labelHidden,
-        },
-        others: otherGroups,
-      });
-      committed.current = next;
-      const settled = onLabelCommit(
-        derived.labelHidden === next.labelHidden ? { name: next.name } : next,
-      );
-      if (settled) {
-        pendingCommits.current += 1;
-        const settle = (): void => {
-          pendingCommits.current -= 1;
-          followHostRef.current();
-        };
-        void settled.then(settle, settle);
-      }
-    }
+
+  const edit = (patch: SidebarItemGroupSettings): void => {
+    setDraft((previous) => ({ ...previous, ...patch }));
+    setSaveFailed(false);
   };
+
   const close = (): void => {
-    commit();
-    onClose();
-    returnFocusRef.current?.focus();
+    const dialog = dialogRef.current;
+    const restoreFocus =
+      dialog?.contains(dialog.ownerDocument.activeElement) === true;
+    onClose(restoreFocus);
+    if (restoreFocus) returnFocusRef.current?.focus({ preventScroll: true });
   };
+
+  const save = async (): Promise<void> => {
+    // A rejected field may still look saved in the optimistic projection.
+    const retry = failedPatch.current;
+    const label = resolveSidebarItemGroupLabel({
+      name: draft.name,
+      labelHidden: !showName,
+      previous: group,
+      others: otherGroups,
+    });
+    const patch: SidebarItemGroupSettings = {};
+    if (
+      draft.name !== undefined &&
+      (retry.name !== undefined || label.name !== group.name)
+    )
+      patch.name = normalizedName;
+    // Only send the visibility field when the name alone won't produce the
+    // chosen visibility. Older Remote Control hosts derive it from the name.
+    const derived = resolveSidebarItemGroupLabel({
+      name: patch.name,
+      previous: group,
+      others: otherGroups,
+    });
+    if (
+      retry.labelHidden !== undefined ||
+      derived.labelHidden !== label.labelHidden
+    )
+      patch.labelHidden = label.labelHidden;
+    if (
+      draft.color !== undefined &&
+      (retry.color !== undefined || draft.color !== group.color)
+    )
+      patch.color = draft.color;
+    if (
+      draft.keepWhenEmpty !== undefined &&
+      (retry.keepWhenEmpty !== undefined ||
+        draft.keepWhenEmpty !== (group.keepWhenEmpty === true))
+    )
+      patch.keepWhenEmpty = draft.keepWhenEmpty;
+    if (Object.keys(patch).length === 0) {
+      close();
+      return;
+    }
+
+    setSaving(true);
+    const saved = await onSave(patch);
+    // Another editor may have opened, or saving may have removed this group.
+    if (!dialogRef.current?.isConnected) return;
+    setSaving(false);
+    if (saved === false) {
+      failedPatch.current = { ...retry, ...patch };
+      setSaveFailed(true);
+    } else close();
+  };
+
   return (
     <Menu
+      ref={dialogRef}
       open
       interaction="manual"
       trapFocus
       role="dialog"
-      aria-label="Edit group"
+      aria-labelledby={headingId}
       closeOnSelect={false}
+      closeOnOutsidePress={!saving}
       initialFocusRef={inputRef}
       keepTouchKeyboardClosed
       anchorRef={anchorRef}
       returnFocusRef={returnFocusRef}
-      onOpenChange={(next): void => {
-        if (!next) close();
+      onOpenChange={(open): void => {
+        if (!open && !saving) close();
       }}
-      className="w-64"
+      padding="readout"
+      className="flex w-72 flex-col overflow-hidden"
       data-testid="sidebar-item-group-editor"
       onKeyDown={(event): void => {
         if (event.key !== 'Escape') return;
         event.preventDefault();
         event.stopPropagation();
-        cancelled.current = true;
-        onClose();
-        returnFocusRef.current?.focus();
+        if (!saving) close();
       }}
     >
-      <div className="flex items-center gap-2 px-2 py-1">
-        {/* Not a <label> (the field ratchet), but a click on it still
-            focuses the field. */}
-        <span
-          id={`${inputId}-label`}
-          className="text-s fg-secondary"
-          onClick={(): void => inputRef.current?.focus()}
-        >
-          Group name
-        </span>
-        <RailIconButton
-          icon={CloseIcon}
-          aria-label="Close group editor"
-          coarsePointerTarget
-          onClick={close}
-          data-testid="sidebar-item-group-editor-close"
-        />
-      </div>
-      <div className="px-2 pb-2 flex flex-col gap-2">
-        <TextInput
-          ref={inputRef}
-          id={inputId}
-          aria-labelledby={`${inputId}-label`}
-          value={name}
-          placeholder={placeholder}
-          className="w-full"
-          data-testid="sidebar-item-group-name"
-          onChange={(event): void => {
-            const nextName = event.target.value;
-            const previousNormalized = normalizeSidebarItemGroupName(name);
-            const previousCanShowName =
-              previousNormalized !== '' &&
-              !isDefaultSidebarItemGroupName(previousNormalized);
-            const nextNormalized = normalizeSidebarItemGroupName(nextName);
-            const nextCanShowName =
-              nextNormalized !== '' &&
-              !isDefaultSidebarItemGroupName(nextNormalized);
-            setName(nextName);
-            if (!nextCanShowName) setShowName(false);
-            else if (!previousCanShowName) {
-              // Naming a blank/default group should show its new name by default.
-              setShowName(true);
-            }
-          }}
-          onBlur={(event): void => {
-            if (showNameTextPress.current) return;
-            if (
-              event.relatedTarget instanceof HTMLElement &&
-              (event.relatedTarget.id === showNameId ||
-                event.relatedTarget.hasAttribute('data-group-editor-action'))
-            )
-              return;
-            commit();
-          }}
-          onKeyDown={(event): void => {
-            if (event.key !== 'Enter') return;
-            event.preventDefault();
-            // Enter that confirms an IME candidate is not a save.
-            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-            close();
-          }}
-        />
-        <EditorSwitchRow
-          label="Show name in sidebar"
-          onTextPress={
-            canShowName
-              ? (): void => {
-                  showNameTextPress.current = true;
-                  // Cleared after this press's blur has run.
-                  setTimeout(() => {
-                    showNameTextPress.current = false;
-                  }, 0);
-                }
-              : undefined
-          }
-        >
-          <ToggleSwitch
-            id={showNameId}
-            checked={checked}
-            disabled={!canShowName}
-            label="Show name in sidebar"
-            dataTestId="sidebar-item-group-show-name"
-            onChange={(next): void => {
-              setShowName(next);
-              commit(next);
-            }}
-          />
-        </EditorSwitchRow>
-        <EditorSwitchRow label="Remove group when empty">
-          <ToggleSwitch
-            checked={group.keepWhenEmpty !== true}
-            label="Remove group when empty"
-            dataTestId="sidebar-item-group-remove-when-empty"
-            onChange={(next): void => onKeepWhenEmptyChange(!next)}
-          />
-        </EditorSwitchRow>
-        <div>
-          <ColorSwatchPicker
-            value={group.color}
-            palette={SIDEBAR_ITEM_GROUP_SWATCHES}
-            onChange={(value): void => {
-              const color = SIDEBAR_ITEM_GROUP_COLORS.find(
-                (option) => option === value,
-              );
-              if (color) onColorChange(color);
-            }}
-            testId="sidebar-item-group-colors"
-            label="Group color"
-          />
-        </div>
-      </div>
-      <MenuDivider />
-      {canCreate && (
-        <>
-          <MenuItem
-            asButton
-            data-group-editor-action=""
-            onClick={(): void => {
-              commit();
-              onClose(false);
-              onCreate();
-            }}
-          >
-            New {unitLabel.singular} in group
-          </MenuItem>
-          <MenuDivider />
-        </>
-      )}
-      {/* Buttons, not menu items: the editor is a dialog, not a menu. */}
-      <MenuItem
-        asButton
-        data-group-editor-action=""
-        onClick={(): void => {
-          cancelled.current = true;
-          onClose(false);
-          onUngroup();
+      <form
+        className="flex min-h-0 flex-col gap-3"
+        aria-busy={saving}
+        aria-describedby={saveFailed ? saveErrorId : undefined}
+        onSubmit={(event): void => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!saving) void save();
         }}
       >
-        Ungroup
-      </MenuItem>
+        <Heading id={headingId} level={2} variant="title" className="shrink-0">
+          Edit group
+        </Heading>
+        <OverlayScrollArea
+          className="-m-1"
+          viewportClassName="overscroll-contain"
+          contentClassName="flex flex-col gap-3 p-1"
+        >
+          <FormField label="Group name">
+            {(control) => (
+              <TextInput
+                {...control}
+                ref={inputRef}
+                value={name}
+                placeholder={placeholder}
+                readOnly={saving}
+                data-testid="sidebar-item-group-name"
+                onChange={(event): void => {
+                  const nextName = event.target.value;
+                  // The first custom name shows by default for an unnamed group.
+                  edit({
+                    name: nextName,
+                    ...(!canShowName ? { labelHidden: false } : {}),
+                  });
+                }}
+                onKeyDown={(event): void => {
+                  if (
+                    event.key === 'Enter' &&
+                    (event.nativeEvent.isComposing || event.keyCode === 229)
+                  )
+                    event.preventDefault();
+                }}
+              />
+            )}
+          </FormField>
+          <FormField label="Group color">
+            <ColorSwatchPicker
+              value={color}
+              palette={SIDEBAR_ITEM_GROUP_SWATCHES}
+              disabled={saving}
+              onChange={(value): void => {
+                const selected = SIDEBAR_ITEM_GROUP_COLORS.find(
+                  (option) => option === value,
+                );
+                if (selected) edit({ color: selected });
+              }}
+              testId="sidebar-item-group-colors"
+              label="Group color"
+            />
+          </FormField>
+          <div className="flex flex-col gap-2">
+            <EditorSwitchRow label="Show name in sidebar">
+              <ToggleSwitch
+                checked={showName}
+                disabled={!canShowName || saving}
+                label="Show name in sidebar"
+                dataTestId="sidebar-item-group-show-name"
+                onChange={(next): void => edit({ labelHidden: !next })}
+              />
+            </EditorSwitchRow>
+            <EditorSwitchRow label="Remove group when empty">
+              <ToggleSwitch
+                checked={!keepWhenEmpty}
+                disabled={saving}
+                label="Remove group when empty"
+                dataTestId="sidebar-item-group-remove-when-empty"
+                onChange={(next): void => edit({ keepWhenEmpty: !next })}
+              />
+            </EditorSwitchRow>
+          </div>
+          {saveFailed && (
+            <FieldError id={saveErrorId} announce>
+              Group changes couldn’t be saved. Try again.
+            </FieldError>
+          )}
+        </OverlayScrollArea>
+        <div className="flex shrink-0 justify-end gap-2">
+          <Button
+            size="compact"
+            variant="ghost"
+            disabled={saving}
+            onClick={close}
+          >
+            Cancel
+          </Button>
+          {/* Creating the group from the row menu already adds its members. */}
+          <Button
+            size="compact"
+            variant="primary"
+            type="submit"
+            loading={saving}
+            loadingLabel="Saving…"
+          >
+            Save changes
+          </Button>
+        </div>
+      </form>
     </Menu>
   );
 }
@@ -795,8 +712,7 @@ export function SidebarItemGroup({
 }: {
   readOnly?: boolean;
   /**
-   * Offer the create affordances (header `+`, menu and editor "New … in
-   * group"). Default `true`; a host whose target cannot create withholds them.
+   * Offer "New … in group" in the header and group menu. Default `true`.
    */
   canCreate?: boolean;
   group: GroupData;
@@ -827,10 +743,14 @@ export function SidebarItemGroup({
   useLayoutEffect((): void => {
     if (!closingEditorRef.current) return;
     closingEditorRef.current = false;
-    (closingFocusRef.current?.isConnected
+    const focusTarget = closingFocusRef.current?.isConnected
       ? closingFocusRef.current
-      : returnFocusRef.current
-    )?.focus();
+      : returnFocusRef.current;
+    if (
+      focusTarget &&
+      focusTarget.ownerDocument.activeElement === focusTarget.ownerDocument.body
+    )
+      focusTarget.focus({ preventScroll: true });
   }, [editor, group.name, returnFocusRef]);
   const rootRef = useRef<HTMLDivElement | null>(null);
   // Viewport top of a stuck (sticky) header when a collapse was requested.
@@ -954,20 +874,14 @@ export function SidebarItemGroup({
           onEditorChange={onEditorChange}
           group={group}
           groups={groups}
-          unitLabel={unitLabel}
           anchorRef={anchorRef}
           returnFocusRef={focusRef}
-          onClose={(returnFocus = true): void => {
+          onClose={(restoreFocus): void => {
             closingFocusRef.current = focusRef.current;
-            closingEditorRef.current = returnFocus;
+            closingEditorRef.current = restoreFocus;
             setEditor(null);
           }}
-          onLabelCommit={actions.onLabelCommit}
-          onColorChange={actions.onColorChange}
-          onKeepWhenEmptyChange={actions.onKeepWhenEmptyChange}
-          onCreate={actions.onCreate}
-          onUngroup={actions.onUngroup}
-          canCreate={canCreate}
+          onSave={actions.onSave}
         />
       )}
     </div>

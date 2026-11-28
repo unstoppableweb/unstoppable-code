@@ -1,12 +1,12 @@
 import type { MemoryConsolidationMetrics } from '@canopy/protocol/local-memory';
 import type { UnresolvedTopicLink } from '@canopy/memory-consolidation/link-health';
 import { open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { LocalMemoryConsolidationResult } from '@canopy/desktop-shared/types';
 import { isRecord } from '../../lib/type-guards';
 import type { RunConsolidationResult } from './consolidation-task';
-import { ensureOwnerOnlyDir } from './memory-files';
+import { ensureOwnerOnlyDir } from '@canopy/memory-store/memory-files';
 
 const CONSOLIDATION_STATE_VERSION = 1;
 const CONSOLIDATION_STATE_FILENAME = 'consolidation-state.json';
@@ -293,10 +293,15 @@ export async function writeConsolidationState(
         }
       : {}),
   };
-  await writeFileAtomically(filePath, `${JSON.stringify(payload, null, 2)}\n`);
+  await writeFileAtomically(
+    scopeDir,
+    filePath,
+    `${JSON.stringify(payload, null, 2)}\n`,
+  );
   // The full history/retry state stays canonical. A crash between the two
   // atomic replacements can leave an older status sample, never lose history.
   await writeFileAtomically(
+    scopeDir,
     join(scopeDir, CONSOLIDATION_STATUS_FILENAME),
     `${JSON.stringify(statusProjection(payload))}\n`,
   );
@@ -414,12 +419,13 @@ export async function recordConsolidationRun(
 }
 
 async function writeFileAtomically(
+  scopeDir: string,
   filePath: string,
   content: string,
 ): Promise<void> {
   // Owner-only like every other local-memory directory (0o700 with
   // fail-closed chmod), instead of a default-mode mkdir.
-  await ensureOwnerOnlyDir(dirname(filePath));
+  await ensureOwnerOnlyDir(scopeDir, { trustedScopeRoot: scopeDir });
   const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporaryPath, content, { encoding: 'utf8', mode: 0o600 });

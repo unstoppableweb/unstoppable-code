@@ -465,8 +465,12 @@ export interface ShareResourceDialogProps {
   readonly testIdPrefix: string;
   /** Document that owns the modal portal/focus trap. */
   readonly ownerDocument?: Document;
-  /** Cloud capability the resource's own CRUD requires, e.g. `skills-crud-v1`. */
-  readonly requiredCapability: string;
+  /**
+   * Cloud capability the resource's own CRUD requires, e.g. `skills-crud-v1`.
+   * Omit it for a resource with no account capability gate, because the host
+   * has already gated it through `CanopyCapabilities` (shared artifacts).
+   */
+  readonly requiredCapability?: string;
   /** Overrides over {@link shareResourceCopy}'s noun-derived defaults. */
   readonly copy?: Partial<ShareResourceCopy>;
   /** Audiences this resource offers. A single audience hides the selector. */
@@ -499,6 +503,13 @@ export interface ShareResourceDialogProps {
   readonly audienceDescriptions?: Partial<Record<ShareAudience, string>>;
   /** Blocks Share while a host precondition is unmet. */
   readonly shareDisabled?: boolean;
+  /**
+   * Resource controls that don't depend on the team and organization
+   * audiences, rendered above the footer in every account-ready state,
+   * including the organization setup state an account with no organization
+   * sees (for example a public link a personal account may turn on).
+   */
+  readonly standaloneOptions?: ReactNode;
   /** Resource-specific controls rendered below the dependency review. */
   readonly extraOptions?:
     | ReactNode
@@ -708,6 +719,7 @@ export function ShareResourceDialog({
   audienceAvailability,
   landing,
   audienceDescriptions,
+  standaloneOptions,
   extraOptions,
   maxWidth,
   shareDisabled = false,
@@ -929,6 +941,7 @@ export function ShareResourceDialog({
 
   const isGuest = account?.kind === 'guest';
   const hasResourceCapability =
+    requiredCapability === undefined ||
     account?.capabilities.includes(requiredCapability) === true;
   const hasTeamsCapability =
     account?.capabilities.includes(TEAMS_CAPABILITY) === true;
@@ -2184,9 +2197,12 @@ export function ShareResourceDialog({
     }
     if (needsSetupGate) {
       return (
-        <Stack gap="tight" data-testid={`${p}-organization-required`}>
-          <p className="text-s fg-secondary">{copy.organizationRequired}</p>
-          {organizationSetup}
+        <Stack gap="item">
+          <Stack gap="tight" data-testid={`${p}-organization-required`}>
+            <p className="text-s fg-secondary">{copy.organizationRequired}</p>
+            {organizationSetup}
+          </Stack>
+          {standaloneOptions}
         </Stack>
       );
     }
@@ -2509,6 +2525,7 @@ export function ShareResourceDialog({
                 : null,
           })
         : extraOptions}
+      {standaloneOptions}
     </>
   );
 

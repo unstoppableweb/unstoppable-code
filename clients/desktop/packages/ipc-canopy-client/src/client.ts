@@ -82,6 +82,7 @@ import {
   PersonalProjectListSchema,
   PersonalProjectOperationSchema,
 } from '@canopy/protocol/organizations';
+import { OrchestratorInstructionsConflictError } from '@canopy/protocol/remote-control/shell';
 import type {
   RemoteControlAppAdvisorSettings,
   RemoteControlDirectoryListing,
@@ -2151,8 +2152,13 @@ class PortableIpcCanopyClient implements CanopyClient {
           args,
         );
         if (!saved.ok) {
+          if (saved.code === 'instructions_changed')
+            throw new OrchestratorInstructionsConflictError();
           throw new Error(saved.error ?? 'The settings were not saved.');
         }
+        return typeof saved.instructionsRevision === 'string'
+          ? saved.instructionsRevision
+          : undefined;
       },
       // Scripts and hooks map onto the run/stop channels. The invoke settles
       // when the run completes; status still streams on the script and hook

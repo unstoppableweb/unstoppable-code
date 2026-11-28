@@ -324,6 +324,16 @@ class Endpoint implements RemoteRelay {
     this.undeliverable.add(listener);
     return () => this.undeliverable.delete(listener);
   }
+
+  /** Listeners registered on this endpoint, of every kind. */
+  listenerCount(): number {
+    return (
+      this.frames.size +
+      this.offline.size +
+      this.cameOnline.size +
+      this.undeliverable.size
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2968,6 +2978,83 @@ describe("the main window's per-computer API (CAN-7761)", () => {
       reason: 'this-computer-older',
       computerVersion: newer,
       thisComputerVersion: belowFloor,
+    });
+  });
+
+  it('keeps nothing for thousands of calls that fail while its relay is down (CAN-8049)', async () => {
+    const { desktop, hosts } = await pairedDesktop({ oneWindow: false });
+    const hostId = hosts[0].deviceId;
+    const desktopId = desktop.identity.deviceId;
+    const endpoint = desktop.hub.endpoints.get(desktopId);
+    if (!endpoint) throw new Error('The desktop is not on the relay.');
+    const connection = async (): Promise<string | undefined> =>
+      (await desktop.service.getState()).hosts.find(
+        (entry) => entry.deviceId === hostId,
+      )?.connection;
+    await desktop.service.openMachine(hostId);
+    await until(async () => (await connection()) === 'connected');
+    expect(await desktop.service.invoke(hostId, LIST_CHANNEL, [READ])).toBe(
+      'ok',
+    );
+    // The window's session is gone and the relay drops this computer: every
+    // reconnect fails at once, as after the soak's stuck relay (CAN-8048).
+    desktop.service.releaseMachine(hostId);
+    endpoint.stop();
+    desktop.hub.cut.add(`${desktopId}>${hostId}`);
+    desktop.hub.cut.add(`${hostId}>${desktopId}`);
+    endpoint.peerWent(hostId, 'offline');
+    // Every timer from here is counted, unref'ed ones and the reopened
+    // window's first retry too; they still run on time.
+    jest.useFakeTimers({
+      advanceTimers: true,
+      doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'],
+    });
+    // One after another: calls made together share one connection attempt.
+    const failures: unknown[] = [];
+    let timers: number;
+    let listeners: number;
+    try {
+      await desktop.service.openMachine(hostId);
+      await settle(20);
+      listeners = endpoint.listenerCount();
+      for (let call = 0; call < 3_000; call += 1) {
+        failures.push(
+          await desktop.service.invoke(hostId, LIST_CHANNEL, [READ]).then(
+            () => null,
+            (error: unknown) => error,
+          ),
+        );
+      }
+      await settle(20);
+      timers = jest.getTimerCount();
+    } finally {
+      jest.useRealTimers();
+    }
+    expect(
+      failures.every(
+        (error) =>
+          error instanceof Error &&
+          error.message === 'Not connected to the relay.',
+      ),
+    ).toBe(true);
+    // No call left a timer, a listener or a connection attempt behind; the
+    // connection keeps at most its one retry timer.
+    expect(timers).toBeLessThanOrEqual(1);
+    expect(endpoint.listenerCount()).toBe(listeners);
+    expect(await connection()).not.toBe('connected');
+    // The relay comes back: the next call goes through.
+    desktop.hub.cut.clear();
+    endpoint.start();
+    endpoint.peerWent(hostId, 'online');
+    await until(async () => {
+      try {
+        const result = await desktop.service.invoke(hostId, LIST_CHANNEL, [
+          READ,
+        ]);
+        return result === 'ok';
+      } catch {
+        return false;
+      }
     });
   });
 });
@@ -6395,6 +6482,224 @@ describe('hosted delegation', () => {
     expect((await host.readSettings()).pairedControllers).toHaveLength(1);
     release();
     await sending;
+  });
+
+  it('carries the pairing check across queue actions and older send paths for desktop, browser and mobile controllers (CAN-7877)', async () => {
+    const hub = new Hub();
+    const desktop = addController(hub, 'desktop');
+    const browser = addController(hub, 'browser');
+    const phone = addController(hub, 'mobile');
+    const bystander = addController(hub, 'desktop');
+    const host = await createHost(hub, {
+      settings: {
+        pairedControllers: [
+          pinned(desktop),
+          pinned(browser, 'browser'),
+          pinned(phone, 'mobile'),
+          pinned(bystander),
+        ],
+      },
+    });
+    const desktopSession = await control(host, desktop);
+    await hello(desktopSession.rpc);
+    const browserSession = await control(host, browser);
+    await hello(browserSession.rpc, {
+      version: VERSION,
+      controller: webControllerProfile('browser', 'web'),
+    });
+    const phoneSession = await control(host, phone);
+    await hello(phoneSession.rpc, {
+      version: VERSION,
+      controller: { kind: 'mobile', minVersion: 1 },
+    });
+    const bystanderSession = await control(host, bystander);
+    await hello(bystanderSession.rpc);
+
+    const queueEntry = {
+      projectId: 'p-1',
+      worktreeId: 'w-1',
+      chatId: 'chat-1',
+      entryId: 'row-1',
+    };
+    const sendPayload = {
+      projectId: 'p-1',
+      worktreeId: 'w-1',
+      chatId: 'chat-1',
+      userMessageId: 'msg-1',
+      text: 'Hello',
+    };
+    const queueCommands: Record<string, unknown>[] = [
+      {
+        type: 'chat.edit_queued_message',
+        chatId: 'chat-1',
+        queuedMessageId: 'row-1',
+        text: 'Edited',
+      },
+      {
+        type: 'chat.move_queued_message',
+        chatId: 'chat-1',
+        queuedMessageId: 'row-2',
+        beforeQueuedMessageId: 'row-1',
+      },
+      {
+        type: 'chat.cancel_queued_message',
+        chatId: 'chat-1',
+        queuedMessageId: 'row-1',
+      },
+      {
+        type: 'chat.force_queued_message',
+        chatId: 'chat-1',
+        queuedMessageId: 'row-1',
+      },
+      {
+        type: 'chat.set_queued_message_edit_lock',
+        chatId: 'chat-1',
+        queuedMessageId: 'row-1',
+        locked: true,
+      },
+    ];
+
+    const invokeStatus = async (
+      rpc: RpcPeer,
+      channel: string,
+      args: unknown[],
+    ): Promise<string> => {
+      try {
+        await rpc.request(REMOTE_METHODS.invoke, { channel, args });
+        return 'ok';
+      } catch (error) {
+        return error instanceof RpcRemoteError
+          ? (error.code ?? error.message)
+          : String(error);
+      }
+    };
+
+    // Desktop and browser can reach chat:send-message, chat:queue-*, and chat:command queue actions.
+    for (const rpc of [desktopSession.rpc, browserSession.rpc]) {
+      expect(
+        await invokeStatus(rpc, IPC_CHANNELS.chatSendMessage, [sendPayload]),
+      ).toBe('ok');
+      expect(
+        await invokeStatus(rpc, IPC_CHANNELS.chatQueueEdit, [
+          { ...queueEntry, text: 'Updated' },
+        ]),
+      ).toBe('ok');
+      expect(
+        await invokeStatus(rpc, IPC_CHANNELS.chatQueueCancel, [queueEntry]),
+      ).toBe('ok');
+      expect(
+        await invokeStatus(rpc, IPC_CHANNELS.chatQueueForce, [queueEntry]),
+      ).toBe('ok');
+      expect(
+        await invokeStatus(rpc, IPC_CHANNELS.chatQueueSetEditLock, [
+          { ...queueEntry, locked: true },
+        ]),
+      ).toBe('ok');
+      for (const command of queueCommands) {
+        expect(
+          await invokeStatus(rpc, IPC_CHANNELS.chatCommand, [
+            envelope(command),
+          ]),
+        ).toBe('ok');
+      }
+    }
+
+    // Mobile reaches chat:send-message and chat:command queue actions (chat:queue-* stays refused).
+    expect(
+      await invokeStatus(phoneSession.rpc, IPC_CHANNELS.chatSendMessage, [
+        sendPayload,
+      ]),
+    ).toBe('ok');
+    for (const command of queueCommands) {
+      expect(
+        await invokeStatus(phoneSession.rpc, IPC_CHANNELS.chatCommand, [
+          envelope(command),
+        ]),
+      ).toBe('ok');
+    }
+    expect(
+      await invokeStatus(phoneSession.rpc, IPC_CHANNELS.chatQueueForce, [
+        queueEntry,
+      ]),
+    ).toBe(CHANNEL_UNAVAILABLE_CODE);
+
+    // Bystander establishes its own bridge so we can prove unpairing others never flips it.
+    expect(
+      await invokeCode(bystanderSession.rpc, IPC_CHANNELS.chatGetState),
+    ).toBe('ok');
+    const [desktopGuard, browserGuard, phoneGuard, bystanderGuard] =
+      host.bridge.commitGuards;
+    expect([
+      desktopGuard?.(),
+      browserGuard?.(),
+      phoneGuard?.(),
+      bystanderGuard?.(),
+    ]).toEqual([true, true, true, true]);
+
+    for (const controller of [desktop, browser, phone]) {
+      await host.service.forgetDevice({
+        deviceId: controller.deviceId,
+        role: 'controller',
+      });
+    }
+    expect([
+      desktopGuard?.(),
+      browserGuard?.(),
+      phoneGuard?.(),
+      bystanderGuard?.(),
+    ]).toEqual([false, false, false, true]);
+  });
+
+  it('carries the pairing check across hosted queue actions on unpairing and session end (CAN-7877)', async () => {
+    const queueEntry = {
+      projectId: 'p-1',
+      worktreeId: 'w-1',
+      chatId: 'chat-1',
+      entryId: 'row-1',
+    };
+    const hostedSend: Record<string, unknown> = {
+      type: 'chat.send_message',
+      chatId: 'chat-1',
+      userMessageId: 'msg-hosted-1',
+      text: 'Hello from hosted',
+    };
+
+    // 1. Unpairing flips both the hosted bridge guard (chat:queue-*) and hosted chat send guard.
+    const unpaired = await delegatedSession();
+    unpaired.host.hostedChat.tabs.set('chat-1', DEFAULT_MODEL);
+    await unpaired.request(IPC_CHANNELS.chatQueueEdit, [
+      { ...queueEntry, text: 'Updated' },
+    ]);
+    await unpaired.request(IPC_CHANNELS.chatQueueCancel, [queueEntry]);
+    await unpaired.request(IPC_CHANNELS.chatQueueForce, [queueEntry]);
+    await unpaired.request(IPC_CHANNELS.chatCommand, [envelope(hostedSend)]);
+    const bridgeGuard = unpaired.host.bridge.commitGuards[0];
+    const commandGuard =
+      unpaired.host.hostedChat.dispatched[0]?.attribution.canCommit;
+    expect(bridgeGuard?.()).toBe(true);
+    expect(commandGuard?.()).toBe(true);
+    await unpaired.host.service.forgetDevice({
+      deviceId: unpaired.root.deviceId,
+      role: 'controller',
+    });
+    expect(bridgeGuard?.()).toBe(false);
+    expect(commandGuard?.()).toBe(false);
+
+    // 2. Ending the hosted session with pairing kept flips both guards as well.
+    const ended = await delegatedSession();
+    ended.host.hostedChat.tabs.set('chat-1', DEFAULT_MODEL);
+    await ended.request(IPC_CHANNELS.chatQueueForce, [queueEntry]);
+    await ended.request(IPC_CHANNELS.chatCommand, [envelope(hostedSend)]);
+    const endedBridgeGuard = ended.host.bridge.commitGuards[0];
+    const endedCommandGuard =
+      ended.host.hostedChat.dispatched[0]?.attribution.canCommit;
+    expect(endedBridgeGuard?.()).toBe(true);
+    expect(endedCommandGuard?.()).toBe(true);
+    ended.session.close('closed');
+    await until(
+      () => endedBridgeGuard?.() === false && endedCommandGuard?.() === false,
+    );
+    expect((await ended.host.readSettings()).pairedControllers).toHaveLength(1);
   });
 
   it('stores uploads for desktop and browser controllers only; host file reads stay with desktops', async () => {

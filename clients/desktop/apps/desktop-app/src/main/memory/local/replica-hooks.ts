@@ -8,7 +8,7 @@ import {
 } from '@canopy/protocol/memory-sync';
 import type { MemoryConsolidationResult } from '@canopy/memory-consolidation/run';
 import type { MemoryConsolidationMeasurement } from '@canopy/protocol/local-memory/metrics';
-import { isNodeError } from './memory-files';
+import { isNodeError } from '@canopy/memory-store/memory-files';
 
 /*
  * How local memory writes reach the memory sync engine. The engine installs

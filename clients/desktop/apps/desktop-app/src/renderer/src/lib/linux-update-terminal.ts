@@ -185,9 +185,20 @@ export async function openLinuxUpdateTerminal(
           userOwned = true;
           finish();
         });
-        unsubscribe = window.api.terminal.onOutput((event): void => {
+        const stopOutput = window.api.terminal.onOutput((event): void => {
           if (event.terminalId === id && event.data.length > 0) sawOutput();
         });
+        // A daemon terminal this window reads itself reports only progress
+        // (CAN-8070), always for bytes.
+        const stopProgress = window.api.terminal.onOutputProgress(
+          (event): void => {
+            if (event.terminalId === id) sawOutput();
+          },
+        );
+        unsubscribe = (): void => {
+          stopOutput();
+          stopProgress();
+        };
         timer = setTimeout(markQuiet, 1000);
         // Observe rejection immediately, even if tab binding is still pending.
         // The caller surfaces the failure after binding; never type on failure.

@@ -23,6 +23,18 @@ export interface PreferencesDocument {
 
 export interface PreferencesLog {
   error(message: string, error: unknown): void;
+  /** Something handled without the person, worth a log line; `error` when absent. */
+  warn?(message: string, details: unknown): void;
+}
+
+/** Logs through `warn`, or `error` when the host gave none. */
+export function logPreferencesWarning(
+  log: PreferencesLog,
+  message: string,
+  details: unknown,
+): void {
+  if (log.warn) log.warn(message, details);
+  else log.error(message, details);
 }
 
 export function getErrorMessage(error: unknown): string {

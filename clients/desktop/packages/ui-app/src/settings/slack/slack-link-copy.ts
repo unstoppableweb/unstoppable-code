@@ -73,12 +73,6 @@ export const SLACK_COMPUTER_OFFLINE_LABEL = 'Computer offline';
  */
 export const SLACK_CONNECTED_ANNOUNCEMENT = 'Slack is connected.';
 
-/** What an active link does, under its workspace name. */
-export function slackActiveLinkText(computerName: string | null): string {
-  const where = computerName === null ? 'this computer' : computerName;
-  return `Your mentions start work on ${where}.`;
-}
-
 /**
  * An active link whose computer is offline, so mentions can't reach it. With
  * no other computer to change to, it names the way there: on another

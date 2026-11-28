@@ -32,6 +32,7 @@ import {
 import type { PersistedChatMessage } from '@canopy/agent-transcript/types';
 import type { ToolFamilyResolver } from '@canopy/agent-transcript/remote-control/persisted-chat-projection';
 import { persistedMessageToRemoteControlWireMessage } from '@canopy/agent-transcript/remote-control/remote-control-wire-message';
+import { withTurnTimerEnds } from '@canopy/agent-transcript/remote-control/turn-timer-ends';
 import type { ChannelClient } from './channel-client';
 import { isRecord, reply } from './decoders';
 
@@ -84,6 +85,23 @@ interface WireTranscriptPage {
   readonly messages: readonly PersistedChatMessage[];
   readonly before?: number;
   readonly transcriptRevision: number;
+  /** How the page's turns ended, by prompt id. */
+  readonly turnEnds?: Readonly<
+    Record<string, { outcome: 'completed' | 'failed' | 'cancelled' }>
+  >;
+}
+
+function isTurnEnds(value: unknown): value is WireTranscriptPage['turnEnds'] {
+  return (
+    isRecord(value) &&
+    Object.values(value).every(
+      (end) =>
+        isRecord(end) &&
+        (end.outcome === 'completed' ||
+          end.outcome === 'failed' ||
+          end.outcome === 'cancelled'),
+    )
+  );
 }
 
 const isTranscriptPage = reply<WireTranscriptPage>(
@@ -91,7 +109,8 @@ const isTranscriptPage = reply<WireTranscriptPage>(
     isRecord(value) &&
     Array.isArray(value.messages) &&
     typeof value.transcriptRevision === 'number' &&
-    (value.before === undefined || typeof value.before === 'number'),
+    (value.before === undefined || typeof value.before === 'number') &&
+    (value.turnEnds === undefined || isTurnEnds(value.turnEnds)),
 );
 
 /** The `(projectId, worktreeId)` a chat's transcript is keyed by. */
@@ -151,14 +170,18 @@ export async function readChatHistory(
     worktreeLocalId: target.worktreeId,
     chatId: args.chatId,
   };
-  const messages: RemoteControlChatMessage[] = delegationRootMessages(
-    visible,
-  ).map((message) =>
-    persistedMessageToRemoteControlWireMessage(
-      { ...routing, message, relatedMessages: visible },
-      toolFamilyFor,
-      { includeAssetReferences: args.scope !== 'app_advisor' },
+  const roots = delegationRootMessages(visible);
+  // Each completed timer carries its own end, as the projection gives it.
+  const messages: RemoteControlChatMessage[] = withTurnTimerEnds(
+    roots,
+    roots.map((message) =>
+      persistedMessageToRemoteControlWireMessage(
+        { ...routing, message, relatedMessages: visible },
+        toolFamilyFor,
+        { includeAssetReferences: args.scope !== 'app_advisor' },
+      ),
     ),
+    page.turnEnds === undefined ? {} : { turnEnds: page.turnEnds },
   );
   const nextBefore = page.before;
   return {

@@ -2,7 +2,6 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Stats } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import {
-  chmod,
   copyFile,
   constants,
   link,
@@ -11,13 +10,22 @@ import {
   open,
   readFile,
   readdir,
+  readlink,
   realpath,
   rename,
   unlink,
   utimes,
   writeFile,
 } from 'node:fs/promises';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
 import { flushDirectory } from '@canopy/core-platform/directory-flush';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { isPathInside } from '@canopy/execution-engine/node/lib/path-safety';
@@ -37,17 +45,52 @@ export function isNodeError(error: unknown, code: string): boolean {
   );
 }
 
-export async function ensureOwnerOnlyDir(directory: string): Promise<void> {
-  await mkdir(directory, { recursive: true, mode: MEMORY_DIR_MODE });
-  // mkdir's mode only applies on creation; tighten pre-existing directories
-  // (e.g. created by the open-memory-folder flow) to owner-only too.
+/** Resolve an explicitly trusted scope link before opening its directory. */
+async function resolveLinkedMemoryScope(scopeDir: string): Promise<string> {
+  let parent: string;
+  let target: string;
   try {
-    await chmod(directory, MEMORY_DIR_MODE);
+    parent = await realpath(dirname(scopeDir));
+    target = await readlink(join(parent, basename(scopeDir)));
   } catch (error) {
-    // Windows has no POSIX modes; keep the directory as created there. On
-    // POSIX platforms fail closed instead of writing memory data into a
-    // directory whose permissions could not be tightened.
-    if (hostOperatingSystem() !== 'win32') throw error;
+    if (isNodeError(error, 'EINVAL') || isNodeError(error, 'ENOENT')) {
+      return scopeDir;
+    }
+    throw error;
+  }
+  // Interpret relative targets from the same parent used to read the link.
+  // Leave any ".." components for realpath to resolve after following links.
+  const targetPath = isAbsolute(target) ? target : `${parent}${sep}${target}`;
+  return realpath(targetPath);
+}
+
+export async function ensureOwnerOnlyDir(
+  directory: string,
+  options?: { trustedScopeRoot: string },
+): Promise<void> {
+  // Windows has no POSIX modes.
+  const hasPosixModes = hostOperatingSystem() !== 'win32';
+  const directoryToOpen =
+    hasPosixModes &&
+    options &&
+    resolve(directory) === resolve(options.trustedScopeRoot)
+      ? await resolveLinkedMemoryScope(directory)
+      : directory;
+  if (directoryToOpen === directory) {
+    await mkdir(directory, { recursive: true, mode: MEMORY_DIR_MODE });
+  }
+  if (!hasPosixModes) return;
+
+  // mkdir's mode only applies on creation; tighten pre-existing directories
+  // using the opened directory so a replacement path cannot redirect chmod.
+  const handle = await open(
+    directoryToOpen,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  try {
+    await handle.chmod(MEMORY_DIR_MODE);
+  } finally {
+    await handle.close();
   }
 }
 
@@ -119,14 +162,15 @@ export async function isMemoryPathContained(
 
 /**
  * {@link ensureOwnerOnlyDir} for a directory in `scopeDir`, refusing one
- * that is a link or under one before anything is created or chmodded.
+ * below the scope root that is a link or under one before anything is
+ * created or chmodded.
  */
 export async function ensureOwnerOnlyMemoryDir(
   scopeDir: string,
   directory: string,
 ): Promise<void> {
   await assertMemoryPathContained(scopeDir, directory);
-  await ensureOwnerOnlyDir(directory);
+  await ensureOwnerOnlyDir(directory, { trustedScopeRoot: scopeDir });
 }
 
 /** A scope lock a critical section holds (see `withMemoryScopeLock`). */

@@ -200,6 +200,7 @@ import {
 } from '../../canopy-runtime/core-chat-command-adapter';
 import { setChatStateCommandPort } from '../../ipc/chat-state';
 import * as chatStateServiceModule from '../chat-state-service';
+import { ChatSendAuthorizationRevokedError } from '../chat-dispatch-authorization';
 import { persistOrgMemoryUsedForChat } from '../../lib/chat-tab-dispatch-utils';
 import { TURN_END_LIMIT } from '../../lib/chat-turn-ends';
 import { projectRemoteControlLastTurnEnd } from '../../lib/remote-control-turn-end';
@@ -276,6 +277,7 @@ const mockTerminalState = jest.fn(
 jest.mock('../../integration/claude-terminal-session-service', () => ({
   getClaudeTerminalSessionService: () => ({
     getState: () => mockTerminalState(),
+    runningAutomationTurn: () => false,
     resumePendingObservations: mockResumePendingObservations,
   }),
 }));
@@ -2979,6 +2981,481 @@ describe('chat state service', () => {
       before.tabsFile.tabs[0]?.messages,
     );
     expect(dispatched).toEqual([]);
+  });
+
+  describe('CAN-7877 part 1a: remote pairing guard on sends and command entry points', () => {
+    it('rejects remote queue commands at entry and after revision check on revocation without writing receipts or mutating hostQueue', async () => {
+      const { target, repository } = serviceWithRepository();
+      chatStateServiceModule.resetChatStateServiceForTests(target);
+      await createChat(target);
+      const chat = { ...SCOPE, chatId: 'chat-1' };
+      const queue = new ChatQueueService({
+        dispatch: async () => undefined,
+        cancel: async () => undefined,
+        settleCancelledTurn: async () => undefined,
+        hasActiveProviderTurn: () => true,
+        hasPendingProviderContinuation: () => false,
+        persistRuntime: (...args) => target.reconcileHostQueue(...args),
+        broadcast: () => undefined,
+        createId: () => 'edit-q-1',
+        now: () => 1,
+        schedule: (callback) => {
+          const timer = setTimeout(callback, 0);
+          timer.unref();
+          return timer;
+        },
+      });
+      mockedGetChatQueueService.mockReturnValue(queue);
+      queue.hydratePersistedInput(
+        { ...chat, userMessageId: 'u-1', text: 'First queued' },
+        'row-1',
+        'desktop',
+        1,
+      );
+      queue.hydratePersistedInput(
+        { ...chat, userMessageId: 'u-2', text: 'Second queued' },
+        'row-2',
+        'desktop',
+        2,
+      );
+      await target.reconcileHostQueue(
+        chat,
+        ['row-1', 'row-2'],
+        true,
+        undefined,
+        [
+          {
+            id: 'row-1',
+            request: { ...chat, userMessageId: 'u-1', text: 'First queued' },
+            origin: 'desktop',
+            enqueuedAtMs: 1,
+          },
+          {
+            id: 'row-2',
+            request: { ...chat, userMessageId: 'u-2', text: 'Second queued' },
+            origin: 'desktop',
+            enqueuedAtMs: 2,
+          },
+        ],
+        'u-running',
+      );
+      let paired = true;
+      const realAssertRevision =
+        repository.assertExpectedRevision.bind(repository);
+      const revSpy = jest
+        .spyOn(repository, 'assertExpectedRevision')
+        .mockImplementation(async (scope, expected) => {
+          const revision = await realAssertRevision(scope, expected);
+          paired = false;
+          return revision;
+        });
+      try {
+        const cases: Array<[string, ChatCommand]> = [
+          [
+            'remote-edit',
+            {
+              type: 'chat.edit_queued_message',
+              chatId: 'chat-1',
+              queuedMessageId: 'row-1',
+              text: 'Edited after unpair',
+            },
+          ],
+          [
+            'remote-move',
+            {
+              type: 'chat.move_queued_message',
+              chatId: 'chat-1',
+              queuedMessageId: 'row-2',
+              beforeQueuedMessageId: 'row-1',
+            },
+          ],
+          [
+            'remote-cancel',
+            {
+              type: 'chat.cancel_queued_message',
+              chatId: 'chat-1',
+              queuedMessageId: 'row-1',
+            },
+          ],
+          [
+            'remote-lock',
+            {
+              type: 'chat.set_queued_message_edit_lock',
+              chatId: 'chat-1',
+              queuedMessageId: 'row-1',
+              locked: true,
+              acquisitionId: 'acq-remote',
+            },
+          ],
+          [
+            'remote-force',
+            {
+              type: 'chat.force_queued_message',
+              chatId: 'chat-1',
+              queuedMessageId: 'row-2',
+            },
+          ],
+        ];
+        for (const [commandId, command] of cases) {
+          paired = command.type !== 'chat.force_queued_message';
+          const result = await target.command(envelope(commandId, command), {
+            canCommitSend: () => paired,
+          });
+          expect(result.outcome).toBe('rejected');
+          expect(result.reason).toMatch(/no longer authorizes/i);
+          expect(
+            await target.getCommandReceipt({ ...SCOPE, commandId }),
+          ).toBeNull();
+        }
+        const state = await repository.getState(SCOPE, { chatIds: ['chat-1'] });
+        expect(
+          state.runtimeByChatId['chat-1']?.queuedMessages?.map((row) => row.id),
+        ).toEqual(['row-1', 'row-2']);
+        expect(
+          state.runtimeByChatId['chat-1']?.queuedMessages?.[0]?.request.text,
+        ).toBe('First queued');
+      } finally {
+        revSpy.mockRestore();
+      }
+    });
+
+    it('enforces beforePublish pairing guard on commitTurnOverrideModelFor and commitAdmittedPrompt', async () => {
+      const { target, repository } = serviceWithRepository();
+      chatStateServiceModule.resetChatStateServiceForTests(target);
+      await createChat(target);
+      const chat = { ...SCOPE, chatId: 'chat-1' };
+      let paired = true;
+      let beforePublishCalls = 0;
+      const realTransactWith = repository.transactWith.bind(repository);
+      const transactSpy = jest
+        .spyOn(repository, 'transactWith')
+        .mockImplementation((scope, build, opts) => {
+          const originalBeforePublish = opts?.beforePublish;
+          if (!originalBeforePublish) {
+            return realTransactWith(scope, build, opts);
+          }
+          return realTransactWith(scope, build, {
+            ...opts,
+            beforePublish: (): void => {
+              beforePublishCalls += 1;
+              paired = false;
+              originalBeforePublish();
+            },
+          });
+        });
+      try {
+        await expect(
+          target.commitTurnOverrideModelFor(
+            {
+              ...chat,
+              userMessageId: 'override-u1',
+              text: 'Override model',
+              turnOverride: {
+                version: 1,
+                providerType: 'claude',
+                model: 'claude-sonnet-4-6',
+              },
+            },
+            () => paired,
+          ),
+        ).rejects.toThrow(ChatSendAuthorizationRevokedError);
+        expect(beforePublishCalls).toBe(1);
+        const state = await repository.getState(SCOPE, { chatIds: ['chat-1'] });
+        expect(
+          state.tabsFile.tabs.find((t) => t.id === 'chat-1')?.model,
+        ).not.toBe('claude-sonnet-4-6');
+      } finally {
+        transactSpy.mockRestore();
+      }
+    });
+
+    it('keeps an admitted chat:command prompt in history and dispatches when pairing revokes right after commitAdmittedPrompt', async () => {
+      const { target, repository } = serviceWithRepository({
+        dispatch: undefined,
+      });
+      chatStateServiceModule.resetChatStateServiceForTests(target);
+      await createChat(target);
+      let paired = true;
+      const dispatched: string[] = [];
+      const queue = stateBackedQueue(
+        target,
+        async (request) => {
+          // Pairing was already revoked right after commitAdmittedPrompt committed;
+          // dispatch proceeds because commitAdmittedPrompt is the single commit gate.
+          expect(paired).toBe(false);
+          dispatched.push(request.userMessageId);
+        },
+        { hasActiveProviderTurn: () => false },
+      );
+      mockedGetChatQueueService.mockReturnValue(queue);
+      const realTransactWith = repository.transactWith.bind(repository);
+      let promptCommitSawBeforePublish = false;
+      const transactSpy = jest
+        .spyOn(repository, 'transactWith')
+        .mockImplementation(async (scope, build, opts) => {
+          const result = await realTransactWith(scope, build, opts);
+          if (opts?.mutationId === 'remote-send-post-commit:immediate-prompt') {
+            promptCommitSawBeforePublish =
+              typeof opts.beforePublish === 'function';
+            // Revoke immediately after commitAdmittedPrompt commits while paired.
+            paired = false;
+          }
+          return result;
+        });
+      try {
+        const result = await target.command(
+          envelope('remote-send-post-commit', {
+            type: 'chat.send_message',
+            chatId: 'chat-1',
+            userMessageId: 'u-post-commit',
+            text: 'Committed while paired',
+            providerType: 'claude',
+            model: 'claude-opus-4-6',
+          }),
+          { canCommitSend: () => paired },
+        );
+        expect(promptCommitSawBeforePublish).toBe(true);
+        expect(result.outcome).toBe('applied');
+        expect(dispatched).toEqual(['u-post-commit']);
+
+        const state = await repository.getState(SCOPE, { chatIds: ['chat-1'] });
+        const tab = state.tabsFile.tabs.find((t) => t.id === 'chat-1');
+        expect(
+          tab?.messages.some(
+            (message) =>
+              message.id === 'u-post-commit' &&
+              message.blocks.some(
+                (block) =>
+                  block.type === 'text' &&
+                  block.text === 'Committed while paired',
+              ),
+          ),
+        ).toBe(true);
+        const receipt = await target.getCommandReceipt({
+          ...SCOPE,
+          commandId: 'remote-send-post-commit',
+        });
+        expect(receipt?.outcome).toBe('applied');
+      } finally {
+        transactSpy.mockRestore();
+        queue.resetForTests();
+      }
+    });
+
+    it('restores chat-start watcher metadata on rollback when a revoked first send fails commitAdmittedPrompt', async () => {
+      const { target, repository } = serviceWithRepository({
+        dispatch: undefined,
+      });
+      chatStateServiceModule.resetChatStateServiceForTests(target);
+      await createChat(target);
+
+      // Mark pending explicitly so rollback must restore both pending and firedAt.
+      await repository.transactWith(
+        SCOPE,
+        () => [
+          {
+            type: 'tab.metadata_patched',
+            tabId: 'chat-1',
+            patch: { newChatStartedWatcherPending: true },
+          },
+        ],
+        {
+          source: 'renderer-command',
+          mutationId: 'test:mark-chat-start-watcher-pending',
+          chatIds: ['chat-1'],
+        },
+      );
+      const initialState = await repository.getState(SCOPE, {
+        chatIds: ['chat-1'],
+      });
+      const initialTab = initialState.tabsFile.tabs.find(
+        (t) => t.id === 'chat-1',
+      );
+      expect(initialTab?.newChatStartedWatcherPending).toBe(true);
+      expect(initialTab?.newChatStartedWatcherFiredAt).toBeUndefined();
+
+      let paired = true;
+      const dispatched: Array<{
+        userMessageId: string;
+        startsNewTrackedChat?: boolean;
+      }> = [];
+      const queue = stateBackedQueue(
+        target,
+        async (request) => {
+          dispatched.push({
+            userMessageId: request.userMessageId,
+            startsNewTrackedChat: request.startsNewTrackedChat,
+          });
+        },
+        { hasActiveProviderTurn: () => false },
+      );
+      mockedGetChatQueueService.mockReturnValue(queue);
+      const realTransactWith = repository.transactWith.bind(repository);
+      const transactSpy = jest
+        .spyOn(repository, 'transactWith')
+        .mockImplementation((scope, build, opts) => {
+          if (opts?.mutationId === 'remote-first-revoked:immediate-prompt') {
+            paired = false;
+          }
+          return realTransactWith(scope, build, opts);
+        });
+      try {
+        const rejected = await target.command(
+          envelope('remote-first-revoked', {
+            type: 'chat.send_message',
+            chatId: 'chat-1',
+            userMessageId: 'u-first-revoked',
+            text: 'Revoked first send',
+            providerType: 'claude',
+            model: 'claude-opus-4-6',
+          }),
+          { canCommitSend: () => paired },
+        );
+        expect(rejected.outcome).toBe('rejected');
+        expect(dispatched).toEqual([]);
+
+        const afterRollback = await repository.getState(SCOPE, {
+          chatIds: ['chat-1'],
+        });
+        const rolledBackTab = afterRollback.tabsFile.tabs.find(
+          (t) => t.id === 'chat-1',
+        );
+        expect(rolledBackTab?.messages ?? []).toHaveLength(0);
+        expect(rolledBackTab?.newChatStartedWatcherFiredAt).toBeUndefined();
+        expect(rolledBackTab?.newChatStartedWatcherPending).toBe(true);
+
+        const accepted = await target.command(
+          envelope('remote-first-authorized', {
+            type: 'chat.send_message',
+            chatId: 'chat-1',
+            userMessageId: 'u-first-authorized',
+            text: 'Authorized first send',
+            providerType: 'claude',
+            model: 'claude-opus-4-6',
+          }),
+          { canCommitSend: () => true },
+        );
+        expect(accepted.outcome).toBe('applied');
+        expect(dispatched).toEqual([
+          {
+            userMessageId: 'u-first-authorized',
+            startsNewTrackedChat: true,
+          },
+        ]);
+
+        const afterAuthorized = await repository.getState(SCOPE, {
+          chatIds: ['chat-1'],
+        });
+        const finalTab = afterAuthorized.tabsFile.tabs.find(
+          (t) => t.id === 'chat-1',
+        );
+        expect(finalTab?.newChatStartedWatcherFiredAt).toEqual(
+          expect.any(String),
+        );
+        expect(finalTab?.newChatStartedWatcherPending).toBeUndefined();
+      } finally {
+        transactSpy.mockRestore();
+        queue.resetForTests();
+      }
+    });
+
+    it('enforces beforePublish pairing guard on retainTrustedTerminalInput', async () => {
+      const { target, repository } = serviceWithRepository();
+      chatStateServiceModule.resetChatStateServiceForTests(target);
+      await createChat(target);
+      const validation = jest
+        .spyOn(senderContext, 'revalidateAgentSenderRequest')
+        .mockResolvedValue(undefined);
+
+      let paired = true;
+      let beforePublishCalls = 0;
+      const realTransactWith = repository.transactWith.bind(repository);
+      const transactSpy = jest
+        .spyOn(repository, 'transactWith')
+        .mockImplementation((scope, build, opts) => {
+          const originalBeforePublish = opts?.beforePublish;
+          if (!originalBeforePublish) {
+            return realTransactWith(scope, build, opts);
+          }
+          return realTransactWith(scope, build, {
+            ...opts,
+            beforePublish: (): void => {
+              beforePublishCalls += 1;
+              paired = false;
+              originalBeforePublish();
+            },
+          });
+        });
+      try {
+        await expect(
+          target.retainTrustedTerminalInput(
+            reviewAgentRequest('term-u1'),
+            () => paired,
+          ),
+        ).rejects.toThrow(ChatSendAuthorizationRevokedError);
+        expect(beforePublishCalls).toBe(1);
+        const state = await repository.getState(SCOPE, { chatIds: ['chat-1'] });
+        const tab = state.tabsFile.tabs.find((t) => t.id === 'chat-1');
+        expect(tab?.inputDelivery?.rows ?? []).toHaveLength(0);
+      } finally {
+        transactSpy.mockRestore();
+        validation.mockRestore();
+      }
+    });
+
+    it('skips automation start banner in guarded ensureChatForTrustedSend while preserving unguarded order', async () => {
+      const { target, repository } = serviceWithRepository();
+      chatStateServiceModule.resetChatStateServiceForTests(target);
+
+      const guardedRequest = {
+        ...SCOPE,
+        chatId: 'chat-guarded-auto',
+        userMessageId: 'u-guarded-auto',
+        text: 'Run guarded automation',
+        initiationSource: 'automation' as const,
+        automationName: 'Nightly audit',
+      };
+      await target.ensureChatForTrustedSend(guardedRequest, () => true);
+
+      const afterGuardedEnsure = await repository.getState(SCOPE, {
+        chatIds: ['chat-guarded-auto'],
+      });
+      const guardedTab = afterGuardedEnsure.tabsFile.tabs.find(
+        (t) => t.id === 'chat-guarded-auto',
+      );
+      expect(guardedTab?.messages ?? []).toEqual([]);
+
+      await target.commitAutomationStartBanner(guardedRequest);
+      await target.commitAutomationStartBanner(guardedRequest);
+      const afterBannerCommit = await repository.getState(SCOPE, {
+        chatIds: ['chat-guarded-auto'],
+      });
+      const guardedTabAfterBanner = afterBannerCommit.tabsFile.tabs.find(
+        (t) => t.id === 'chat-guarded-auto',
+      );
+      expect(
+        (guardedTabAfterBanner?.messages ?? []).map((message) => message.id),
+      ).toEqual([automationInfoMessageId('u-guarded-auto')]);
+
+      const unguardedRequest = {
+        ...SCOPE,
+        chatId: 'chat-unguarded-auto',
+        userMessageId: 'u-unguarded-auto',
+        text: 'Run local automation',
+        initiationSource: 'automation' as const,
+        automationName: 'Nightly audit',
+      };
+      await target.ensureChatForTrustedSend(unguardedRequest);
+      const afterUnguardedEnsure = await repository.getState(SCOPE, {
+        chatIds: ['chat-unguarded-auto'],
+      });
+      const unguardedTab = afterUnguardedEnsure.tabsFile.tabs.find(
+        (t) => t.id === 'chat-unguarded-auto',
+      );
+      expect(
+        (unguardedTab?.messages ?? []).map((message) => message.id),
+      ).toEqual([automationInfoMessageId('u-unguarded-auto')]);
+    });
   });
 
   it('names the user messages whose transcript position does not start a turn yet', async () => {
@@ -30811,8 +31288,21 @@ describe('chat state service', () => {
       activeTurn: { userMessageId: 'user-in-flight' },
     });
 
-    releaseDispatch();
-    await send;
+    try {
+      await expect(
+        target.command(
+          envelope('switch-in-flight', {
+            type: 'chat.set_model',
+            tabId: 'chat-1',
+            model: 'antigravity:gemini-4-neon',
+            providerType: 'antigravity',
+          }),
+        ),
+      ).resolves.toMatchObject({ outcome: 'rejected' });
+    } finally {
+      releaseDispatch();
+      await send;
+    }
   });
 
   it('a restart clears an auto-archive marker before the resume, so the resumed turn never archives (CAN-6014)', async () => {
@@ -30856,6 +31346,7 @@ describe('chat state service', () => {
       closeBlocked: () => false,
       locked: () => false,
       dispatchInFlight: () => false,
+      awaitsWatcher: () => Promise.resolve(false),
       dispatch: (request) => {
         dispatched.push(request.command.type);
         return target.command(request);
@@ -39329,6 +39820,12 @@ describe('chat state service', () => {
         (candidate) => candidate.id === 'chat-1',
       );
       expect(afterInit?.providerSwitchSeedPending).toBe(true);
+
+      await target.consumeProviderSwitchSeed(SCOPE, 'chat-1', 'antigravity');
+      const afterStaleReceipt = (
+        await target.getState(SCOPE)
+      ).tabsFile.tabs.find((candidate) => candidate.id === 'chat-1');
+      expect(afterStaleReceipt?.providerSwitchSeedPending).toBe(true);
 
       await target.consumeProviderSwitchSeed(SCOPE, 'chat-1');
       const consumed = (await target.getState(SCOPE)).tabsFile.tabs.find(

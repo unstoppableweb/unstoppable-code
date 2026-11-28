@@ -15,7 +15,7 @@ import {
   isNodeError,
   sweepAbandonedMemoryWrites,
   writeMemoryFileAtomically,
-} from './memory-files';
+} from '@canopy/memory-store/memory-files';
 
 /*
  * `manifest.json` of a device-local scope. Version 2 carries the scope's
@@ -147,7 +147,7 @@ async function backfillAndWriteManifest(
 export async function prepareMemoryScopeForWrite(
   scopeDir: string,
 ): Promise<void> {
-  await ensureOwnerOnlyDir(scopeDir);
+  await ensureOwnerOnlyDir(scopeDir, { trustedScopeRoot: scopeDir });
   const state = await readManifestState(scopeDir);
   if (!isWritable(state)) throw new LocalMemoryScopeReadOnlyError();
   await sweepAbandonedMemoryWrites(scopeDir);
@@ -165,7 +165,7 @@ export async function createReplicaManifest(
   scopeDir: string,
   binding: NonNullable<MemoryManifestFile['binding']>,
 ): Promise<void> {
-  await ensureOwnerOnlyDir(scopeDir);
+  await ensureOwnerOnlyDir(scopeDir, { trustedScopeRoot: scopeDir });
   const state = await readManifestState(scopeDir);
   if (state.kind !== 'legacy' || Object.keys(state.raw).length > 0) return;
   const now = new Date().toISOString();

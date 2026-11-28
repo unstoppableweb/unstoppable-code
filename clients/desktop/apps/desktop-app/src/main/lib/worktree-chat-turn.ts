@@ -19,6 +19,7 @@ import { isBotProjectId } from '@canopy/protocol/chat-targets';
 import { beginChatTurnPreparation } from './chat-turn-cancel';
 import {
   activatePendingTurnRoute,
+  discardPendingTurnRoute,
   getLiveRoutedSession,
   getOrCreateRoutedSession,
   parkBehindWake,
@@ -99,7 +100,10 @@ import type {
   ChatQueueTerminalStatus,
 } from '../services/chat-queue-service';
 import {
+  assertChatPairingAuthorized,
+  ChatSendAuthorizationRevokedError,
   consumeDispatchAuthorization,
+  type ChatPairingCheck,
   wakeParkingOutcome,
   type AuthorizedChatDispatch,
 } from '../services/chat-dispatch-authorization';
@@ -1042,6 +1046,7 @@ export interface DispatchWorktreeChatTurnOptions<
 > {
   /** Host-only queue admission capability, consumed before any start effect. */
   authorization?: AuthorizedChatDispatch;
+  canCommit?: ChatPairingCheck;
   turnDispatchTiming?: TurnDispatchTiming;
   /** Run with the live session's settings (Run now, generated deliveries). */
   useLiveSessionSettings?: true;
@@ -3785,8 +3790,51 @@ async function dispatchHeldWorktreeChatTurn<
     // prompt parks behind it in FIFO. Most wakes start during the preparation
     // above, so check before this attempt opens an audit turn or replaces the
     // turn-diff baseline.
+    const pairingGuard =
+      options.canCommit ?? options.authorization?.canDispatch;
+    // A pairing rejection before handoff drops this attempt's prepared
+    // destination. The discard matches owner and epoch, so another attempt's
+    // pending route and an activated wake route stay registered.
+    const discardRevokedPendingRoute = async (
+      error: unknown,
+    ): Promise<void> => {
+      if (
+        !pendingRouteOwner ||
+        !(error instanceof ChatSendAuthorizationRevokedError)
+      )
+        return;
+      await discardPendingTurnRoute(
+        options,
+        pendingRouteOwner.dispatchOwner,
+        pendingRouteOwner.operationEpoch,
+      ).catch((discardError: unknown) => {
+        logMainProcessError(
+          '[worktree-chat-turn] Failed to discard pending route after pairing rejection',
+          discardError,
+        );
+      });
+    };
+    const parkBehindWakeIfAuthorized = async (
+      parkedOutcome: Parameters<typeof parkBehindWake>[1],
+    ): Promise<never> => {
+      try {
+        assertChatPairingAuthorized(pairingGuard);
+      } catch (error) {
+        await discardRevokedPendingRoute(error);
+        throw error;
+      }
+      try {
+        return await parkBehindWake(options, parkedOutcome);
+      } catch (error) {
+        // parkBehindWake discards this attempt's route before it reports.
+        assertChatPairingAuthorized(pairingGuard);
+        throw error;
+      }
+    };
     const parkedEarly = parkingOwner && wakeParkingOutcome(parkingOwner);
-    if (parkedEarly) await parkBehindWake(options, parkedEarly);
+    if (parkedEarly) await parkBehindWakeIfAuthorized(parkedEarly);
+    let startedAuditTurn = false;
+    let capturedTurnStart = false;
     turnDispatchTiming.measureSync('observability', () => {
       if (
         options.hiddenDeferredContinuation &&
@@ -3808,6 +3856,7 @@ async function dispatchHeldWorktreeChatTurn<
           },
         );
       } else {
+        startedAuditTurn = true;
         observabilityService.startChatTurn({
           projectId: options.projectId,
           worktreeId: options.worktreeId,
@@ -3926,9 +3975,11 @@ async function dispatchHeldWorktreeChatTurn<
       await turnDispatchTiming.measure('turn_capture', () =>
         captureTurnStart(sessionKey, options.projectId, options.worktreeId),
       );
+      capturedTurnStart = true;
     }
     if (preparation.cancelled) {
       if (!options.hiddenDeferredContinuation) {
+        startedAuditTurn = false;
         observabilityService.completeChatTurn(
           options.projectId,
           options.worktreeId,
@@ -3943,6 +3994,8 @@ async function dispatchHeldWorktreeChatTurn<
     if (parked) {
       // The wake started after the early check: undo this attempt's audit
       // turn and diff baseline, as a cancelled preparation does.
+      startedAuditTurn = false;
+      capturedTurnStart = false;
       observabilityService.completeChatTurn(
         options.projectId,
         options.worktreeId,
@@ -3950,7 +4003,29 @@ async function dispatchHeldWorktreeChatTurn<
         'interrupted',
       );
       discardTurnStart(sessionKey);
-      await parkBehindWake(options, parked);
+      await parkBehindWakeIfAuthorized(parked);
+    }
+    const abortPreAcceptancePairing = (): void => {
+      if (startedAuditTurn) {
+        startedAuditTurn = false;
+        observabilityService.completeChatTurn(
+          options.projectId,
+          options.worktreeId,
+          options.chatId,
+          'interrupted',
+        );
+      }
+      if (capturedTurnStart) {
+        capturedTurnStart = false;
+        discardTurnStart(sessionKey);
+      }
+    };
+    try {
+      assertChatPairingAuthorized(pairingGuard);
+    } catch (error) {
+      abortPreAcceptancePairing();
+      await discardRevokedPendingRoute(error);
+      throw error;
     }
     // A prompt's send disarms a reload continuation that never started, so
     // its cause can't head this turn.
@@ -3965,6 +4040,7 @@ async function dispatchHeldWorktreeChatTurn<
       activeTurnUserMessageIds.set(sessionKey, options.userMessageId);
     }
     if (
+      !pairingGuard &&
       options.startsNewTrackedChat &&
       !options.hiddenDeferredContinuation &&
       !isBotProjectId(options.projectId)
@@ -4006,6 +4082,7 @@ async function dispatchHeldWorktreeChatTurn<
       delegationDeliveryClaimed = Boolean(options.managedDelegationDeliveryId);
       // No await between this fence and queue acceptance. Parent Stop after
       // acceptance must not cancel an independent child's lifetime.
+      assertChatPairingAuthorized(pairingGuard);
       options.admissionSignal?.throwIfAborted();
       turnRun.signal.throwIfAborted();
       // A Claude start carries no binding receipt (its prompt binds at its
@@ -4021,6 +4098,13 @@ async function dispatchHeldWorktreeChatTurn<
         turnRun.executeSync(() =>
           session.sendMessage(submittedText, {
             userMessageId: options.userMessageId,
+            ...(effectiveExecutionHarness === 'antigravity' &&
+            providerSwitchSeed
+              ? {
+                  onPromptCompleted: (): Promise<void> =>
+                    providerSwitchSeed.delivered('antigravity'),
+                }
+              : {}),
             ...((effectiveExecutionHarness === 'opencode' ||
               effectiveExecutionHarness === 'antigravity') &&
             !options.hiddenDeferredContinuation &&
@@ -4055,6 +4139,18 @@ async function dispatchHeldWorktreeChatTurn<
       );
       releaseSessionTurnPreparation = undefined;
     } catch (error) {
+      if (error instanceof ChatSendAuthorizationRevokedError) {
+        if (
+          activeTurnUserMessageIds.get(sessionKey) === options.userMessageId
+        ) {
+          activeTurnUserMessageIds.delete(sessionKey);
+        }
+        abortPreAcceptancePairing();
+        if (isCodeReview) {
+          noteCodeReviewTurnEnd(options.worktreeId, options.getWindow);
+        }
+        await discardRevokedPendingRoute(error);
+      }
       closePlanTurn();
       if (memoryMeasurement)
         forgetLocalMemoryTurnMeasurement(sessionKey, memoryMeasurement);
@@ -4083,11 +4179,26 @@ async function dispatchHeldWorktreeChatTurn<
     }
     turnRun.accepted();
     activeTurnAccepted = true;
+    options.onTurnAccepted?.();
     if (session.isDisposed?.() !== true) {
       await migrationNotice?.delivered();
-      await providerSwitchSeed?.delivered();
+      if (effectiveExecutionHarness !== 'antigravity')
+        await providerSwitchSeed?.delivered();
     }
-    options.onTurnAccepted?.();
+    if (
+      pairingGuard &&
+      options.startsNewTrackedChat &&
+      !options.hiddenDeferredContinuation &&
+      !isBotProjectId(options.projectId) &&
+      session.isDisposed?.() !== true
+    ) {
+      await notifyCanonicalChatStarted(
+        options,
+        options.userMessageId,
+        watcherAcceptedAt,
+        watcherContext,
+      ).catch(() => undefined);
+    }
     // `sendMessage` enqueues without inspecting session state, so a session
     // destroyed between dispatch and send still accepts the composed turn into
     // a queue no provider will ever drain. No terminal event will end that

@@ -25,6 +25,7 @@ export interface OrchestratorSettingsModalProps {
   readonly instructions: string;
   readonly onInstructionsChange: (value: string) => void;
   readonly instructionsLoading?: boolean;
+  readonly instructionsError?: ReactNode;
   readonly instructionsPlaceholder: string;
   readonly retentionDays: number;
   readonly onRetentionDaysChange: (value: number) => void;
@@ -59,6 +60,7 @@ export function OrchestratorSettingsModal({
   instructions,
   onInstructionsChange,
   instructionsLoading,
+  instructionsError,
   instructionsPlaceholder,
   retentionDays,
   onRetentionDaysChange,
@@ -101,21 +103,23 @@ export function OrchestratorSettingsModal({
       >
         {loading}
         {contentReady && activeTab === 'defaults' ? defaults : null}
-        {contentReady && activeTab === 'instructions' ? (
-          <OrchestratorInstructionsPanel
-            value={instructions}
-            onChange={onInstructionsChange}
-            disabled={instructionsLoading}
-            labelId={`${prefix}-claude-md-label`}
-            descriptionId={
-              formLayout === 'stack'
-                ? `${prefix}-claude-md-description`
-                : undefined
-            }
-            testId={`${prefix}-settings-claude-md`}
-            placeholder={instructionsPlaceholder}
-          />
-        ) : null}
+        {contentReady && activeTab === 'instructions'
+          ? (instructionsError ?? (
+              <OrchestratorInstructionsPanel
+                value={instructions}
+                onChange={onInstructionsChange}
+                disabled={instructionsLoading}
+                labelId={`${prefix}-claude-md-label`}
+                descriptionId={
+                  formLayout === 'stack'
+                    ? `${prefix}-claude-md-description`
+                    : undefined
+                }
+                testId={`${prefix}-settings-claude-md`}
+                placeholder={instructionsPlaceholder}
+              />
+            ))
+          : null}
         {contentReady && activeTab === 'advanced' ? (
           <Stack gap="group">
             <OrchestratorRetentionCard

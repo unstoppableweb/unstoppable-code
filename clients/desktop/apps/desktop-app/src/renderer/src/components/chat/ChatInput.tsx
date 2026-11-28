@@ -157,6 +157,7 @@ import {
   subscribeApprovalDefaultsGeneration,
 } from '@/stores/chat/approval-defaults';
 import {
+  hasOpenModalDialogAbove,
   useCancelRunningChatShortcut,
   useCancelShortcutConfirmationStore,
 } from './useCancelRunningChatShortcut';
@@ -476,7 +477,8 @@ import {
   type CreditsModelSwitchResult,
   type CreditsModelSwitchTarget,
 } from '@/lib/creditsModelSwitch';
-import { useProviderAvailability } from '@/hooks/useProviderAvailability';
+import { useAiCreditsAvailability } from '@/hooks/useAiCreditsAvailability';
+import { useProviderAvailabilityForCredits } from '@/hooks/useProviderAvailability';
 import { useThinkingHarness } from './useThinkingHarness';
 import { DirectoryPicker } from './DirectoryPicker';
 import { UsageIndicator } from './UsageIndicator';
@@ -1381,6 +1383,20 @@ function ChatInputContent({
     return unsubscribe;
   }, []);
 
+  const focusComposerIfUnobstructed = useCallback(():
+    | 'focused'
+    | 'modal-blocked'
+    | 'not-ready' => {
+    const root = composerRootRef.current;
+    if (!root || !isComposerVisible()) return 'not-ready';
+    // Check when focus is about to move: a dialog can open after scheduling.
+    if (hasOpenModalDialogAbove(root.ownerDocument, root)) {
+      return 'modal-blocked';
+    }
+    focusEditor(editor);
+    return 'focused';
+  }, [editor, isComposerVisible]);
+
   // Focus the editor whenever the selected worktree or active tab changes so
   // the user can start typing immediately after clicking a worktree in the
   // sidebar or creating/switching tabs. A copy that just opened keeps the
@@ -1395,17 +1411,17 @@ function ChatInputContent({
 
     // Defer focus until after Slate has rendered its DOM nodes
     const animationFrameId = requestAnimationFrame(() => {
+      const doc = composerRootRef.current?.ownerDocument;
       if (
-        !isComposerVisible() ||
+        !doc ||
         editingState?.autoFocus === false ||
-        getDocument(composerRootRef.current).activeElement?.closest(
-          '[data-testid="tool-approval-dock"]',
-        ) != null ||
-        hasForkedContainerFocus(document)
+        doc.activeElement?.closest('[data-testid="tool-approval-dock"]') !=
+          null ||
+        hasForkedContainerFocus(doc)
       ) {
         return;
       }
-      focusEditor(editor);
+      focusComposerIfUnobstructed();
     });
 
     return (): void => {
@@ -1414,8 +1430,7 @@ function ChatInputContent({
   }, [
     worktreeKey,
     tab?.id,
-    editor,
-    isComposerVisible,
+    focusComposerIfUnobstructed,
     editingState?.autoFocus,
   ]);
 
@@ -1423,23 +1438,23 @@ function ChatInputContent({
     const handler = (event: Event): void => {
       const detail: unknown =
         event instanceof CustomEvent ? event.detail : undefined;
-      if (isChatComposerFocusRequest(detail) && detail.targetTabId !== tabId)
-        return;
-      if (!isComposerVisible()) return;
       if (isChatComposerFocusRequest(detail)) {
-        focusEditor(editor);
-        detail.markHandled();
+        if (detail.targetTabId === tabId) {
+          const result = focusComposerIfUnobstructed();
+          if (result !== 'not-ready') detail.markHandled(result);
+        }
         return;
       }
+      if (!isComposerVisible()) return;
       requestAnimationFrame(() => {
-        focusEditor(editor);
+        focusComposerIfUnobstructed();
       });
     };
     document.addEventListener('canopy:focus-chat-input', handler);
     return (): void => {
       document.removeEventListener('canopy:focus-chat-input', handler);
     };
-  }, [editor, isComposerVisible, tabId]);
+  }, [focusComposerIfUnobstructed, isComposerVisible, tabId]);
 
   // Listen for external file-reference insertion requests (e.g. @ mentions
   // from the workspace-item activity cards). The event carries
@@ -2502,7 +2517,9 @@ function ChatInputContent({
     tab?.id,
     targetOverride,
   ]);
-  const providerAvailability = useProviderAvailability(creditsScope);
+  const creditsAvailability = useAiCreditsAvailability(creditsScope);
+  const providerAvailability =
+    useProviderAvailabilityForCredits(creditsAvailability);
   const selectedRepoId = tab?.selectedRepoId;
   const hasStartedSession = tab?.hasStartedSession ?? false;
 
@@ -4502,7 +4519,13 @@ function ChatInputContent({
   // authoritatively by the main process for every chat surface (CAN-838).
   // Existing-session Schedule Resume is wired here; the rest of the banner
   // lives in the shared AiCreditsUsageLimitBanner component.
-  const usageLimitBanner = useVisibleUsageLimitBanner(bannerTarget);
+  const storedUsageLimitBanner = useVisibleUsageLimitBanner(bannerTarget);
+  const showUsageLimitForProvider =
+    billingProvider !== 'antigravity' ||
+    storedUsageLimitBanner?.provider === 'antigravity';
+  const usageLimitBanner = showUsageLimitForProvider
+    ? storedUsageLimitBanner
+    : null;
   // In-chat resume for a turn an app close interrupted (CAN-5177). The
   // banner above, when visible, already offers Resume and takes precedence.
   const interruptedTurnResumeUserMessageId =
@@ -4833,6 +4856,32 @@ function ChatInputContent({
     ?.projectId;
   const usageLimitProvider = usageLimitBanner?.provider;
   const usageLimitResetsAt = usageLimitBanner?.resetsAt;
+  const hasBannerTarget = bannerTarget !== null;
+  const antigravityRecoveryAvailable =
+    allowCursor &&
+    !nonLocalProject &&
+    !isAppAdvisorComposer &&
+    providerAvailability.antigravity.nativeAuth;
+  const recoveryWorkOwner = creditsAvailability.workOwner;
+  const orgProjectsEnabled = useFeatureFlagsStore((state) =>
+    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key),
+  );
+  const antigravityRecoveryModel = useMemo((): ChatModel | undefined => {
+    if (!hasBannerTarget || !antigravityRecoveryAvailable) return undefined;
+    const models = nativeSendableModels('antigravity', {
+      owner: recoveryWorkOwner,
+      useAccountPolicy: !orgProjectsEnabled,
+    });
+    return models.find((id) => id === 'antigravity:gemini-4-neon') ?? models[0];
+    // The native catalog and policy are read through the model facts version.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    antigravityRecoveryAvailable,
+    hasBannerTarget,
+    modelFactsVersion,
+    orgProjectsEnabled,
+    recoveryWorkOwner,
+  ]);
   // A usage limit is the account's, not the chat's: a limit another chat
   // reached, or one this chat's banner no longer shows, still holds until it
   // resets, so the list never offers a provider that is still limited.
@@ -4854,7 +4903,6 @@ function ChatInputContent({
   // keystroke; the gateway's model list is built only here. An Agent chat
   // never matches: a plain route would drop the Agent's instructions, the
   // same guard the credits switch has.
-  const hasBannerTarget = bannerTarget !== null;
   const providerChoiceEquivalents = useMemo((): {
     readonly gateway?: ChatModel;
     readonly native: Partial<Record<'claude' | 'codex', ChatModel>>;
@@ -4901,7 +4949,9 @@ function ChatInputContent({
     const current: ProviderSourceId | null =
       billingResolution.framework === 'ai-credits'
         ? 'credits'
-        : billingProvider === 'claude' || billingProvider === 'codex'
+        : billingProvider === 'claude' ||
+            billingProvider === 'codex' ||
+            billingProvider === 'antigravity'
           ? billingProvider
           : null;
     // A started chat changes provider only in place, where main allows the
@@ -4912,15 +4962,13 @@ function ChatInputContent({
       if (lockedProvider === undefined || provider === lockedProvider) {
         return undefined;
       }
-      if (
-        provider === continueTargetProvider &&
-        continueEligibility?.ok === true
-      ) {
-        return undefined;
+      if (canSwitchProviderInPlace(lockedProvider, provider)) {
+        return continueEligibility?.ok === true
+          ? undefined
+          : (continueEligibility?.reason ??
+              describeLockedProviderReason(lockedProvider, provider));
       }
-      return continueEligibility?.ok === false
-        ? continueEligibility.reason
-        : describeLockedProviderReason(lockedProvider, provider);
+      return describeLockedProviderReason(lockedProvider, provider);
     };
     // The switch onto the default credits model keeps the guards the earlier
     // "Continue on <credits model>" had: an Agent is never switched (the plain
@@ -5012,6 +5060,9 @@ function ChatInputContent({
           modelProvider: billingProvider,
           modelRunsNatively: !isGatewayOnlyModel(modelForBilling),
           availability: providerAvailability,
+          ...(antigravityRecoveryModel !== undefined
+            ? { antigravityModel: toChoiceModel(antigravityRecoveryModel) }
+            : {}),
           blockedReasonFor: providerSwitchBlockedReason,
           equivalentModelFor: (provider) => {
             const equivalent = providerChoiceEquivalents.native[provider];
@@ -5087,7 +5138,10 @@ function ChatInputContent({
           return false;
         }
         if (row.outcome.kind === 'switch-model') {
-          return handleRecoveryCommit(row.outcome.target.id, 'subscription');
+          return handleRecoveryCommit(
+            row.outcome.target.id,
+            row.source === 'antigravity' ? undefined : 'subscription',
+          );
         }
         if (
           row.outcome.kind === 'same-model' &&
@@ -5103,6 +5157,7 @@ function ChatInputContent({
       },
     };
   }, [
+    antigravityRecoveryModel,
     bannerTarget,
     billingControl,
     billingProvider,
@@ -5110,7 +5165,6 @@ function ChatInputContent({
     billingResolution.lockKind,
     chooseCreditsForThisChat,
     continueEligibility,
-    continueTargetProvider,
     creditsModelRoutability,
     creditsTargetRoutable,
     handleContinueOnAiCredits,
@@ -9066,7 +9120,7 @@ function ChatInputContent({
         {!isEditingQueued && pairedComputerProjectId === undefined && (
           <>
             <AiCreditsUsageLimitBanner
-              target={bannerTarget}
+              target={showUsageLimitForProvider ? bannerTarget : null}
               providerChoice={providerChoiceContext}
               {...(billingResolution.framework !== null
                 ? {

@@ -8,6 +8,7 @@ packages:
   - packages/remote-session
   - packages/agent-transcript
   - packages/memory-consolidation
+  - packages/memory-store
   - packages/core-runtime
   - packages/core-platform
   - packages/core-transport

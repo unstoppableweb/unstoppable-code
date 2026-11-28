@@ -4,6 +4,10 @@ import type {
 } from '@canopy/protocol/terminal';
 import type { PlatformOperatingSystem } from '../../../platform/platform-services';
 import { TerminalEngine, type TerminalEngineOptions } from '../engine';
+import {
+  TERMINAL_OUTPUT_INTERRUPTION_DETECTION_TAIL_CHARS,
+  terminalOutputIndicatesUserInterruptedTurn,
+} from '../interrupt-detection';
 import type {
   TerminalEngineHost,
   TerminalLogPort,
@@ -115,6 +119,8 @@ export function serveTerminalHost(options: TerminalHostServerOptions): {
   // Terminals whose bytes belong in the worktree record (CAN-7051).
   const persisted = new Set<string>();
   const firstOutput = new Set<string>();
+  // Claude terminals' recent live output, read for their interrupt line (Q-D).
+  const interruptTails = new Map<string, string>();
   const pendingOutput = new Map<
     string,
     { chunks: Buffer[]; bytes: number; toOffset: number }
@@ -384,11 +390,34 @@ export function serveTerminalHost(options: TerminalHostServerOptions): {
     }, OFFSET_REPORT_INTERVAL_MS);
   }
 
+  function watchInterrupt(terminalId: string, data: Uint8Array): void {
+    const tail = interruptTails.get(terminalId);
+    if (tail === undefined) return;
+    const next = `${tail}${Buffer.from(data).toString('utf8')}`.slice(
+      -TERMINAL_OUTPUT_INTERRUPTION_DETECTION_TAIL_CHARS,
+    );
+    if (!terminalOutputIndicatesUserInterruptedTurn(next)) {
+      interruptTails.set(terminalId, next);
+      return;
+    }
+    // Once per match: a later repaint of the line is a new match.
+    interruptTails.set(terminalId, '');
+    post({
+      kind: 'report',
+      report: {
+        type: 'interruptText',
+        terminalId,
+        lifetimeId: lifetimes.get(terminalId),
+      },
+    });
+  }
+
   engine.setEventSink((event) => {
     if (event.type === 'output') {
       // Live PTY output only: a restore's replay never reaches this sink.
       offsets.set(event.payload.terminalId, event.payload.seq);
       noteOutput(event.payload.terminalId);
+      watchInterrupt(event.payload.terminalId, event.payload.data);
       return;
     }
     if (event.type === 'runningChanged') {
@@ -415,6 +444,7 @@ export function serveTerminalHost(options: TerminalHostServerOptions): {
       flushOutput(terminalId);
       persisted.delete(terminalId);
       firstOutput.delete(terminalId);
+      interruptTails.delete(terminalId);
       changedOffsets.delete(terminalId);
       sizes.delete(terminalId);
       offsets.delete(terminalId);
@@ -483,6 +513,7 @@ export function serveTerminalHost(options: TerminalHostServerOptions): {
           }),
         });
         if (launch.persist === true) persisted.add(session.id);
+        if (launch.watchInterrupt === true) interruptTails.set(session.id, '');
         sizes.set(session.id, { cols: request.cols, rows: request.rows });
         offsets.set(session.id, 0);
         return live(session.id);
@@ -536,6 +567,8 @@ export function serveTerminalHost(options: TerminalHostServerOptions): {
         } finally {
           seeded.delete(terminalId);
         }
+        if (recreate.watchInterrupt === true)
+          interruptTails.set(terminalId, '');
         sizes.set(terminalId, { cols, rows });
         offsets.set(terminalId, engine.replay(terminalId).seq);
         return { terminal: live(terminalId), recreated: true };

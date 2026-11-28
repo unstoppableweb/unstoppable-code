@@ -99,6 +99,7 @@ export const ChatMessageItem = memo(function ChatMessageItem({
         event={wake.taskEvent === true}
         scheduled={wake.scheduled === true}
         toolsLoaded={wake.toolsLoaded === true}
+        peerMessage={wake.peerMessage === true}
         timestamp={message.timestamp}
         onShowSpawningTurn={
           (target.toolUseId !== undefined ||

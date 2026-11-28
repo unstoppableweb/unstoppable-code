@@ -15,7 +15,7 @@ import {
   ensureOwnerOnlyMemoryDir,
   readMemoryFile,
   writeNewMemoryFile,
-} from '../local/memory-files';
+} from '@canopy/memory-store/memory-files';
 import { freeNoteFileKey, readReplicaInboxNotes } from './first-enable';
 import { splitWithinBudget } from './note-split';
 import { renderPulledNote } from './note-records';

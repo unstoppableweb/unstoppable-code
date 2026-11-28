@@ -10,6 +10,10 @@ export function useTerminalDrawerAttentionSubscriptions(): void {
     const output = window.api.terminal.onOutput((event) =>
       store.applyOutput(event),
     );
+    // A terminal this window reads on its own connection (CAN-8070).
+    const progress = window.api.terminal.onOutputProgress((event) =>
+      store.applyOutput(event),
+    );
     const exit = window.api.terminal.onExit((event) => store.applyExit(event));
     const spawned = window.api.terminal.onSpawned((session) =>
       store.applyRunning({
@@ -27,6 +31,7 @@ export function useTerminalDrawerAttentionSubscriptions(): void {
     return (): void => {
       running();
       output();
+      progress();
       exit();
       spawned();
     };

@@ -201,7 +201,8 @@ export function createDurableTerminalClient(
     (filter?.projectId === undefined ||
       filter.projectId === session.projectId) &&
     (filter?.worktreeId === undefined ||
-      filter.worktreeId === session.worktreeId);
+      filter.worktreeId === session.worktreeId) &&
+    (filter?.terminalId === undefined || filter.terminalId === session.id);
 
   const emitExit = (
     entry: Entry,

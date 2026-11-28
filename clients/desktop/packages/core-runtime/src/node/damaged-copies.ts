@@ -74,13 +74,12 @@ function resolveNames(target: string | DamagedCopyNames): DamagedCopyNames {
 }
 
 /**
- * The surplus damaged copies, oldest first. Only regular files whose whole
+ * The damaged copies' paths, oldest first. Only regular files whose whole
  * name fits the naming are counted.
  */
-function surplusDamagedCopies(
+function orderedDamagedCopies(
   names: DamagedCopyNames,
   entries: readonly fs.Dirent[],
-  keep: number,
 ): string[] {
   const pattern = namePattern(names);
   const copies: { name: string; takenAt: number }[] = [];
@@ -92,9 +91,36 @@ function surplusDamagedCopies(
       copies.push({ name: entry.name, takenAt: takenAt(stamp) });
   }
   copies.sort((a, b) => a.takenAt - b.takenAt || a.name.localeCompare(b.name));
-  return copies
-    .slice(0, Math.max(0, copies.length - keep))
-    .map((copy) => path.join(names.directory, copy.name));
+  return copies.map((copy) => path.join(names.directory, copy.name));
+}
+
+/** The surplus damaged copies, oldest first. */
+function surplusDamagedCopies(
+  names: DamagedCopyNames,
+  entries: readonly fs.Dirent[],
+  keep: number,
+): string[] {
+  const copies = orderedDamagedCopies(names, entries);
+  return copies.slice(0, Math.max(0, copies.length - keep));
+}
+
+/**
+ * The path of the newest of the named copies by the time in its name, or
+ * undefined when there is none or the folder can't be listed.
+ */
+export async function newestDamagedCopy(
+  names: DamagedCopyNames,
+): Promise<string | undefined> {
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(names.directory, {
+      withFileTypes: true,
+    });
+  } catch {
+    return undefined;
+  }
+  const copies = orderedDamagedCopies(names, entries);
+  return copies.length > 0 ? copies[copies.length - 1] : undefined;
 }
 
 /**

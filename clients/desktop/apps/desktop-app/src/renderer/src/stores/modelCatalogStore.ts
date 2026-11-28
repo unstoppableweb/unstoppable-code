@@ -29,6 +29,7 @@ import {
   type ModelPolicyIndex,
 } from '@canopy/desktop-shared/lib/model-policy';
 import {
+  accountUsesDeviceModelGateway,
   localModelGatewayProjection,
   resolveModelGatewayIndex,
   type ModelGatewayIndex,
@@ -56,6 +57,7 @@ import {
   setRendererActiveWorkOwner,
   setRendererModelGatewayIndex,
   setRendererModelPolicyIndex,
+  setRendererModelPolicyReadAvailable,
 } from './modelPolicyRuntime';
 
 export type HarnessAssignmentsLoadState =
@@ -656,24 +658,32 @@ export const useModelCatalogStore = create<ModelCatalogState>((set, get) => ({
     const seq = ++policyRefreshSeq;
     let policyIndex: ModelPolicyIndex = EMPTY_POLICY_INDEX;
     let gatewayIndex: ModelGatewayIndex = EMPTY_GATEWAY_INDEX;
+    let accountReadAvailable = false;
     try {
-      // Read beside the account. A failed device gateway read is no device
-      // gateway, as in main.
       const devicePromise = Promise.allSettled([
         window.api.localModelGateway.read(),
-      ]).then(([result]) =>
-        result.status === 'fulfilled' ? result.value : null,
-      );
+      ]);
       const account = await window.api.loadCanopyCloudAccount();
-      const device = await devicePromise;
+      const [device] = await devicePromise;
       if (seq !== policyRefreshSeq) return;
+      accountReadAvailable =
+        account.read === undefined || account.read === 'ok';
       policyIndex = resolveModelPolicyIndex(account);
       // The device AI gateway routes while the account names no Personal org.
       gatewayIndex = resolveModelGatewayIndex(
         account,
-        localModelGatewayProjection(device?.gateway),
+        localModelGatewayProjection(
+          device.status === 'fulfilled' ? device.value?.gateway : undefined,
+        ),
       );
+      if (
+        device.status === 'rejected' &&
+        accountUsesDeviceModelGateway(account)
+      ) {
+        gatewayIndex = { ...gatewayIndex, personalUnavailable: true };
+      }
     } catch {
+      if (seq === policyRefreshSeq) setRendererModelPolicyReadAvailable(false);
       // A failed renderer-side read leaves the picker unfiltered; enforcement
       // itself lives at the main-process session guard, which fails closed for
       // a known org member. This filter is the affordance, not the control.
@@ -694,6 +704,7 @@ export const useModelCatalogStore = create<ModelCatalogState>((set, get) => ({
     // returned `'ai-credits'` — so a credits-lane user's new chats shipped
     // without the billing seed the tool-schema profile and the banner read.
     setRendererModelPolicyIndex(policyIndex, true);
+    setRendererModelPolicyReadAvailable(accountReadAvailable);
     const owner = navigationOwner(gatewayIndex);
     setRendererActiveWorkOwner(owner);
     set({

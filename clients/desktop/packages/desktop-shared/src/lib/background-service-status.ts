@@ -32,6 +32,8 @@ export const BACKGROUND_SERVICE_CONSUMERS = [
   'scripts',
   // Eligible local window workflows without model steps (CAN-5086).
   'pipelines',
+  // Domain preference saves kept while the daemon is unavailable (CAN-7993).
+  'preferences',
 ] as const;
 export type BackgroundServiceConsumer =
   (typeof BACKGROUND_SERVICE_CONSUMERS)[number];

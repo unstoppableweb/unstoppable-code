@@ -82,6 +82,8 @@ export interface PipelineStepSenderSource {
   /** Display only; normalized and sliced like chat titles (256). */
   pipelineName: string;
   automation?: { automationId: string; automationName: string };
+  /** A scheduler resumed this execution without changing its initiator. */
+  automationContinuation?: true;
   /** The run's owner, from `pipelineHostCallerOwner`. Unknown never reaches here. */
   owner: ProjectOwnerContext;
   /** The agent whose admission applies (`ExecutionState.agent_origin`, D11). */
@@ -751,6 +753,9 @@ export async function buildPipelineSenderRequest(
       acceptedInputId,
       sender,
       owner: source.owner,
+      ...('automationContinuation' in source && source.automationContinuation
+        ? { automationContinuation: true as const }
+        : {}),
       ...(agentOrigin ? { agentOrigin } : {}),
     };
     return {
@@ -954,6 +959,9 @@ export function parseAgentSenderProvenance(
       sender,
       owner,
       ...(agentOrigin ? { agentOrigin } : {}),
+      ...(value.automationContinuation === true
+        ? { automationContinuation: true as const }
+        : {}),
       version: 1,
       capturedAt: value.capturedAt,
       acceptedInputId: value.acceptedInputId,

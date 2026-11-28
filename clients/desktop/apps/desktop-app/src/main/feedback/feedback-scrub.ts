@@ -949,18 +949,177 @@ class ProcessOutputScrubber {
   }
 }
 
+// A credential key word, matched from the word itself as the shared rules do.
+const PLACEHOLDER_KEY = String.raw`api[_-]?key|access[_-]?key|secret[_-]?access[_-]?key|secret[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|private[_-]?key|token|secret|password|passwd|pwd`;
+// One reference path, such as secrets.DEPLOY_TOKEN or inputs.token: no
+// operators, pipes, calls or literals.
+const REFERENCE_PATH = String.raw`\s{0,8}[A-Za-z_][A-Za-z0-9_-]{0,127}(?:\.[A-Za-z_][A-Za-z0-9_-]{0,127}){0,8}\s{0,8}`;
+// Placeholders that provably end: <...>, ${{ path }}, {{ path }} and ${NAME}.
+const BRACKETED_PLACEHOLDER = [
+  String.raw`<[^<>\r\n]{1,256}>`,
+  String.raw`\$\{\{${REFERENCE_PATH}\}\}`,
+  String.raw`\{\{${REFERENCE_PATH}\}\}`,
+  String.raw`\$\{[A-Za-z_][A-Za-z0-9_]{0,127}\}`,
+].join('|');
+const BARE_PLACEHOLDER = String.raw`(?:\$|(?:process\.)?env\.)[A-Za-z0-9_]{1,128}`;
+// Up to 8 of `, ; ) ] }` after a placeholder, ending at the end of the text
+// or whitespace. After a quoted placeholder they may also end at the next
+// quoted key, as in `{"token":"<x>","b":1}`. Anything else glued on after
+// them is part of the value.
+const CLOSING_RUN = String.raw`[,;)\]}]{1,8}`;
+const NEXT_QUOTED_KEY = String.raw`\2(?<=["'])[^"'\r\n]{0,128}\2\s{0,8}:`;
+// A key word starts its name: it follows the start of the text or
+// whitespace, then at most 4 color codes and at most 4 of `" ' ` ( [ { , ; :`,
+// then a flag dash. Text glued on before it, such as a token whose last
+// characters spell a key word, a name prefix, or text and a color code, means
+// no cut.
+const KEY_START = `(?<=(?:^|\\s)(?:${ESC}\\[[0-?]{0,16}[ -/]{0,4}[@-~]){0,4}["'\`([{,;:]{0,4})(?:-{1,2})?`;
+// A key, its separator, a color code, then a placeholder. A quoted
+// placeholder fills the whole quoted value. A bracketed one may end at an
+// escape, which the escapes-removed reading still reads through; a bare name
+// must end at a hard boundary. One followed by = or : is the key of another
+// assignment, not a placeholder.
+const PLACEHOLDER_ASSIGNMENT = new RegExp(
+  `${KEY_START}(${PLACEHOLDER_KEY})["']?\\s*(?:=|:)\\s*(?:${ESC}\\[[0-?]*[ -/]*[@-~])*(["']?)` +
+    `(?:(${BRACKETED_PLACEHOLDER})\\2(?=$|[\\s${ESC}]|${CLOSING_RUN}(?:$|[\\s${ESC}]|${NEXT_QUOTED_KEY}))` +
+    `|(${BARE_PLACEHOLDER})\\2(?=$|\\s|${CLOSING_RUN}(?:$|\\s|${NEXT_QUOTED_KEY})))(?!\\s*[=:])`,
+  'gi',
+);
+// URL user-info or a basic-auth flag, as the shared url_credentials check
+// reads them, with any password. A cut would change their shape.
+const USER_INFO =
+  /(?<=[A-Za-z0-9+.-]):\/\/[^\s/?#@:]*:[^\s/?#@]*@|(?:^|[\s"'`])(?:-u|--user)(?:[ \t]+|=)["']?[^\s"':]+:/;
+// The whole words a bare name may end in: the last parts of the key list,
+// plus PAT and CREDENTIAL(S) from the shared check's secret key names.
+const CREDENTIAL_WORDS = new Set([
+  'KEY',
+  'TOKEN',
+  'SECRET',
+  'PASSWORD',
+  'PASSWD',
+  'PWD',
+  'PAT',
+  'CREDENTIAL',
+  'CREDENTIALS',
+]);
+// UPPER_SNAKE with every segment at most 12 characters: a value glued onto a
+// name makes a longer segment than any name part.
+const PLACEHOLDER_NAME = /^[A-Z][A-Z0-9]{0,11}(?:_[A-Z0-9]{1,12})*$/;
+const KEY_WITH_VALUE = new RegExp(
+  `(?:${PLACEHOLDER_KEY})["']{0,2}\\s*[=:]\\s*["']{0,2}[^\\s"',;)\\]}]`,
+  'i',
+);
+const VALUE_RUN = /[A-Za-z0-9+/=_.-]{8,}/g;
+const LEFTOVER_NAME = /(?:\$|(?:process\.)?env\.)([A-Za-z0-9_]+)/g;
+
+/** A run of 8 or more value characters holding a letter and a digit, or 8 digits. */
+function valueLike(text: string): boolean {
+  for (const [run] of text.matchAll(VALUE_RUN))
+    if (/[0-9]{8}/.test(run) || (/[A-Za-z]/.test(run) && /[0-9]/.test(run)))
+      return true;
+  return false;
+}
+
+/**
+ * What a placeholder's own text may not hold: an assignment or a quote, a
+ * value, or another name.
+ */
+function placeholderHoldsValue(holder: string): boolean {
+  if (/[=:'"`]/.test(holder) || valueLike(holder)) return true;
+  for (const match of holder.matchAll(LEFTOVER_NAME))
+    if (!credentialName(match[1] ?? '')) return true;
+  return false;
+}
+
+function credentialName(name: string): boolean {
+  if (!PLACEHOLDER_NAME.test(name)) return false;
+  const parts = name.split('_');
+  return CREDENTIAL_WORDS.has(parts[parts.length - 1] ?? '');
+}
+
+/** Replaces each placeholder assignment that provably ends (CAN-7630). */
+function cutPlaceholders(text: string, replacement: string): string {
+  return text.replace(
+    PLACEHOLDER_ASSIGNMENT,
+    (
+      assignment: string,
+      word: string,
+      _quote: string,
+      bracketed: string | undefined,
+      bare: string | undefined,
+      offset: number,
+      whole: string,
+    ) => {
+      const holder = bracketed ?? bare ?? '';
+      if (findSecretMaterialRule(holder) !== null) return assignment;
+      if (holder.startsWith('<') && placeholderHoldsValue(holder.slice(1, -1)))
+        return assignment;
+      if (bare !== undefined) {
+        // The full key: the identifier the key word ends, read back. A name
+        // is at most 128 characters, so the walk stops there.
+        let start = offset;
+        while (
+          start > 0 &&
+          offset - start < 128 &&
+          /[A-Za-z0-9_]/.test(whole.charAt(start - 1))
+        )
+          start -= 1;
+        const key = `${whole.slice(start, offset)}${word}`;
+        const name = bare.replace(/^\$|^(?:process\.)?env\./, '');
+        if (name.toLowerCase() !== key.toLowerCase() && !credentialName(name))
+          return assignment;
+      }
+      return replacement;
+    },
+  );
+}
+
+/**
+ * Whether a reading the checks flag holds only placeholder assignments, such
+ * as `token: <your token>` or `api_key: $API_KEY` (CAN-7630). Fails closed:
+ * a line with URL user-info, a basic-auth flag or a secret signature keeps its
+ * verdict, and what
+ * is left once they are cut must hold no key with a value, no value-like run
+ * and no other bare name.
+ */
+function onlyPlaceholders(text: string): boolean {
+  if (USER_INFO.test(text)) return false;
+  // A signature on the line as written keeps its verdict: a cut could take
+  // a key word from the end of a token and leave it too short to match.
+  const signature = findSecretMaterialRule(text);
+  if (signature !== null && signature !== 'credential_assignment') return false;
+  const neutralized = cutPlaceholders(text, 'placeholder=example');
+  if (matchesCredentialRule(neutralized)) return false;
+  const rest = cutPlaceholders(text, ' ');
+  if (rest === text) return false;
+  if (KEY_WITH_VALUE.test(rest) || valueLike(rest)) return false;
+  for (const match of rest.matchAll(LEFTOVER_NAME))
+    if (!credentialName(match[1] ?? '')) return false;
+  return true;
+}
+
 /** One pass over the readings: the first that holds a key header or a credential. */
 function reasonFor(text: string): WithheldReason | undefined {
   const checked = text.split(FIELD_WITHHELD_JSON).join('""');
+  // A color code read as a space can hide text glued on before a key, which
+  // shows once the escapes are removed: the placeholder exception must hold
+  // on that reading too.
+  let removedHolds: boolean | undefined;
   for (const reading of readings(checked)) {
     if (reading.tooDeep) return 'credential';
     const material = findSecretMaterialRule(reading.text);
     if (material === 'private_key') return 'private-key-block';
     if (
-      material !== null ||
-      findSharedTextCredentialRule(reading.text) !== null
+      material === null &&
+      findSharedTextCredentialRule(reading.text) === null
     )
-      return 'credential';
+      continue;
+    if (!onlyPlaceholders(reading.text)) return 'credential';
+    if (removedHolds === undefined)
+      removedHolds =
+        !hasTerminalEscape(checked) ||
+        onlyPlaceholders(escapeReadings(checked)[1] ?? checked);
+    if (!removedHolds) return 'credential';
   }
   return undefined;
 }

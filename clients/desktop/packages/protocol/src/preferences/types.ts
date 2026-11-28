@@ -388,6 +388,11 @@ export interface PromotionalNotificationPreferences {
   arbitrary: boolean;
 }
 
+export type PromotionalNotificationCategory = Exclude<
+  keyof PromotionalNotificationPreferences,
+  'enabled'
+>;
+
 /**
  * A single provider's default model + thinking level. Used inside
  * {@link ModelDefaultsByProvider} to hold per-provider defaults for the

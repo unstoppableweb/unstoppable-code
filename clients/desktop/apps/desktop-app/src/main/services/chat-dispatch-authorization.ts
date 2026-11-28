@@ -11,6 +11,28 @@ import {
 
 export type ChatDispatchKind = 'ordinary';
 
+/** Live pairing check carried with a remote send or queue action (CAN-7877). */
+export type ChatPairingCheck = () => boolean;
+
+export const CHAT_SEND_AUTHORIZATION_REVOKED_MESSAGE =
+  'The paired session no longer authorizes this send.';
+
+export class ChatSendAuthorizationRevokedError extends Error {
+  constructor(message = CHAT_SEND_AUTHORIZATION_REVOKED_MESSAGE) {
+    super(message);
+    this.name = 'ChatSendAuthorizationRevokedError';
+  }
+}
+
+export function assertChatPairingAuthorized(
+  canCommit: ChatPairingCheck | undefined,
+  message?: string,
+): void {
+  if (canCommit?.() === false) {
+    throw new ChatSendAuthorizationRevokedError(message);
+  }
+}
+
 /** A symbol registry must validate this value; structural shape is not authority. */
 export interface AuthorizedChatDispatch {
   readonly authorizationToken: symbol;
@@ -19,6 +41,7 @@ export interface AuthorizedChatDispatch {
   readonly userMessageId: string;
   readonly operationEpoch: number;
   readonly kind: ChatDispatchKind;
+  readonly canDispatch?: ChatPairingCheck;
 }
 
 export type ChatDispatchAuthorizationCheck =
@@ -29,7 +52,8 @@ export type ChatDispatchAuthorizationCheck =
         | 'unknown-token'
         | 'consumed'
         | 'stale-owner'
-        | 'scope-mismatch';
+        | 'scope-mismatch'
+        | 'pairing-revoked';
     };
 
 export interface ChatDispatchAuthorizationPort {
@@ -39,6 +63,7 @@ export interface ChatDispatchAuthorizationPort {
       readonly kind: 'dispatch';
       readonly userMessageId: string;
     },
+    canDispatch?: ChatPairingCheck,
   ): AuthorizedChatDispatch;
   consume(
     authorization: AuthorizedChatDispatch,
@@ -83,6 +108,7 @@ export interface ChatDispatchAuthorizationHost {
 interface AuthorizationEntry {
   readonly authorization: AuthorizedChatDispatch;
   readonly serviceEpoch: symbol;
+  readonly canDispatch?: ChatPairingCheck;
   consumed: boolean;
 }
 
@@ -120,6 +146,7 @@ export class ChatDispatchAuthorizationRegistry implements ChatDispatchAuthorizat
   public issue(
     scope: ChatTurnStateScope,
     ownership: DispatchOwnership,
+    canDispatch?: ChatPairingCheck,
   ): AuthorizedChatDispatch {
     const snapshot = this.host.getSnapshot(scope);
     const installed = findOwner(snapshot, ownership.token);
@@ -138,7 +165,13 @@ export class ChatDispatchAuthorizationRegistry implements ChatDispatchAuthorizat
         'Dispatch authorization requires an installed, admitted owner',
       );
     }
-    return this.register(scope, ownership, 'ordinary', snapshot.serviceEpoch);
+    return this.register(
+      scope,
+      ownership,
+      'ordinary',
+      snapshot.serviceEpoch,
+      canDispatch,
+    );
   }
 
   public consume(
@@ -165,6 +198,8 @@ export class ChatDispatchAuthorizationRegistry implements ChatDispatchAuthorizat
       owner.userMessageId !== authorization.userMessageId
     )
       return { kind: 'refused', reason: 'stale-owner' };
+    if (entry.canDispatch?.() === false)
+      return { kind: 'refused', reason: 'pairing-revoked' };
     entry.consumed = true;
     return { kind: 'authorized', ownership: owner };
   }
@@ -183,6 +218,7 @@ export class ChatDispatchAuthorizationRegistry implements ChatDispatchAuthorizat
     ownership: DispatchOwnership,
     kind: ChatDispatchKind,
     serviceEpoch: symbol,
+    canDispatch?: ChatPairingCheck,
   ): AuthorizedChatDispatch {
     const authorization: AuthorizedChatDispatch = Object.freeze({
       authorizationToken: Symbol('chat dispatch authorization'),
@@ -191,10 +227,12 @@ export class ChatDispatchAuthorizationRegistry implements ChatDispatchAuthorizat
       userMessageId: ownership.userMessageId,
       operationEpoch: ownership.operationEpoch,
       kind,
+      ...(canDispatch ? { canDispatch } : {}),
     });
     this.entries.set(authorization.authorizationToken, {
       authorization,
       serviceEpoch,
+      ...(canDispatch ? { canDispatch } : {}),
       consumed: false,
     });
     return authorization;
@@ -233,16 +271,17 @@ export function consumeDispatchAuthorization(
 ): void {
   if (!authorization)
     throw new Error('Chat dispatch requires an admitted capability.');
-  if (
-    getChatDispatchAuthorization().consume(authorization, target).kind ===
-    'refused'
-  )
+  const check = getChatDispatchAuthorization().consume(authorization, target);
+  if (check.kind === 'refused') {
+    if (check.reason === 'pairing-revoked')
+      throw new ChatSendAuthorizationRevokedError();
     throw new ChatDispatchOutcomeError({
       kind: 'refused',
       reason: 'authorization',
       dispatchOwner: authorization.dispatchOwner,
       operationEpoch: authorization.operationEpoch,
     });
+  }
 }
 
 /**

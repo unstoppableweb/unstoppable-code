@@ -1,4 +1,15 @@
 export * from './types';
+export * from './account-proxy';
+export * from './app-advisor-project-agent-access';
+export * from './browser-search-engines';
+export * from './constants';
+export * from './field-guards';
+export * from './legal-consent';
+export * from './model-facts';
+export * from './promotional-notifications';
+export * from './string-array';
+export * from './terminal-preset-images';
+export * from './ui-scale';
 
 /** The `preferences.json` envelope version this build writes. */
 export const PREFERENCES_ENVELOPE_WRITE_VERSION = 1;

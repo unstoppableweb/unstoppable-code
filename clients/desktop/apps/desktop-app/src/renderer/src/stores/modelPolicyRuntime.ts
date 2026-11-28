@@ -34,6 +34,7 @@ let currentGatewayIndex: ModelGatewayIndex = EMPTY_GATEWAY_INDEX;
 let currentActiveOwner: WorkOwner | undefined;
 let currentModelPolicy: ReadonlySet<string> = NO_MODEL_POLICY;
 let currentPolicyHydrated = false;
+let currentPolicyReadAvailable = false;
 let currentGatewayRequirement: ModelGatewayRequirement = UNRESTRICTED;
 let modelFactsVersion = 0;
 const modelFactsListeners = new Set<() => void>();
@@ -190,6 +191,16 @@ export function isRendererModelPolicyHydrated(): boolean {
   return currentPolicyHydrated;
 }
 
+export function isRendererModelPolicyReadAvailable(): boolean {
+  return currentPolicyReadAvailable;
+}
+
+export function setRendererModelPolicyReadAvailable(available: boolean): void {
+  if (currentPolicyReadAvailable === available) return;
+  currentPolicyReadAvailable = available;
+  bumpRendererModelFactsVersion();
+}
+
 /**
  * Per-organization gateway facts from the same account read as the policy.
  *
@@ -227,15 +238,6 @@ function sameRequirement(
 /** Gateway requirement for the active owner, as a renderer affordance. */
 export function getRendererModelGatewayRequirement(): ModelGatewayRequirement {
   return currentGatewayRequirement;
-}
-
-export function getRendererModelGatewayRequirementForOwner(
-  owner: WorkOwner | undefined,
-): ModelGatewayRequirement {
-  return affordanceRequirement(
-    gatewayRequirementForOwner(currentGatewayIndex, owner),
-    owner,
-  );
 }
 
 /** Whether the active owner's organization clamps every model to its gateway. */

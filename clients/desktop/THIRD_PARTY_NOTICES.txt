@@ -2121,7 +2121,7 @@ Version: 3.3.2
 License: BSD-3-Clause
 
 hono
-Version: 4.13.22
+Version: 4.13.23
 License: MIT
 
 http-errors
@@ -3025,7 +3025,7 @@ Version: 6.4.0
 License: MIT
 
 tar
-Version: 7.5.23
+Version: 7.5.24
 License: BlueOak-1.0.0
 
 tiny-invariant

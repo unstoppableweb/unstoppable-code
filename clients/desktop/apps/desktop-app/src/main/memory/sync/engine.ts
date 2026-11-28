@@ -39,8 +39,11 @@ import {
 } from '@canopy/protocol/memory-sync';
 import { z } from 'zod';
 import { withMemoryWriteLock } from '../local/edit-coordination';
-import { isNodeError, writeMemoryFileAtomically } from '../local/memory-files';
-import { memoryNoteIdAt } from '../local/note-identity';
+import {
+  isNodeError,
+  writeMemoryFileAtomically,
+} from '@canopy/memory-store/memory-files';
+import { memoryNoteIdAt } from '@canopy/memory-store/note-identity';
 import {
   beginLocalMemoryConsolidationRun,
   endLocalMemoryConsolidationRun,

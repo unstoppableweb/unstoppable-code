@@ -42,10 +42,22 @@ export const useRecoveryShellSnapshotStore = create<{
   remoteSnapshotFailed: false,
 }));
 
+/**
+ * The notices to publish: the current ones when `next` says the same, so a
+ * snapshot refresh that changes no notice does not re-render the sidebar
+ * (CAN-8047). The notices are validated plain data.
+ */
+function keepEqualNotices(next: RemoteHostNotices): RemoteHostNotices {
+  const current = useRecoveryShellSnapshotStore.getState().remoteNotices;
+  return current !== null && JSON.stringify(current) === JSON.stringify(next)
+    ? current
+    : next;
+}
+
 export function publishRecoveryShellSnapshot(snapshot: SessionViewModel): void {
   useRecoveryShellSnapshotStore.setState({
     snapshot,
-    remoteNotices: readRemoteHostNotices(snapshot),
+    remoteNotices: keepEqualNotices(readRemoteHostNotices(snapshot)),
     remoteSnapshotFailed: false,
   });
 }
@@ -61,7 +73,7 @@ export function publishRemoteHostNotices(
   options?: { readonly snapshotFailed?: boolean },
 ): void {
   useRecoveryShellSnapshotStore.setState({
-    remoteNotices: readRemoteHostNotices(snapshot),
+    remoteNotices: keepEqualNotices(readRemoteHostNotices(snapshot)),
     remoteSnapshotFailed: options?.snapshotFailed ?? false,
   });
 }

@@ -48,11 +48,11 @@ import {
   isMemoryMarkdownFileName,
   isNodeError,
   readMemoryFile,
-} from '../local/memory-files';
+} from '@canopy/memory-store/memory-files';
 import {
   memoryNoteId,
   withMemoryNoteScalarFields,
-} from '../local/note-identity';
+} from '@canopy/memory-store/note-identity';
 import { listPendingSources } from '../local/pending-sources';
 import { inboxNoteToWire, renderPulledNote } from './note-records';
 import { splitOnLinesWithinBudget } from './note-split';

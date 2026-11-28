@@ -3,6 +3,7 @@ import { CanopyOperationError } from '@canopy/core-runtime';
 import { W5RecordOverloadedError } from '@canopy/core-runtime/node/w5/file-store';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { readCoworkFolderMissing } from '@canopy/protocol/canopy-core';
+import { OrchestratorInstructionsConflictError } from '@canopy/protocol/remote-control/shell';
 import {
   AppErrorDetailSchema,
   AppErrorSchema,
@@ -97,18 +98,20 @@ function logIpcDefect(error: AppError): void {
   }
 }
 
-function catalogLegacy(error: AppError): string {
-  const copy = getAppErrorDefinition(error.code).copy;
+function legacyCopyText(copy: AppError['copy']): string {
   return `Error: ${copy.title}${copy.description ? ` ${copy.description}` : ''}`;
 }
 
-function wireError(error: AppError, raw: boolean): AppError {
+function wireError(
+  error: AppError,
+  raw: boolean,
+  stableCopy: AppError['copy'],
+): AppError {
   const detail = { ...error.detail };
   delete detail.stack;
-  // No source currently has reviewed input-copy overrides for this boundary.
   return AppErrorSchema.parse({
     ...error,
-    copy: raw ? error.copy : getAppErrorDefinition(error.code).copy,
+    copy: raw ? error.copy : stableCopy,
     detail: raw ? detail : { message: error.code },
   });
 }
@@ -324,11 +327,18 @@ export function toIpcRejection(
     } catch {
       /* Recording is best effort. */
     }
+    // This expected refusal carries fixed recovery copy. Stable keeps the
+    // cause and all caller-supplied copy subject to the usual redaction.
+    const stableCopy =
+      channel === IPC_CHANNELS.appAdvisorSaveClaudeMd &&
+      thrown instanceof OrchestratorInstructionsConflictError
+        ? OrchestratorInstructionsConflictError.copy
+        : getAppErrorDefinition(error.code).copy;
     return new IpcAppErrorRejection(
       raw || preservesLegacyErrorText(channel, legacy)
         ? legacy
-        : catalogLegacy(error),
-      wireError(error, raw),
+        : legacyCopyText(stableCopy),
+      wireError(error, raw, stableCopy),
       thrown,
       operationFailure,
     );

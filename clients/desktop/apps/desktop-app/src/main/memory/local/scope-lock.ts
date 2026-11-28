@@ -25,7 +25,7 @@ import {
   ensureOwnerOnlyDir,
   isNodeError,
   runHoldingMemoryScopeLock,
-} from './memory-files';
+} from '@canopy/memory-store/memory-files';
 
 /*
  * The cross-process lock of one memory scope directory: `<scope>/.lock/`,
@@ -286,7 +286,7 @@ async function createLockDir(
     await mkdir(pending, { mode: MEMORY_DIR_MODE });
   } catch (error) {
     if (!isNodeError(error, 'ENOENT')) throw error;
-    await ensureOwnerOnlyDir(scopeDir);
+    await ensureOwnerOnlyDir(scopeDir, { trustedScopeRoot: scopeDir });
     await mkdir(pending, { mode: MEMORY_DIR_MODE });
   }
   try {

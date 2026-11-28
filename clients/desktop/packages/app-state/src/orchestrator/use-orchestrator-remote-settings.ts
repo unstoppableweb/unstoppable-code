@@ -7,21 +7,27 @@ import {
   type Dispatch,
   type SetStateAction,
 } from 'react';
-import type {
-  RemoteControlAppAdvisorSettings,
-  RemoteControlAppAdvisorSettingsSavePayload,
-  RemoteControlChatTabPluginSelections,
+import {
+  OrchestratorInstructionsConflictError,
+  type RemoteControlAppAdvisorSettings,
+  type RemoteControlAppAdvisorSettingsSavePayload,
+  type RemoteControlChatTabPluginSelections,
 } from '@canopy/protocol/remote-control/shell';
 import {
   clampThinkingLevelToDeclared,
   type ThinkingLevel,
 } from '@canopy/protocol/thinking';
 
-export interface OrchestratorRemoteSettingsSource {
-  readonly onLoad: () => Promise<RemoteControlAppAdvisorSettings | null>;
-  readonly onSave: (
+export interface LoadedOrchestratorRemoteSettings {
+  readonly settings: RemoteControlAppAdvisorSettings;
+  readonly signal: AbortSignal;
+  readonly save: (
     patch: RemoteControlAppAdvisorSettingsSavePayload,
-  ) => Promise<void>;
+  ) => Promise<string | undefined>;
+}
+
+export interface OrchestratorRemoteSettingsSource {
+  readonly onLoad: () => Promise<LoadedOrchestratorRemoteSettings | null>;
 }
 interface RemoteSettingsState {
   readonly settings: RemoteControlAppAdvisorSettings | null;
@@ -68,14 +74,19 @@ function retentionDraft(value: number | null): number {
     ? value
     : DEFAULT_RETENTION_DAYS;
 }
-/** Remote settings keep one aggregate read and one patch acknowledgement. */
+/** Keep the loaded draft and its saves on the same remote connection. */
 export function useOrchestratorRemoteSettings(
-  { onLoad, onSave }: OrchestratorRemoteSettingsSource,
+  { onLoad }: OrchestratorRemoteSettingsSource,
   errorCopy: (error: unknown, action: string) => string,
 ): RemoteSettingsState {
+  const [binding, setBinding] =
+    useState<LoadedOrchestratorRemoteSettings | null>(null);
   const [settings, setSettings] =
     useState<RemoteControlAppAdvisorSettings | null>(null);
-  const [savedInstructions, setSavedInstructions] = useState('');
+  const [savedInstructions, setSavedInstructions] = useState<{
+    content: string;
+    revision: string | undefined;
+  } | null>(null);
   const [retentionDays, setRetentionDays] = useState(DEFAULT_RETENTION_DAYS);
   const [autoArchiveEnabled, setAutoArchiveEnabled] = useState(false);
   const [autoArchiveDays, setAutoArchiveDays] = useState(
@@ -95,18 +106,25 @@ export function useOrchestratorRemoteSettings(
     useState(false);
 
   useEffect(() => {
+    // A computer change must leave the open draft available to copy.
+    if (binding) return;
     let cancelled = false;
     void onLoad()
-      .then((loaded) => {
+      .then((loadedBinding) => {
         if (cancelled) return;
         setReloading(false);
-        if (!loaded) {
+        if (!loadedBinding || loadedBinding.signal.aborted) {
           setLoadingError(true);
           return;
         }
+        const { settings: loaded } = loadedBinding;
         setLoadingError(false);
+        setBinding(loadedBinding);
         setSettings(loaded);
-        setSavedInstructions(loaded.instructions);
+        setSavedInstructions({
+          content: loaded.instructions,
+          revision: loaded.instructionsRevision,
+        });
         setRetentionDays(retentionDraft(loaded.archiveRetentionDays));
         setAutoArchiveEnabled(
           typeof loaded.autoArchiveDays === 'number' &&
@@ -127,7 +145,7 @@ export function useOrchestratorRemoteSettings(
     return (): void => {
       cancelled = true;
     };
-  }, [onLoad, loadAttempt]);
+  }, [binding, onLoad, loadAttempt]);
 
   const selectedModel = useMemo(
     () =>
@@ -138,7 +156,7 @@ export function useOrchestratorRemoteSettings(
     selectedModel?.supportedThinkingLevels ??
     (['off', 'medium', 'high', 'xhigh'] as const);
   const instructionsDirty =
-    settings !== null && settings.instructions !== savedInstructions;
+    settings !== null && settings.instructions !== savedInstructions?.content;
   const persistedRetention = retentionDays;
   const retentionDirty =
     settings !== null &&
@@ -149,10 +167,18 @@ export function useOrchestratorRemoteSettings(
     settings !== null && settings.autoArchiveDays !== persistedAutoArchive;
   const isDirty = instructionsDirty || retentionDirty || autoArchiveDirty;
 
+  const reportSaveError = (error: unknown, action: string): void => {
+    setSaveError(
+      binding?.signal.aborted
+        ? "Couldn't finish saving to the original computer. Copy your draft, then reopen settings."
+        : errorCopy(error, action),
+    );
+  };
+
   const saveDefaults = async (
     patch: RemoteControlAppAdvisorSettingsSavePayload,
   ): Promise<void> => {
-    if (!settings) return;
+    if (!settings || !binding) return;
     setSaveError(null);
     setSettings({
       ...settings,
@@ -165,9 +191,9 @@ export function useOrchestratorRemoteSettings(
         : {}),
     });
     try {
-      await onSave(patch);
+      await binding.save(patch);
     } catch (error) {
-      setSaveError(errorCopy(error, 'save the defaults'));
+      reportSaveError(error, 'save the defaults');
     }
   };
 
@@ -195,7 +221,8 @@ export function useOrchestratorRemoteSettings(
       RemoteControlAppAdvisorSettings['projectAgentAccess']
     >,
   ): Promise<void> => {
-    if (!settings?.projectAgentAccess || savingProjectAgentAccess) return;
+    if (!settings?.projectAgentAccess || !binding || savingProjectAgentAccess)
+      return;
     const savedAccess = settings.projectAgentAccess;
     setSaveError(null);
     setSavingProjectAgentAccess(true);
@@ -203,12 +230,12 @@ export function useOrchestratorRemoteSettings(
       current ? { ...current, projectAgentAccess } : current,
     );
     try {
-      await onSave({ projectAgentAccess });
+      await binding.save({ projectAgentAccess });
     } catch (error) {
       setSettings((current) =>
         current ? { ...current, projectAgentAccess: savedAccess } : current,
       );
-      setSaveError(errorCopy(error, 'save project agent access'));
+      reportSaveError(error, 'save project agent access');
     } finally {
       setSavingProjectAgentAccess(false);
     }
@@ -223,23 +250,61 @@ export function useOrchestratorRemoteSettings(
   };
 
   const handleSave = async (): Promise<void> => {
-    if (!settings || saving || !isDirty) return;
+    if (!settings || !binding || saving || !isDirty) return;
     setSaving(true);
     setSaveError(null);
-    const patch: RemoteControlAppAdvisorSettingsSavePayload = {};
-    if (instructionsDirty) patch.instructions = settings.instructions;
-    if (retentionDirty) patch.archiveRetentionDays = persistedRetention;
-    if (autoArchiveDirty) patch.autoArchiveDays = persistedAutoArchive;
+    const draftRevision = savedInstructions?.revision;
     try {
-      await onSave(patch);
-      setSavedInstructions(settings.instructions);
-      setSettings({
-        ...settings,
-        archiveRetentionDays: persistedRetention,
-        autoArchiveDays: persistedAutoArchive,
-      });
+      if (instructionsDirty && draftRevision) {
+        const revision = await binding.save({
+          instructions: {
+            content: settings.instructions,
+            revision: draftRevision,
+          },
+        });
+        if (!revision) throw new Error('The settings were not saved.');
+        setSavedInstructions((current) =>
+          current === savedInstructions
+            ? { content: settings.instructions, revision }
+            : current,
+        );
+      }
+      if (retentionDirty || autoArchiveDirty) {
+        await binding.save({
+          ...(retentionDirty
+            ? { archiveRetentionDays: persistedRetention }
+            : {}),
+          ...(autoArchiveDirty
+            ? { autoArchiveDays: persistedAutoArchive }
+            : {}),
+        });
+        setSettings((current) =>
+          current &&
+          current.instructionsRevision === settings.instructionsRevision
+            ? {
+                ...current,
+                archiveRetentionDays: persistedRetention,
+                autoArchiveDays: persistedAutoArchive,
+              }
+            : current,
+        );
+      }
+      if (instructionsDirty && !draftRevision) {
+        setSaveError(
+          "Couldn't save instructions. Update the connected computer.",
+        );
+      }
     } catch (error) {
-      setSaveError(errorCopy(error, 'save settings'));
+      if (
+        !binding.signal.aborted &&
+        error instanceof OrchestratorInstructionsConflictError
+      ) {
+        const { title, description } =
+          OrchestratorInstructionsConflictError.copy;
+        setSaveError(`${title} ${description}`);
+      } else {
+        reportSaveError(error, 'save settings');
+      }
     } finally {
       setSaving(false);
     }

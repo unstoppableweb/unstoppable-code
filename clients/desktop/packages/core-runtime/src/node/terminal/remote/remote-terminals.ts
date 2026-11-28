@@ -49,7 +49,11 @@ export type RemoteTerminalFrame =
   | {
       kind: 'end';
       outcome: 'completed' | 'cancelled' | 'error';
-      error: { kind: string; code?: string } | null;
+      error: {
+        kind: string;
+        code?: string;
+        retry?: { kind: string; delayMs?: number };
+      } | null;
     };
 
 /**
@@ -283,6 +287,13 @@ interface Mirror {
   reconnecting: boolean;
   /** Reattaches since the last item arrived. */
   failures: number;
+  /**
+   * The worker refused the last attach for capacity, retryable after this
+   * delay (CAN-8038): no failure, since a slot frees when another stream ends.
+   */
+  capacityRetryMs?: number;
+  /** Capacity refusals since the last item arrived; grows the wait. */
+  capacityWaits: number;
   /** Called after each delivery and at the end, while a caller waits on replay. */
   progress?: () => void;
   /**
@@ -329,6 +340,27 @@ function isRetryable(error: unknown): boolean {
 
 function isGone(error: unknown): boolean {
   return errorCode(error) === 'worker.terminal.notFound';
+}
+
+/** A worker with no room for the attachment now, retryable as is (CAN-8038). */
+function capacityRetryDelay(payload: unknown): number | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const retry: unknown = Reflect.get(payload, 'retry');
+  if (
+    Reflect.get(payload, 'kind') !== 'resource_exhausted' ||
+    typeof retry !== 'object' ||
+    retry === null ||
+    Reflect.get(retry, 'kind') !== 'same_request'
+  )
+    return undefined;
+  const delayMs: unknown = Reflect.get(retry, 'delayMs');
+  return typeof delayMs === 'number' && delayMs > 0 ? delayMs : 0;
+}
+
+function payloadOf(error: unknown): unknown {
+  return typeof error === 'object' && error !== null
+    ? Reflect.get(error, 'payload')
+    : undefined;
 }
 
 function withTimeout(promise: Promise<void>, ms: number): Promise<void> {
@@ -389,6 +421,11 @@ export class RemoteTerminals {
 
   public get(terminalId: string): TerminalSession | null {
     return this.mirrors.get(terminalId)?.session ?? null;
+  }
+
+  /** The worker scope a mirrored terminal was placed under. */
+  public scopeOf(terminalId: string): CanopyWorkspaceScope | null {
+    return this.mirrors.get(terminalId)?.scope ?? null;
   }
 
   public list(): TerminalSession[] {
@@ -912,6 +949,7 @@ export class RemoteTerminals {
       done: false,
       reconnecting: false,
       failures: 0,
+      capacityWaits: 0,
       ...(window.persisted && { persisted: window.persisted }),
     };
     if (window.seed) {
@@ -963,23 +1001,34 @@ export class RemoteTerminals {
     const terminalId = mirror.session.id;
     let ended = false;
     let open = false;
-    const attachment = await this.options.transport.attach(
-      { scope: mirror.scope, terminalId, fromOffset },
-      (frame) => {
-        if (ended || mirror.done) return;
-        if (frame.kind === 'item') {
-          this.receive(mirror, frame.item);
-          return;
-        }
-        ended = true;
-        if (open) mirror.attachment = undefined;
-        if (mirror.done) return;
-        // The exit item closes a completed stream; anything else lost it.
-        if (frame.error?.code === 'worker.terminal.notFound')
-          this.finish(mirror, null, WORKER_TERMINAL_LOST_SIGNAL);
-        else if (open) void this.reconnect(mirror);
-      },
-    );
+    mirror.capacityRetryMs = undefined;
+    let attachment: { close(): void };
+    try {
+      attachment = await this.options.transport.attach(
+        { scope: mirror.scope, terminalId, fromOffset },
+        (frame) => {
+          if (ended || mirror.done) return;
+          if (frame.kind === 'item') {
+            this.receive(mirror, frame.item);
+            return;
+          }
+          ended = true;
+          if (open) mirror.attachment = undefined;
+          if (mirror.done) return;
+          // The exit item closes a completed stream; anything else lost it.
+          if (frame.error?.code === 'worker.terminal.notFound') {
+            this.finish(mirror, null, WORKER_TERMINAL_LOST_SIGNAL);
+            return;
+          }
+          // The daemon opens the stream, then ends it with the refusal.
+          mirror.capacityRetryMs = capacityRetryDelay(frame.error);
+          if (open) void this.reconnect(mirror);
+        },
+      );
+    } catch (error) {
+      mirror.capacityRetryMs = capacityRetryDelay(payloadOf(error));
+      throw error;
+    }
     if (ended || mirror.done) {
       attachment.close();
       return mirror.done;
@@ -992,16 +1041,33 @@ export class RemoteTerminals {
   /**
    * Reattaches from the last byte. Attempts count until an item arrives, so
    * a stream that keeps ending without progress ends the terminal as lost.
+   * A capacity refusal never counts: the terminal is live, and the mirror
+   * waits for a slot, its wait growing to the longest reattach delay, until
+   * the terminal finishes (CAN-8038).
    */
   private async reconnect(mirror: Mirror): Promise<void> {
     if (mirror.reconnecting) return;
     mirror.reconnecting = true;
     const delays = this.options.reattachDelaysMs ?? REATTACH_DELAYS_MS;
+    const longest = delays[delays.length - 1] ?? 0;
     let gone = false;
     try {
-      while (mirror.failures < delays.length) {
-        const delay = delays[mirror.failures] ?? 0;
-        mirror.failures += 1;
+      for (;;) {
+        const refused = mirror.capacityRetryMs;
+        mirror.capacityRetryMs = undefined;
+        let delay: number;
+        if (refused !== undefined) {
+          // The worker's delay, capped at the longest reattach delay.
+          delay = Math.max(
+            Math.min(refused, longest),
+            delays[Math.min(mirror.capacityWaits, delays.length - 1)] ?? 0,
+          );
+          mirror.capacityWaits += 1;
+        } else {
+          if (mirror.failures >= delays.length) break;
+          delay = delays[mirror.failures] ?? 0;
+          mirror.failures += 1;
+        }
         await new Promise((resolve) => setTimeout(resolve, delay));
         if (mirror.done) return;
         try {
@@ -1110,6 +1176,7 @@ export class RemoteTerminals {
   private receive(mirror: Mirror, item: WorkerTerminalAttachItem): void {
     const { session } = mirror;
     mirror.failures = 0;
+    mirror.capacityWaits = 0;
     const data = Buffer.from(item.data, item.encoding);
     if (data.length > 0) {
       mirror.output.append(item.fromOffset, data);

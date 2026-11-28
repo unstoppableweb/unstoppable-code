@@ -6,12 +6,13 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { hostname, freemem, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { homedir, hostname, freemem, tmpdir, userInfo } from 'node:os';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   hasProcessAncestor,
@@ -32,11 +33,129 @@ export const GUARD_WAIT_DELAYS_MS = Object.freeze([
 ]);
 
 export const CANOPY_DEV_STATE_ROOT = join(tmpdir(), 'canopy-dev');
-export const DEV_SUITE_SAFETY_LOCK_ROOT = join(
-  tmpdir(),
-  'canopy-dev-suite-safety-locks',
-);
-const DEFAULT_LOCK_ROOT = DEV_SUITE_SAFETY_LOCK_ROOT;
+export const DEV_SUITE_LOCK_ROOT_ENV = 'CANOPY_DEV_SUITE_LOCK_ROOT';
+const LOCK_ROOT_NAME = 'canopy-dev-suite-safety-locks';
+
+function accountHomeDirectory() {
+  // The account's home from the user database, so an agent's HOME or TMPDIR
+  // override cannot split the machine into separate lock roots.
+  try {
+    const home = userInfo().homedir;
+    if (home) return home;
+  } catch {
+    // No user database entry (some containers): fall back to HOME.
+  }
+  return homedir();
+}
+
+/** A hostname as one safe path segment. */
+function hostFolderName(host) {
+  const name = String(host ?? '')
+    .trim()
+    .replace(/[^A-Za-z0-9._-]/g, '_')
+    .replace(/^\.+/, '_');
+  return name || 'unknown-host';
+}
+
+/**
+ * One lock root per user on this machine. It never follows TMPDIR, so agents
+ * and worktrees with their own temporary directories still queue behind each
+ * other. A home shared by several hosts gets one folder per host, so no host
+ * reads another host's holders. `CANOPY_DEV_SUITE_LOCK_ROOT` names another
+ * root explicitly.
+ */
+export function resolveDevSuiteLockRoot({
+  env = process.env,
+  platform = process.platform,
+  home = accountHomeDirectory(),
+  host = hostname(),
+} = {}) {
+  const override = env[DEV_SUITE_LOCK_ROOT_ENV]?.trim();
+  if (override) {
+    if (!isAbsolute(override)) {
+      throw new Error(`${DEV_SUITE_LOCK_ROOT_ENV} must be an absolute path.`);
+    }
+    return resolve(override);
+  }
+  const cacheRoot =
+    platform === 'darwin'
+      ? join(home, 'Library', 'Caches')
+      : platform === 'win32'
+        ? join(home, 'AppData', 'Local')
+        : join(home, '.cache');
+  return join(cacheRoot, 'canopy', LOCK_ROOT_NAME, hostFolderName(host));
+}
+
+/** The real path of `path`, resolving symlinks in its longest existing prefix. */
+function canonicalPath(path) {
+  const missing = [];
+  let current = resolve(path);
+  while (true) {
+    try {
+      return join(realpathSync(current), ...missing.reverse());
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return resolve(path);
+      missing.push(basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
+ * The root older checkouts use, under this process's own TMPDIR. Until every
+ * checkout has the per-user root, a default lease also holds a slot here, so
+ * an older guard sharing this TMPDIR and this one exclude each other.
+ */
+export const LEGACY_DEV_SUITE_SAFETY_LOCK_ROOT = join(tmpdir(), LOCK_ROOT_NAME);
+
+function defaultLockRoots(env) {
+  const lockRoot = resolveDevSuiteLockRoot({ env });
+  // An explicit root is an isolated namespace (CI, tests): no legacy slot.
+  if (env[DEV_SUITE_LOCK_ROOT_ENV]?.trim()) return { lockRoot, legacy: [] };
+  return {
+    lockRoot,
+    legacy:
+      lockRoot === LEGACY_DEV_SUITE_SAFETY_LOCK_ROOT
+        ? []
+        : [LEGACY_DEV_SUITE_SAFETY_LOCK_ROOT],
+  };
+}
+
+let cachedBootId;
+/** Identifies this boot, so slots left by an earlier boot are not kept by a reused PID. */
+function currentBootId() {
+  if (cachedBootId !== undefined) return cachedBootId;
+  cachedBootId = null;
+  try {
+    if (process.platform === 'linux') {
+      cachedBootId =
+        readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() || null;
+    } else if (process.platform === 'darwin') {
+      // kern.boottime shifts with clock steps and is printed in the local
+      // timezone; the boot session UUID stays fixed for the whole boot.
+      cachedBootId =
+        execFileSync('sysctl', ['-n', 'kern.bootsessionuuid'], {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 2_000,
+        }).trim() || null;
+    }
+  } catch {
+    // Without a boot identity, liveness falls back to the holder PID alone.
+  }
+  return cachedBootId;
+}
+
+/** Whether a holder was recorded in an earlier boot, whatever its PID now names. */
+function holderFromEarlierBoot(holder) {
+  const bootId = currentBootId();
+  return (
+    typeof holder?.bootId === 'string' &&
+    bootId !== null &&
+    holder.bootId !== bootId
+  );
+}
 const HOLDER_FILE = 'holder.json';
 const INCOMPLETE_HOLDER_GRACE_MS = 30_000;
 const MUTATION_LOCK_STALE_GRACE_MS = 1_000;
@@ -170,7 +289,8 @@ function readHolder(slotPath) {
 function removeStaleSlot(slotPath, isProcessAlive) {
   const holder = readHolder(slotPath);
   if (holder) {
-    if (isProcessAlive(holder.pid)) return false;
+    if (!holderFromEarlierBoot(holder) && isProcessAlive(holder.pid))
+      return false;
     // The supervisor owns teardown. Its diagnostic child/survivor metadata
     // must not strand a machine-wide slot after that owner has died, even
     // when process-table probes are unavailable or a PID has been reused.
@@ -238,7 +358,7 @@ async function acquireMutationLease(suitePath) {
       try {
         writeFileSync(
           holderFilePath(mutationPath),
-          `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`,
+          `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), ...(currentBootId() ? { bootId: currentBootId() } : {}) })}\n`,
           'utf8',
         );
       } catch (error) {
@@ -261,7 +381,14 @@ async function acquireMutationLease(suitePath) {
       } catch {
         continue;
       }
-      if (oldEnoughToReclaim && (!holder || !processIsAlive(holder.pid))) {
+      // The root survives reboots, so a lock from an earlier boot is stale
+      // even when its PID now names a live, unrelated process.
+      if (
+        oldEnoughToReclaim &&
+        (!holder ||
+          holderFromEarlierBoot(holder) ||
+          !processIsAlive(holder.pid))
+      ) {
         rmSync(mutationPath, { recursive: true, force: true });
         continue;
       }
@@ -273,36 +400,15 @@ async function acquireMutationLease(suitePath) {
   );
 }
 
-export async function acquireSuiteConcurrencyLease({
+async function acquireSlot({
   suite,
+  suitePath,
   maxConcurrency,
-  lockRoot = DEFAULT_LOCK_ROOT,
-  holder = {},
-  isProcessAlive = processIsAlive,
+  metadata,
+  isProcessAlive,
 }) {
-  if (!SUITE_CONFIG[suite]?.concurrencyEnv) {
-    throw new Error(
-      `Suite ${JSON.stringify(suite)} does not use a concurrency lease.`,
-    );
-  }
-  if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1) {
-    throw new Error('maxConcurrency must be a positive integer.');
-  }
-
-  const suitePath = join(lockRoot, SUITE_CONFIG[suite].lockNamespace ?? suite);
   mkdirSync(suitePath, { recursive: true, mode: 0o700 });
   const mutationLease = await acquireMutationLease(suitePath);
-  const token = randomUUID();
-  const metadata = {
-    token,
-    suite,
-    pid: holder.pid ?? process.pid,
-    parentPid: holder.parentPid ?? process.ppid,
-    command: summarizeDevScriptArgv(holder.argv ?? process.argv),
-    hostname: holder.hostname ?? hostname(),
-    startedAt: holder.startedAt ?? new Date().toISOString(),
-  };
-
   try {
     const activeHolders = listActiveHolders(suitePath, isProcessAlive);
     if (activeHolders.length >= maxConcurrency) {
@@ -323,44 +429,7 @@ export async function acquireSuiteConcurrencyLease({
             rmSync(slotPath, { recursive: true, force: true });
             throw error;
           }
-          let released = false;
-          return {
-            metadata,
-            slotPath,
-            recordChild(childPid, processGroupId) {
-              metadata.childPid = childPid;
-              metadata.processGroupId = processGroupId;
-              if (readHolder(slotPath)?.token === token) {
-                writeFileSync(
-                  holderFilePath(slotPath),
-                  `${JSON.stringify(metadata, null, 2)}\n`,
-                  { mode: 0o600 },
-                );
-              }
-            },
-            retainSurvivors(survivors) {
-              metadata.cleanupUnconfirmed = true;
-              metadata.survivors = survivors.map(({ pid, startedAt }) => ({
-                pid,
-                startedAt,
-              }));
-              if (readHolder(slotPath)?.token === token) {
-                writeFileSync(
-                  holderFilePath(slotPath),
-                  `${JSON.stringify(metadata, null, 2)}\n`,
-                  { mode: 0o600 },
-                );
-              }
-            },
-            async release() {
-              if (metadata.cleanupUnconfirmed) return;
-              if (released) return;
-              released = true;
-              if (readHolder(slotPath)?.token === token) {
-                rmSync(slotPath, { recursive: true, force: true });
-              }
-            },
-          };
+          return slotPath;
         } catch (error) {
           if (error?.code !== 'EEXIST') throw error;
           if (!removeStaleSlot(slotPath, isProcessAlive)) break;
@@ -377,9 +446,117 @@ export async function acquireSuiteConcurrencyLease({
   }
 }
 
+export async function acquireSuiteConcurrencyLease({
+  suite,
+  maxConcurrency,
+  lockRoot = resolveDevSuiteLockRoot(),
+  legacyLockRoots = [],
+  holder = {},
+  isProcessAlive = processIsAlive,
+}) {
+  if (!SUITE_CONFIG[suite]?.concurrencyEnv) {
+    throw new Error(
+      `Suite ${JSON.stringify(suite)} does not use a concurrency lease.`,
+    );
+  }
+  if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1) {
+    throw new Error('maxConcurrency must be a positive integer.');
+  }
+
+  const namespace = SUITE_CONFIG[suite].lockNamespace ?? suite;
+  const token = randomUUID();
+  const bootId = currentBootId();
+  const metadata = {
+    token,
+    suite,
+    pid: holder.pid ?? process.pid,
+    parentPid: holder.parentPid ?? process.ppid,
+    command: summarizeDevScriptArgv(holder.argv ?? process.argv),
+    hostname: holder.hostname ?? hostname(),
+    startedAt: holder.startedAt ?? new Date().toISOString(),
+    ...(bootId ? { bootId } : {}),
+  };
+
+  // The primary slot first, then one per legacy root, all with one token. A
+  // blocked root gives back every slot taken so far, so no lease waits while
+  // holding another.
+  const slotPaths = [];
+  // A legacy root that is the primary under another spelling (a symlinked
+  // TMPDIR, for example) is the same directory: one slot is enough.
+  const seen = new Set([canonicalPath(lockRoot)]);
+  const roots = [lockRoot];
+  for (const root of legacyLockRoots) {
+    const canonical = canonicalPath(root);
+    if (seen.has(canonical)) continue;
+    seen.add(canonical);
+    roots.push(root);
+  }
+  try {
+    for (const root of roots) {
+      slotPaths.push(
+        await acquireSlot({
+          suite,
+          suitePath: join(root, namespace),
+          maxConcurrency,
+          metadata,
+          isProcessAlive,
+        }),
+      );
+    }
+  } catch (error) {
+    for (const slotPath of slotPaths) {
+      if (readHolder(slotPath)?.token === token)
+        rmSync(slotPath, { recursive: true, force: true });
+    }
+    throw error;
+  }
+
+  const rewrite = () => {
+    for (const slotPath of slotPaths) {
+      if (readHolder(slotPath)?.token === token) {
+        writeFileSync(
+          holderFilePath(slotPath),
+          `${JSON.stringify(metadata, null, 2)}\n`,
+          { mode: 0o600 },
+        );
+      }
+    }
+  };
+  let released = false;
+  return {
+    metadata,
+    slotPath: slotPaths[0],
+    slotPaths,
+    recordChild(childPid, processGroupId) {
+      metadata.childPid = childPid;
+      metadata.processGroupId = processGroupId;
+      rewrite();
+    },
+    retainSurvivors(survivors) {
+      metadata.cleanupUnconfirmed = true;
+      metadata.survivors = survivors.map(({ pid, startedAt }) => ({
+        pid,
+        startedAt,
+      }));
+      rewrite();
+    },
+    async release() {
+      if (metadata.cleanupUnconfirmed) return;
+      if (released) return;
+      released = true;
+      for (const slotPath of slotPaths) {
+        if (readHolder(slotPath)?.token === token) {
+          rmSync(slotPath, { recursive: true, force: true });
+        }
+      }
+    },
+  };
+}
+
 export function inheritedSuiteLease({
   env = process.env,
-  lockRoot = DEFAULT_LOCK_ROOT,
+  lockRoot,
+  legacyLockRoots,
   isProcessAlive = processIsAlive,
   processTable = readProcessTable,
   ancestorFallback = hasProcessAncestorFallback,
@@ -390,12 +567,39 @@ export function inheritedSuiteLease({
   if (env[DEV_SUITE_LEASE_ENV]) {
     try {
       const marker = JSON.parse(env[DEV_SUITE_LEASE_ENV]);
-      if (/^slot-[1-9]\d*$/.test(marker.slot)) {
-        const slotPath = join(
-          lockRoot,
-          HEAVY_SUITE_CONFIG.lockNamespace,
-          marker.slot,
-        );
+      const defaults = lockRoot === undefined ? defaultLockRoots(env) : null;
+      const roots = [
+        lockRoot ?? defaults.lockRoot,
+        ...(legacyLockRoots ?? defaults?.legacy ?? []),
+      ];
+      // `slot` names the legacy slot, which older checkouts read, and
+      // `primarySlot` the slot in the per-user root. A parent from an older
+      // checkout holds only its legacy slot.
+      const isSlotName = (name) =>
+        typeof name === 'string' && /^slot-[1-9]\d*$/.test(name);
+      // A marker forwarded by an older wrapper has no `primarySlot`, so the
+      // primary slot is found by its token.
+      const primaryNamespace = join(roots[0], HEAVY_SUITE_CONFIG.lockNamespace);
+      const primaryCandidates = isSlotName(marker.primarySlot)
+        ? [marker.primarySlot]
+        : (() => {
+            try {
+              return readdirSync(primaryNamespace).filter(isSlotName);
+            } catch {
+              return [];
+            }
+          })();
+      const slotPath = [
+        ...primaryCandidates.map((name) => join(primaryNamespace, name)),
+        ...(isSlotName(marker.slot)
+          ? roots
+              .slice(1)
+              .map((root) =>
+                join(root, HEAVY_SUITE_CONFIG.lockNamespace, marker.slot),
+              )
+          : []),
+      ].find((path) => readHolder(path)?.token === marker.token);
+      if (slotPath) {
         const metadata = readHolder(slotPath);
         if (
           metadata?.token === marker.token &&
@@ -413,7 +617,13 @@ export function inheritedSuiteLease({
             related = ancestorFallback(process.pid, marker.pid);
           }
           if (related)
-            return { metadata, slotPath, inherited: true, async release() {} };
+            return {
+              metadata,
+              slotPath,
+              inherited: true,
+              marker,
+              async release() {},
+            };
         }
       }
     } catch {
@@ -424,6 +634,25 @@ export function inheritedSuiteLease({
   return null;
 }
 
+/**
+ * The lease marker nested guards inherit through DEV_SUITE_LEASE_ENV. `slot`
+ * names the legacy slot when there is one, because older checkouts look it up
+ * in their TMPDIR root; `primarySlot` names the slot in the per-user root.
+ */
+export function suiteLeaseMarker(lease) {
+  if (lease.inherited && lease.marker) return lease.marker;
+  const slotPaths = lease.slotPaths ?? [lease.slotPath];
+  const primarySlot = basename(slotPaths[0]);
+  const legacySlot =
+    slotPaths.length > 1 ? basename(slotPaths[1]) : primarySlot;
+  return {
+    slot: legacySlot,
+    ...(legacySlot === primarySlot ? {} : { primarySlot }),
+    token: lease.metadata.token,
+    pid: lease.metadata.pid,
+  };
+}
+
 export async function applyDevScriptSafety({
   suite,
   env = process.env,
@@ -431,7 +660,8 @@ export async function applyDevScriptSafety({
   skipConcurrencySafetyLock = false,
   skipMemoryPressureSafetyCheck = false,
   availableMemoryMb = getAvailableMemoryMb,
-  lockRoot = DEFAULT_LOCK_ROOT,
+  lockRoot,
+  legacyLockRoots,
   holder,
   isProcessAlive,
   processTable = readProcessTable,
@@ -444,9 +674,15 @@ export async function applyDevScriptSafety({
     return { ciBypass: true, memory: { skipped: true }, lease: null };
   }
 
+  // An explicit lockRoot (tests) takes no legacy slot unless one is named.
+  const defaults = lockRoot === undefined ? defaultLockRoots(env) : null;
+  const roots = {
+    lockRoot: lockRoot ?? defaults.lockRoot,
+    legacyLockRoots: legacyLockRoots ?? defaults?.legacy ?? [],
+  };
   const inheritedLease = inheritedSuiteLease({
     env,
-    lockRoot,
+    ...roots,
     isProcessAlive,
     processTable,
   });
@@ -484,7 +720,7 @@ export async function applyDevScriptSafety({
     lease = await acquireSuiteConcurrencyLease({
       suite,
       maxConcurrency,
-      lockRoot,
+      ...roots,
       holder,
       ...(isProcessAlive ? { isProcessAlive } : {}),
     });

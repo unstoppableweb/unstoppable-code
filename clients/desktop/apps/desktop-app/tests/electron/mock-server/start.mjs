@@ -98,7 +98,12 @@ async function handleRequest(request, response) {
   const { pathname } = url;
 
   if (request.method === 'GET' && pathname === '/healthz') {
-    jsonResponse(response, 200, { ok: true });
+    // A runner that started this server for itself checks the instance, so
+    // another server that took its port is never mistaken for it.
+    jsonResponse(response, 200, {
+      ok: true,
+      instance: process.env.CANOPY_E2E_MOCK_INSTANCE ?? null,
+    });
     return;
   }
 

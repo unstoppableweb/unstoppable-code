@@ -200,6 +200,7 @@ async function discover(
   cwd: string,
   limits: DiscoverProjectPipelinesLimits | undefined,
   validation: DiscoveryValidation = 'full',
+  captureBoundedDocument?: (info: PipelineInfo, pipeline: Pipeline) => void,
 ): Promise<ProjectPipelineDiscovery> {
   const pipelines: PipelineInfo[] = [];
   const existingFilePaths: string[] = [];
@@ -320,7 +321,7 @@ async function discover(
             truncated = true;
             continue;
           }
-          pipelines.push({
+          const info: PipelineInfo = {
             id: getProjectPipelineId(relativeFilePath),
             name: pipeline.name,
             description: boundedString(
@@ -343,7 +344,9 @@ async function discover(
             source: 'project',
             readonly: true,
             filePath: absolutePath,
-          });
+          };
+          pipelines.push(info);
+          captureBoundedDocument?.(info, pipeline);
           continue;
         }
         pipelines.push({
@@ -432,6 +435,29 @@ export async function readProjectPipelinesWithinBounds(
 ): Promise<BoundedProjectPipelineDiscovery> {
   const { pipelines, truncated } = await discover(cwd, limits, validation);
   return { pipelines, truncated };
+}
+
+/** Read a uniquely named document without normalizing or reopening it. */
+export async function readProjectPipelineWithinBounds(
+  cwd: string,
+  limits: DiscoverProjectPipelinesLimits,
+  matches: (info: Pick<PipelineInfo, 'id' | 'filename'>) => boolean,
+): Promise<{ pipeline?: Pipeline; truncated: boolean; ambiguous: boolean }> {
+  let match: Pipeline | undefined;
+  let ambiguous = false;
+  const { truncated } = await discover(
+    cwd,
+    limits,
+    'scope',
+    (info, pipeline) => {
+      if (!matches(info)) return;
+      // Dispatch normalizes candidates before choosing the first match.
+      // A scope-only scan cannot determine which of several matches will run.
+      if (match) ambiguous = true;
+      else match = pipeline;
+    },
+  );
+  return { pipeline: ambiguous ? undefined : match, truncated, ambiguous };
 }
 
 export async function loadProjectPipelineFromDisk(

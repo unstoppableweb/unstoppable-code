@@ -234,4 +234,10 @@ export interface SubscriptionFilter {
   readonly workspaceLocalId?: string;
   readonly worktreeLocalId?: string;
   readonly chatLocalId?: string;
+  /**
+   * One terminal's `terminal.*` events (CAN-8069). A host that streams each
+   * terminal on its own holds that stream only while such a subscription
+   * lives, so unsubscribing releases it.
+   */
+  readonly terminalId?: string;
 }

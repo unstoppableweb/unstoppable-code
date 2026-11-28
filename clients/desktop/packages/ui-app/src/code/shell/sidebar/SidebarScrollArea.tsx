@@ -349,8 +349,13 @@ export function SidebarScrollArea({
     if (!viewport || !drag || drag.pointerId !== event.pointerId) return;
 
     const maxScrollTop = viewport.scrollHeight - viewport.clientHeight;
-    const thumbHeight = thumbRef.current?.offsetHeight ?? 0;
-    const availableTrack = viewport.clientHeight - thumbHeight;
+    // The same track the thumb is drawn on (painted height less both end
+    // insets), so the thumb stays under the pointer for the whole drag.
+    const thumbHeight = thumbRef.current?.getBoundingClientRect().height ?? 0;
+    const availableTrack =
+      viewport.getBoundingClientRect().height -
+      THUMB_END_INSET_PX * 2 -
+      thumbHeight;
     if (availableTrack <= 0) return;
 
     viewport.scrollTop =

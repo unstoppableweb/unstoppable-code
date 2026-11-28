@@ -377,6 +377,10 @@ function senderSource(
           },
         }
       : {}),
+    ...(caller.initiationSource === 'automation' &&
+    initiator?.kind !== 'automation'
+      ? { automationContinuation: true as const }
+      : {}),
     owner: trusted.owner,
     ...(trusted.agentOrigin !== undefined
       ? { agentOrigin: trusted.agentOrigin }

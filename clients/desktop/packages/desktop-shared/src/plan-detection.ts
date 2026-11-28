@@ -1,3 +1,4 @@
+import { BUILTIN_PLAN_DETECTION_RULES } from '@canopy/protocol/plan-detection';
 import type {
   CanopyJsonPlanDetection,
   PlanDetectionPreferences,
@@ -5,44 +6,11 @@ import type {
   WorkspacePlanDetectionConfig,
 } from './types';
 
-export { normalizePlanDetectionRule } from '@canopy/protocol/plan-detection';
-
-/**
- * Built-in plan-detection rules, structured like `file-indexing.ts`. Ids are
- * stable kebab-case strings; never change a shipped id. A finer tier disables
- * a built-in by adding its id to its disabled set.
- */
-export const BUILTIN_PLAN_DETECTION_RULES: readonly PlanDetectionRule[] = [
-  {
-    id: 'superpowers-specs',
-    label: 'Superpowers Specs',
-    kind: 'include',
-    pattern: 'docs/superpowers/specs/*.md',
-    enabled: true,
-  },
-  {
-    id: 'superpowers-designs',
-    label: 'Superpowers Designs',
-    kind: 'exclude',
-    pattern: 'docs/superpowers/specs/*-design.md',
-    enabled: true,
-  },
-  {
-    id: 'plan-md',
-    label: 'Plan Files',
-    kind: 'include',
-    pattern: '**/plan.md',
-    enabled: true,
-  },
-] as const;
-
-/**
- * Set of every valid built-in rule id, used by preference normalization to
- * drop unknown entries from a persisted disabled-id list.
- */
-export const BUILTIN_PLAN_DETECTION_RULE_IDS: ReadonlySet<string> = new Set(
-  BUILTIN_PLAN_DETECTION_RULES.map((rule) => rule.id),
-);
+export {
+  BUILTIN_PLAN_DETECTION_RULES,
+  BUILTIN_PLAN_DETECTION_RULE_IDS,
+  normalizePlanDetectionRule,
+} from '@canopy/protocol/plan-detection';
 
 /**
  * Look up a built-in by id. Returns `undefined` if no built-in matches —

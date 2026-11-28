@@ -47,6 +47,7 @@
     "./node/preferences": "./src/node/preferences/index.ts",
     "./node/preferences/testing": "./src/node/preferences/testing/index.ts",
     "./node/preferences/family": "./src/node/preferences/family.ts",
+    "./node/preferences/domain": "./src/node/preferences/domain/index.ts",
     "./node/operations": "./src/node/operations/index.ts",
     "./node/operations/ledger": "./src/node/operations/ledger/index.ts",
     "./node/operations/daemon": "./src/node/operations/daemon.ts",

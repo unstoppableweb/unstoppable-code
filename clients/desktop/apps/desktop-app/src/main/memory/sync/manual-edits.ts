@@ -16,7 +16,7 @@ import {
   isMemoryMarkdownFileName,
   isNodeError,
   readMemoryFile,
-} from '../local/memory-files';
+} from '@canopy/memory-store/memory-files';
 import { readMemorySyncState, sha256Hex } from './replica-files';
 
 /*

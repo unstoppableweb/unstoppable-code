@@ -3,6 +3,7 @@ import type {
   AiCreditsScopeRequest,
   NativeAiCreditsAvailability,
 } from '@canopy/desktop-shared/types';
+import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import {
   aiCreditsScopeKey,
@@ -15,6 +16,7 @@ import {
  * now, via the native Canopy billing signal (CAN-1235).
  */
 export interface AiCreditsAvailability {
+  workOwner?: WorkOwner;
   /**
    * The last answer has expired or been invalidated and a new read is pending.
    * Existing optimistic selection may keep using it; readiness cues may not.
@@ -42,6 +44,7 @@ export interface AiCreditsAvailability {
 }
 
 interface CachedAvailability {
+  workOwner?: WorkOwner;
   eligible: boolean;
   inconclusive: boolean;
 }
@@ -217,6 +220,7 @@ function ensurePendingRead(
           settle({
             eligible: computeEligible(native),
             inconclusive: native.inconclusive === true,
+            ...(native.workOwner ? { workOwner: native.workOwner } : {}),
           }),
       )
       // A rejected read is the same class of non-answer the loader reports
@@ -242,6 +246,7 @@ function toAvailability(
     eligible: value?.eligible ?? false,
     loading: value === null,
     inconclusive: value?.inconclusive ?? false,
+    ...(value?.workOwner ? { workOwner: value.workOwner } : {}),
   };
 }
 export function readAiCreditsAvailabilityFresh(): Promise<AiCreditsAvailability> {

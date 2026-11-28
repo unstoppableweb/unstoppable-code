@@ -112,6 +112,7 @@ export function StandaloneChatRow({
             : 'single-line',
         state: selected ? 'selected' : archived ? 'archived' : 'active',
         archiving: archivingInFlight,
+        menuMarked: menuOpen,
       }}
     >
       {providerType ? (

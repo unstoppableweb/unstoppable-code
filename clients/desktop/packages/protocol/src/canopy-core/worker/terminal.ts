@@ -1192,3 +1192,165 @@ export const WORKER_TERMINAL_STREAM_DEFINITIONS = defineCanopyStreamRegistry(
     }),
   },
 );
+
+// ---------------------------------------------------------------------------
+// The terminal events stream (CAN-8038)
+// ---------------------------------------------------------------------------
+
+/** The newest exits a worker keeps for reattaching clients and the snapshot. */
+export const WORKER_TERMINAL_EVENTS_MAX_RECENT_EXITS = 256;
+
+/** The most live terminals one snapshot lists, above any host's own cap. */
+export const WORKER_TERMINAL_EVENTS_MAX_TERMINALS = 256;
+
+export const WorkerTerminalEventsParamsSchema = z.strictObject({
+  /** Only terminals of this workspace or worktree; absent, every terminal. */
+  scope: z
+    .strictObject({
+      workspaceId: CanopyWorkspaceScopeSchema.shape.workspaceId,
+      worktreeId: CanopyWorkspaceScopeSchema.shape.worktreeId,
+    })
+    .optional(),
+  /** Continues numbering only: every open starts with a fresh snapshot. */
+  cursor: CanopyStreamCursorSchema.nullable().optional(),
+  _meta: CanopyQueryRequestMetadataSchema.optional(),
+});
+
+export type WorkerTerminalEventsParams = z.output<
+  typeof WorkerTerminalEventsParamsSchema
+>;
+
+export const WorkerTerminalEventsOpenResultSchema = z
+  .object({
+    subscriptionId: ID,
+    acceptedCursor: CanopyStreamCursorSchema.nullable(),
+  })
+  .catchall(CanopyJsonValueSchema);
+
+/** The worker's view of a terminal's kind; a restore always reads `interactive`. */
+const EVENTS_KIND = z.enum(['interactive', 'managed']);
+const PROCESS_NAME = z.string().max(4096).nullable();
+const OFFSET = z.number().int().min(0);
+const AT = z.number().finite();
+
+const EventsExitFields = {
+  terminalId: ID,
+  scope: CanopyWorkspaceScopeSchema,
+  exitCode: z.number().int().nullable(),
+  signal: z.string().max(256).nullable(),
+  outputOffset: OFFSET,
+  /** The host's own PTY exit confirmed `outputOffset` as final. */
+  confirmed: z.boolean(),
+};
+
+export const WorkerTerminalEventsTerminalSchema = z
+  .object({
+    terminalId: ID,
+    scope: CanopyWorkspaceScopeSchema,
+    kind: EVENTS_KIND,
+    running: z.boolean(),
+    processName: PROCESS_NAME,
+    outputOffset: OFFSET,
+    firstOutputAt: AT.optional(),
+    createdAt: AT,
+  })
+  .catchall(CanopyJsonValueSchema);
+
+export const WorkerTerminalEventsExitSchema = z
+  .object(EventsExitFields)
+  .catchall(CanopyJsonValueSchema);
+
+export type WorkerTerminalEventsExit = z.output<
+  typeof WorkerTerminalEventsExitSchema
+>;
+
+/**
+ * One terminal event. Each stream opens with a `snapshot` of the live
+ * terminals and recent exits, then reports changes after it. No item carries
+ * output bytes or host paths. An `exit` here can overtake the last bytes on
+ * that terminal's attach stream; a pane completes on its own stream's exit.
+ */
+export const WorkerTerminalEventsItemSchema = z.discriminatedUnion('type', [
+  z
+    .object({
+      type: z.literal('snapshot'),
+      terminals: z
+        .array(WorkerTerminalEventsTerminalSchema)
+        .max(WORKER_TERMINAL_EVENTS_MAX_TERMINALS),
+      /** Recent exits, oldest first, without ids that are live again. */
+      recentExits: z
+        .array(WorkerTerminalEventsExitSchema)
+        .max(WORKER_TERMINAL_EVENTS_MAX_RECENT_EXITS),
+      /** The `worker.terminal.list` revision this snapshot matches. */
+      revision: z.number().int().min(0),
+    })
+    .catchall(CanopyJsonValueSchema),
+  z
+    .object({
+      type: z.literal('added'),
+      terminalId: ID,
+      scope: CanopyWorkspaceScopeSchema,
+      kind: EVENTS_KIND,
+      createdAt: AT,
+    })
+    .catchall(CanopyJsonValueSchema),
+  z
+    .object({
+      type: z.literal('running'),
+      terminalId: ID,
+      running: z.boolean(),
+      processName: PROCESS_NAME,
+      /** The command became idle because its user interrupted it. */
+      interruptedByUser: z.boolean().optional(),
+    })
+    .catchall(CanopyJsonValueSchema),
+  z
+    .object({ type: z.literal('firstOutput'), terminalId: ID, at: AT })
+    .catchall(CanopyJsonValueSchema),
+  /** Output progress, at most about once a second per terminal. */
+  z
+    .object({ type: z.literal('output'), terminalId: ID, outputOffset: OFFSET })
+    .catchall(CanopyJsonValueSchema),
+  z
+    .object({ type: z.literal('exit'), ...EventsExitFields })
+    .catchall(CanopyJsonValueSchema),
+  /**
+   * A Claude terminal printed its user-interrupted status line. A hint: it
+   * fires once per match, including a repaint, whatever the turn's state.
+   */
+  z
+    .object({ type: z.literal('interruptHint'), terminalId: ID })
+    .catchall(CanopyJsonValueSchema),
+]);
+
+export type WorkerTerminalEventsItem = z.output<
+  typeof WorkerTerminalEventsItemSchema
+>;
+
+export const WorkerTerminalEventsErrorSchema = CanopyErrorPayloadSchema.extend({
+  code: z.enum(['worker.terminal.snapshotRequired']).optional(),
+  retry: CanopyQueryRetryDirectiveSchema,
+});
+
+export const WorkerTerminalEventsEndSchema = CanopyStreamEndSchema.extend({
+  error: WorkerTerminalEventsErrorSchema.nullable(),
+});
+
+/**
+ * Served by the daemon's terminal module only (CAN-8038). Kept out of
+ * {@link WORKER_TERMINAL_STREAM_DEFINITIONS}, which the web core and its
+ * relay also compose.
+ */
+export const WORKER_TERMINAL_EVENTS_STREAM_DEFINITIONS =
+  defineCanopyStreamRegistry('worker', {
+    'worker.terminal.events': defineCanopyStream({
+      ...BASE,
+      idempotency: 'inherent',
+      requiredGrants: [WORKER_TERMINAL_GRANTS.read],
+      params: WorkerTerminalEventsParamsSchema,
+      openResult: WorkerTerminalEventsOpenResultSchema,
+      item: WorkerTerminalEventsItemSchema,
+      end: WorkerTerminalEventsEndSchema,
+      error: WorkerTerminalEventsErrorSchema,
+    }),
+  });

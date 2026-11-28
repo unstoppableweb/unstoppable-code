@@ -30,6 +30,7 @@ import {
 } from '@canopy/agent-transcript';
 import { getRemoteControlChatToolFamily } from '../lib/remote-control-tool-family';
 import { persistedMessageToRemoteControlWireMessage } from '@canopy/agent-transcript/remote-control/remote-control-wire-message';
+import { withTurnTimerEnds } from '@canopy/agent-transcript/remote-control/turn-timer-ends';
 
 export {
   REMOTE_CONTROL_CHAT_PART_TEXT_MAX_CHARS,
@@ -197,7 +198,7 @@ export function projectPersistedChatTranscript(input: {
   );
   let turnUserMessageId: string | undefined;
   let turnTimerConverged = false;
-  const projected = rootMessages.map((message, index) => {
+  const projectedRows = rootMessages.map((message, index) => {
     if (isRootUserTurnBoundary(message)) {
       turnUserMessageId = message.id;
       turnTimerConverged = false;
@@ -206,7 +207,7 @@ export function projectPersistedChatTranscript(input: {
       limits === undefined || index >= liveTurnStart
         ? limits
         : { ...limits, includeInFlightTurnTimers: false };
-    let projected = withAutoRoutedModel(
+    const projected = withAutoRoutedModel(
       persistedMessageToRemoteControlMessage(
         {
           scope: input.scope,
@@ -223,37 +224,6 @@ export function projectPersistedChatTranscript(input: {
       // name its user message.
       turnTimerAutoRoutedModelData(input.autoRoutedModels, turnUserMessageId),
     );
-    if (projected.parts?.some((part) => part.kind === 'turn_timer')) {
-      projected = {
-        ...projected,
-        parts: projected.parts.map((part) => {
-          if (
-            part.kind !== 'turn_timer' ||
-            !isRecord(part.data) ||
-            typeof part.data.completedAt !== 'number'
-          )
-            return part;
-          // Canonical timers retain their owner even on a page without its prompt.
-          const owner =
-            typeof part.data.userMessageId === 'string'
-              ? part.data.userMessageId
-              : turnUserMessageId;
-          if (owner === undefined) return part;
-          const recorded =
-            input.turnEnds?.[owner]?.outcome ??
-            input.unacceptedTurnEnds?.[owner];
-          const outcome =
-            recorded === 'failed' || recorded === 'cancelled'
-              ? recorded
-              : input.interruptedTurns?.[owner] !== undefined
-                ? 'interrupted'
-                : undefined;
-          return outcome === undefined
-            ? part
-            : { ...part, data: { ...part.data, endReason: outcome } };
-        }),
-      };
-    }
     if (
       turnUserMessageId !== undefined &&
       !turnTimerConverged &&
@@ -267,7 +237,9 @@ export function projectPersistedChatTranscript(input: {
     }
     return projected;
   });
-  return mergeSuffixedPersistedMessages(projected);
+  return mergeSuffixedPersistedMessages(
+    withTurnTimerEnds(rootMessages, projectedRows, input),
+  );
 }
 
 /**

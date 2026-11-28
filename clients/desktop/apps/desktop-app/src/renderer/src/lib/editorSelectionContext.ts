@@ -1,8 +1,9 @@
 import type { InsertChatTextDetail } from '@canopy/app-core';
 
-export function isChatComposerFocusRequest(
-  value: unknown,
-): value is { targetTabId: string; markHandled: () => void } {
+export function isChatComposerFocusRequest(value: unknown): value is {
+  targetTabId: string;
+  markHandled: (result: 'focused' | 'modal-blocked') => void;
+} {
   return (
     typeof value === 'object' &&
     value !== null &&

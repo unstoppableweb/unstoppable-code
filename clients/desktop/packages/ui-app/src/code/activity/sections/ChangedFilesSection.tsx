@@ -37,6 +37,7 @@ import {
   Heading,
 } from '@canopy/ui-shared/components';
 import { toDiffFileStatus } from '../../file/diff-status';
+import { useScrollMargin } from '../../use-scroll-margin';
 
 export interface ChangedFileRow extends RemoteControlChangedFile {
   readonly source: 'uncommitted' | 'committed';
@@ -682,47 +683,6 @@ function useAncestorScrollElement(
   }, [enabled, listElement]);
 
   return enabled ? scrollElement : null;
-}
-
-function useScrollMargin(
-  windowRef: { readonly current: HTMLDivElement | null },
-  scrollElement: HTMLElement,
-): number {
-  const [scrollMargin, setScrollMargin] = useState(0);
-  const measure = useCallback((): void => {
-    const windowElement = windowRef.current;
-    if (windowElement === null) return;
-    const margin = Math.round(
-      windowElement.getBoundingClientRect().top -
-        scrollElement.getBoundingClientRect().top +
-        scrollElement.scrollTop,
-    );
-    setScrollMargin((previous) => (previous === margin ? previous : margin));
-  }, [scrollElement, windowRef]);
-
-  useLayoutEffect(measure);
-  useLayoutEffect(() => {
-    const view = scrollElement.ownerDocument.defaultView;
-    if (view === null) return undefined;
-    const observer =
-      typeof view.ResizeObserver === 'undefined'
-        ? null
-        : new view.ResizeObserver((): void => measure());
-    if (observer !== null) {
-      observer.observe(scrollElement);
-      for (const child of Array.from(scrollElement.children)) {
-        observer.observe(child);
-      }
-      if (windowRef.current !== null) observer.observe(windowRef.current);
-    }
-    view.addEventListener('resize', measure);
-    return (): void => {
-      observer?.disconnect();
-      view.removeEventListener('resize', measure);
-    };
-  }, [measure, scrollElement, windowRef]);
-
-  return scrollMargin;
 }
 
 interface ScrollProgress {

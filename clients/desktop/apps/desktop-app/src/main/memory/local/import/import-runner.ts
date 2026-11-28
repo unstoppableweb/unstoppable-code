@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile, stat, unlink } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { basename, join } from 'node:path';
 import type { LocalMemoryScopeRequest } from '@canopy/desktop-shared/types';
 import { localMemoryScopeDir } from '../scope-resolver';
 import {
@@ -12,8 +12,8 @@ import { withMemoryWriteLock } from '../edit-coordination';
 import {
   assertMemoryPathContained,
   assertMemoryScopeLockHeld,
-} from '../memory-files';
-import { memoryNoteIdAt } from '../note-identity';
+} from '@canopy/memory-store/memory-files';
+import { memoryNoteIdAt } from '@canopy/memory-store/note-identity';
 import { redactMemoryContent } from '@canopy/memory-consolidation/redaction';
 import { resolveLocalMemoryPolicy } from '../policy';
 import {
@@ -31,7 +31,7 @@ import {
   type ImportState,
   type ImportStateEntry,
   type ImportStateStagedEntry,
-} from './ledger';
+} from '@canopy/memory-store/import/ledger';
 import {
   routeClaudeMemoryContent,
   routeCodexMemoryContent,
@@ -421,7 +421,7 @@ async function runLocalMemoryImport(
       await withMemoryWriteLock(scopeDir, async () => {
         try {
           const stagedPath = join(scopeDir, previous.stagedAs);
-          await assertMemoryPathContained(scopeDir, dirname(stagedPath));
+          await assertMemoryPathContained(scopeDir, stagedPath);
           await assertMemoryScopeLockHeld();
           await unlink(stagedPath);
         } catch (error) {

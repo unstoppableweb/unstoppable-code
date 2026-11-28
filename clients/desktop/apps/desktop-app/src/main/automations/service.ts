@@ -1,3 +1,8 @@
+import {
+  deriveWorkflowTarget,
+  type WorkflowTarget,
+} from '@canopy/pipeline-interop/workflow-target';
+import { nativeAutomationTarget } from '@canopy/desktop-shared/lib/workflow-target';
 import { withoutAccountsPickedOver } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import {
   assertAutomationAccountsReady,
@@ -11,9 +16,13 @@ import {
 } from '../lib/cowork-folder-guard';
 import { isDeepStrictEqual } from 'node:util';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
+import { normalizePipelineInputs } from '@canopy/pipeline-interop/normalize-pipeline';
+import { readStoredPipelineDocument } from '@canopy/execution-engine/pipelines/store';
+import { isUuid } from '@canopy/protocol/uuid';
 import { ownedPipelineToChatAction } from '@canopy/desktop-shared/lib/chat-automation-conversion';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { getSharedPipelineForExecutionContext } from '../pipelines/canopy-server-client';
+import { readStoredPipelineContext } from '../pipelines/pipeline-install-context';
 import { readChatTabsFile } from '../lib/chat-tabs-reader';
 import {
   loadExecutionState,
@@ -144,7 +153,10 @@ import {
   type LaneCredentialScope,
 } from '../lib/default-model-lane-resolver';
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
-import { getTriggerTypes } from '@canopy/execution-engine/types/pipeline';
+import {
+  getTriggerInputDefs,
+  getTriggerTypes,
+} from '@canopy/execution-engine/types/pipeline';
 import { scheduleRunEvent } from '@canopy/desktop-shared/lib/schedule-run-event';
 import {
   SCHEDULE_DISPATCH_REQUIRED_MESSAGE,
@@ -199,6 +211,7 @@ import {
 import {
   accountMayRunIn,
   authorizeBackgroundExecution,
+  authorizeBackgroundRead,
   automationActionDestination,
   backgroundExecutionContextEnabled,
   automationBindingContext,
@@ -300,12 +313,15 @@ import {
 import { readAllSidebarItems } from '../lib/sidebar-items';
 import { readWorkspaceWorktreesDetailed } from '../lib/workspace-persistence';
 import { resolveWorkspaceReferenceRepoPath } from '../lib/workspace-reference-repo';
+import { resolveContainedRealPath } from '../lib/path-safety';
+import { validateOptionalRepoId } from '../lib/validation';
 import { sendToWindow } from '../lib/window-send';
 import { reserveWorkspaceTargetRuntimeStart } from '../lib/workspace-target-exclusion';
 import {
   getCoworkWorkspaceRootDir,
   getWorkspaceWorktreeRepoDir,
   getWorkspaceWorktreeRootRepoDir,
+  getWorkspaceWorktreesRootDir,
 } from '../lib/paths';
 import {
   executionContextSatisfies,
@@ -313,6 +329,7 @@ import {
 } from '@canopy/execution-engine/pipelines/scope';
 import {
   discoverProjectPipelines,
+  readProjectPipelineWithinBounds,
   readProjectPipelinesWithinBounds,
   UNATTENDED_PROJECT_DISCOVERY_LIMITS,
   loadProjectPipelineFromDisk,
@@ -320,6 +337,7 @@ import {
 import { startPipelineExecutionFromMain } from '../pipelines/pipeline-handlers';
 import {
   getUserPipelineOwner,
+  readUserPipelineLocalRunOwner,
   validatePipelineOwnerTargetsOnSave,
 } from '../pipelines/pipeline-owner-policy';
 import {
@@ -2302,6 +2320,214 @@ export class AutomationsService {
     return contextSnapshot(file);
   }
 
+  async withWorkflowTargets(
+    snapshot: AutomationsListResponse,
+    callerContext: string | undefined,
+  ): Promise<AutomationsListResponse> {
+    const activities: AutomationsListResponse['activities'] = [];
+    // Avoid opening many project checkouts at once.
+    for (const activity of snapshot.activities) {
+      const target = await this.readWorkflowTarget(activity, callerContext);
+      activities.push(
+        target === undefined ? activity : { ...activity, target },
+      );
+    }
+    return { ...snapshot, activities };
+  }
+
+  private async readWorkflowTarget(
+    activity: ScheduledActivity,
+    callerContext: string | undefined,
+  ): Promise<WorkflowTarget | undefined> {
+    // A cloud schedule may run a pinned snapshot of the local definition.
+    if (!firesLocally(activity)) return undefined;
+    const action = activity.action;
+    if (action.type === 'standalone_prompt')
+      return nativeAutomationTarget({
+        ...action,
+        chatProjectId: resolveCoworkWorkspaceId(action.chatProjectId),
+      });
+    if (action.type !== 'worktree_pipeline')
+      return nativeAutomationTarget(action);
+    // Live definitions can change outside the local schedule. Listing should
+    // neither fetch nor install a revision as a side effect.
+    if (
+      action.pipelineSource === 'shared' ||
+      action.pipelineSource === 'curated'
+    )
+      return undefined;
+
+    const target = resolveAutomationPipelineTarget(action);
+    if (!target) return undefined;
+    const destination =
+      target.kind === 'global'
+        ? { scope: 'global' as const }
+        : { projectId: target.workspaceId };
+
+    try {
+      const checkContext = backgroundExecutionContextEnabled();
+      const executionContext = activity.executionContext ?? 'personal';
+      const readContext = callerContext ?? 'personal';
+      if (target.kind === 'global') {
+        const owner = await globalAutomationOwner(executionContext);
+        if ('error' in owner || (checkContext && owner.context !== readContext))
+          return undefined;
+      }
+      const workspace =
+        target.kind === 'global'
+          ? undefined
+          : (
+              await readAllSidebarItems({ persistRemovalCleanup: false })
+            ).items.find((item) => item.id === target.workspaceId);
+      if (target.kind !== 'global' && !workspace) return undefined;
+      if (workspace && target.kind !== 'global')
+        await this.assertPipelineDestinationExists(workspace, target);
+      const mayReadProject =
+        action.pipelineSource === undefined ||
+        action.pipelineSource === 'project';
+      const cwd = mayReadProject
+        ? await this.workflowTargetCwd(action, target, workspace)
+        : undefined;
+      // A fresh checkout is not available yet. A stored UUID without a
+      // filename cannot match a project workflow in that checkout.
+      if (
+        mayReadProject &&
+        cwd === undefined &&
+        !(
+          target.kind === 'new_worktree' &&
+          workspace?.type !== 'cowork' &&
+          action.pipelineSource === undefined &&
+          action.projectPipelineFilename === undefined &&
+          isUuid(action.pipelineId)
+        )
+      )
+        return undefined;
+
+      let pipeline: Pipeline | undefined;
+      let definition: ReturnType<typeof automationDefinitionResource> = {
+        owner: { shareScope: 'private' },
+      };
+      if (mayReadProject && cwd) {
+        const project = await readProjectPipelineWithinBounds(
+          cwd,
+          UNATTENDED_PROJECT_DISCOVERY_LIMITS,
+          (info) => namesProjectPipeline(action, info),
+        );
+        if (project.truncated || project.ambiguous) return undefined;
+        pipeline = project.pipeline;
+        if (pipeline) {
+          // Dispatch skips a document with conflicting step selectors. Keep
+          // the target unknown without guessing a fallback or expanding jobs.
+          if (
+            Object.values(pipeline.jobs).some((job) =>
+              job.steps.some((step) => step?.run && step.uses),
+            )
+          )
+            return undefined;
+          if (scheduleRunEvent(getTriggerTypes(pipeline.on)) !== 'dispatch')
+            return undefined;
+        }
+      }
+      if (!pipeline) {
+        if (action.pipelineSource === 'project') return undefined;
+        // A metadata read must not normalize legacy stored definitions either.
+        const stored = readStoredPipelineDocument(
+          action.pipelineId,
+          action.pipelineSource,
+        );
+        if (stored.kind !== 'found') return undefined;
+        if (
+          stored.source === 'user' &&
+          (target.kind === 'global' || checkContext)
+        ) {
+          const owner = readUserPipelineLocalRunOwner(stored.entry.id);
+          if (
+            (target.kind === 'global' && owner !== executionContext) ||
+            (checkContext && owner !== undefined && owner !== readContext)
+          )
+            return undefined;
+        }
+        if (checkContext && stored.source === 'user') {
+          definition = await readStoredPipelineContext(
+            stored.entry.id,
+            readContext,
+          );
+        } else if (stored.source === 'bundled') {
+          definition = { owner: { type: 'system' } };
+        }
+        pipeline = parsePipelineText(stored.rawContent);
+      }
+      const trigger = scheduleRunEvent(getTriggerTypes(pipeline.on));
+      if (trigger === 'unsupported') return undefined;
+      if (checkContext) {
+        const installOwner =
+          await this.backgroundInheritedInstallOwner(activity);
+        const resources = [
+          automationDefinitionResource(activity),
+          ...(installOwner ? [automationDefinitionResource(installOwner)] : []),
+          definition,
+        ];
+        if (
+          !(await authorizeBackgroundRead(readContext, resources, destination))
+            .allow
+        )
+          return undefined;
+        if (
+          executionContext !== readContext &&
+          !(
+            await authorizeBackgroundRead(
+              executionContext,
+              resources,
+              destination,
+            )
+          ).allow
+        )
+          return undefined;
+      }
+
+      return deriveWorkflowTarget(pipeline, {
+        trigger,
+        resolvedInputs: resolvePipelineInputs(
+          normalizePipelineInputs(getTriggerInputDefs(pipeline.on, trigger)),
+          action.inputs,
+        ),
+        ...(target.kind === 'global' ? {} : { projectId: target.workspaceId }),
+      });
+    } catch {
+      // The schedule remains visible if its workflow is missing or inaccessible.
+      return undefined;
+    }
+  }
+
+  private async workflowTargetCwd(
+    action: PipelineAutomationAction,
+    target: ResolvedAutomationPipelineTarget,
+    workspace: SidebarItem | undefined,
+  ): Promise<string | undefined> {
+    if (target.kind === 'global') return '';
+    if (!workspace) return undefined;
+    if (workspace.type !== 'cowork' && target.kind === 'new_worktree')
+      return undefined;
+    if (workspace.type !== 'cowork' && target.kind === 'task') {
+      const { repoId } = action;
+      validateOptionalRepoId(repoId, 'repoId');
+      if (
+        repoId !== undefined &&
+        repoId !== WORKSPACE_ROOT_REPO_ID &&
+        (workspace.type !== 'multi-repo' ||
+          !workspace.repos.some((repo) => repo.id === repoId))
+      ) {
+        throw new Error('The automation repository is outside the workspace.');
+      }
+      return resolveContainedRealPath(
+        getWorkspaceWorktreesRootDir(workspace.id),
+        this.resolveWorktreeCwd(workspace.id, target.taskId, repoId),
+      );
+    }
+    const root = projectRootPipelineCwd(workspace, action.repoId);
+    return 'sourceRepoPath' in root ? root.sourceRepoPath : root.cwd;
+  }
+
   /** Undefined when the automations file cannot be read: the count is unknown. */
   async getScheduledMessagesIndex(
     now?: Date,
@@ -2431,6 +2657,19 @@ export class AutomationsService {
   }
 
   /**
+   * CAN-6065: both reads and runs require the inherited install's provenance.
+   * Another schedule of an installed workflow must not bypass a revoked share.
+   */
+  private async backgroundInheritedInstallOwner(
+    activity: ScheduledActivity,
+  ): Promise<ScheduledActivity | undefined> {
+    return inheritedInstallOwner(
+      (await this.ensureFile()).activities,
+      activity,
+    );
+  }
+
+  /**
    * The resource graph and destination a background run of `activity`
    * authorizes: the definition, its plugins, model and inherited selections,
    * and its pipeline. Turning an automation on checks the same graph.
@@ -2467,13 +2706,7 @@ export class AutomationsService {
         },
       },
     ];
-    // CAN-6065: another schedule of an installed workflow runs the owner's
-    // install, so it passes the owner's install check too: a revoked share
-    // denies every schedule, not only the owner.
-    const installOwner = inheritedInstallOwner(
-      (await this.ensureFile()).activities,
-      activity,
-    );
+    const installOwner = await this.backgroundInheritedInstallOwner(activity);
     if (installOwner !== undefined)
       resources.push(automationDefinitionResource(installOwner));
     let sharedPipelineReadFailure:
@@ -6592,6 +6825,7 @@ export class AutomationsService {
               modelConfig,
               thinkingLevel: modelConfig.thinkingLevel,
               initiationSource: 'automation',
+              nativeAutomationRunInputId: userMessageId,
               ...(background ? { preserveActiveTab: true } : {}),
               automationName: activity.name,
               ...(pluginSelections || resolvedPrompt.referencedPluginSelections
@@ -6809,13 +7043,14 @@ export class AutomationsService {
           const result = await handleResumeUsageLimitedChats(
             { targets: [target] },
             this.surfaces.getMainWindow,
-            gate
-              ? {
-                  userMessageId,
-                  interruption: gate,
-                  requireClearUsage: background,
-                }
-              : userMessageId,
+            {
+              scheduledInputId: userMessageId,
+              ...(gate
+                ? {
+                    gate: { interruption: gate, requireClearUsage: background },
+                  }
+                : {}),
+            },
           );
           if (result.resumedCount !== 1)
             throw new Error('The scheduled resume could not be dispatched.');
@@ -7053,6 +7288,7 @@ export class AutomationsService {
                 )
               : {}),
             initiationSource: 'automation',
+            nativeAutomationRunInputId: sessionPromptUserMessageId,
             ...(background ? { preserveActiveTab: true } : {}),
             automationName: activity.name,
             fileReferences:

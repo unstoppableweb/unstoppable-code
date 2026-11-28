@@ -74,6 +74,7 @@ import {
   handleProtocolArgv,
   handleProtocolUrl,
   notifyDeepLinkStartupUnlocked,
+  queueApprovalsSettingsOpen,
   setBillingReturnSender,
   setDeepLinkSender,
   setWebLinkSender,
@@ -5000,6 +5001,23 @@ const ensureMainWindowFromPreferences = mainWindowRecreation.ensureMainWindow;
 const handleGlobalFocusShortcutTrigger =
   mainWindowRecreation.handleFocusShortcutTrigger;
 
+async function openAppAdvisorApprovalsSettings(
+  sender: WebContents,
+): Promise<void> {
+  if (sender !== getAppAdvisorRendererSurface()?.webContents) {
+    throw new Error('Unexpected Orchestrator Settings request sender');
+  }
+  // Queue before yielding so newer navigation wins during window transitions.
+  queueApprovalsSettingsOpen();
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    await ensureMainWindowFromPreferences();
+  }
+  // A floating view sits above the main renderer, including its Settings.
+  if (appAdvisorHost?.placement === 'floating') {
+    await closeAppAdvisorWindow({ minimize: true });
+  }
+}
+
 /**
  * A paired computer's window switching back to this computer. No `steal`: the
  * user is already in this app.
@@ -6926,6 +6944,7 @@ void app.whenReady().then(async (): Promise<void> => {
         (appAdvisorViewContents !== null &&
           contents === appAdvisorViewContents),
       getAppAdvisorWindow,
+      openAppAdvisorApprovalsSettings,
       openAppAdvisorWindow,
       ensureAppAdvisorWindow,
       closeAppAdvisorWindow,

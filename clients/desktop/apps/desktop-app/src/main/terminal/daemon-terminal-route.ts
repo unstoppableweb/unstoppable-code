@@ -7,6 +7,7 @@ import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import type { PlatformOperatingSystem } from '@canopy/core-runtime';
 import { readFilesystemScope } from '@canopy/core-runtime/node';
 import {
+  CORE_CLIENT_WINDOW_GRANTS,
   WORKER_TERMINAL_GRANTS,
   type CanopyCallerDescriptor,
   type CanopyWorkspaceScope,
@@ -22,10 +23,14 @@ import {
   resolveWorktreeCwd,
   resolveWorktreeTargetIds,
 } from '../lib/resolve-worktree';
-import { daemonUnreachableReason } from '../canopy-runtime/electron-daemon-connection';
+import {
+  daemonUnreachableReason,
+  type ElectronDaemonSession,
+} from '../canopy-runtime/electron-daemon-connection';
 import {
   getElectronDaemonConnections,
   getElectronDaemonFilesContext,
+  verifiedDaemonEndpoint,
 } from '../canopy-runtime/electron-daemon-access';
 import type { ElectronDaemonClient } from '../canopy-runtime/electron-daemon-host';
 import { getDaemonScopeResolver } from '../canopy-runtime/daemon-scope-resolver';
@@ -44,6 +49,7 @@ import {
   keepsTerminalRecords,
   noteTerminalRecordSession,
 } from './record-client';
+import { createTerminalWindowAdmission } from './window-admission';
 import { createDesktopTerminalHost, workerTerminal } from './worker-terminal';
 
 /**
@@ -452,9 +458,10 @@ export function daemonTerminalSession(): Promise<ElectronDaemonClient> {
 
 /**
  * Main's own terminal session with the daemon, for every daemon terminal,
- * under the verified local authority the daemon serves.
+ * under the verified local authority the daemon serves. Windows are admitted
+ * on its lease (CAN-8068).
  */
-async function client(): Promise<ElectronDaemonClient> {
+async function session(): Promise<ElectronDaemonSession<ElectronDaemonClient>> {
   getElectronDaemonHealth().setConsumerEnabled('terminals', true);
   const { authorityId } = await getElectronDaemonFilesContext();
   const caller: CanopyCallerDescriptor = {
@@ -462,14 +469,35 @@ async function client(): Promise<ElectronDaemonClient> {
     clientInstanceId: 'electron-main:terminals',
     authorityId,
     interfaceKind: 'desktop',
-    grants: [WORKER_TERMINAL_GRANTS.read, WORKER_TERMINAL_GRANTS.write],
+    grants: [
+      WORKER_TERMINAL_GRANTS.read,
+      WORKER_TERMINAL_GRANTS.write,
+      CORE_CLIENT_WINDOW_GRANTS.issue,
+    ],
   };
-  const session = (
-    await getElectronDaemonConnections().get(caller, owner.signal)
-  ).client;
-  noteTerminalRecordSession(session);
-  return session;
+  const opened = await getElectronDaemonConnections().get(caller, owner.signal);
+  noteTerminalRecordSession(opened.client);
+  return opened;
 }
+
+async function client(): Promise<ElectronDaemonClient> {
+  return (await session()).client;
+}
+
+/** Main's admission of its own windows to the daemon terminals it mirrors. */
+export const terminalWindowAdmission = createTerminalWindowAdmission({
+  session,
+  latched: () => getElectronDaemonHealth().isLatched(),
+  endpointOf: verifiedDaemonEndpoint,
+  terminal: (terminalId) => {
+    const daemon = workerTerminal.daemonTerminals;
+    const terminal = daemon?.get(terminalId);
+    const scope = daemon?.scopeOf(terminalId);
+    return terminal && scope ? { scope, session: terminal } : null;
+  },
+  createId: randomUUID,
+  log: (message, details): void => logMainProcessWarn(message, details),
+});
 
 /**
  * The history source a restore chose on one negotiated session (CAN-7279):
@@ -549,16 +577,24 @@ const transport: RemoteTerminalTransport = {
   restore: async (params) => {
     const session = await client();
     admitRestore(params, session);
+    // A grant would otherwise survive a recreate under the same id (CAN-8039).
+    // A live reattach keeps the process, so every window keeps its grant.
+    if (params.restoreMode === 'recreate_if_exited')
+      terminalWindowAdmission.revokeTerminal(params.terminalId);
     return session.instruction('worker.terminal.restore', params);
   },
   write: async (params) =>
     (await client()).instruction('worker.terminal.write', params),
   resize: async (params) =>
     (await client()).instruction('worker.terminal.resize', params),
-  kill: async (params) =>
-    (await client()).instruction('worker.terminal.kill', params),
-  release: async (params) =>
-    (await client()).instruction('worker.terminal.release', params),
+  kill: async (params) => {
+    terminalWindowAdmission.revokeTerminal(params.terminalId);
+    return (await client()).instruction('worker.terminal.kill', params);
+  },
+  release: async (params) => {
+    terminalWindowAdmission.revokeTerminal(params.terminalId);
+    return (await client()).instruction('worker.terminal.release', params);
+  },
   attach: async (params, onFrame) => {
     const session = await client();
     const handle = await session.openStream('worker.terminal.attach', params);
@@ -617,7 +653,12 @@ export function getDaemonTerminals(): RemoteTerminals {
       };
     },
     resources: host.resources,
-    emit: (event): void => workerTerminal.emit(event),
+    emit: (event): void => {
+      // Includes main's own lost verdict; a window stream ending is never one.
+      if (event.type === 'exit')
+        terminalWindowAdmission.revokeTerminal(event.payload.terminalId);
+      workerTerminal.emit(event);
+    },
     log: (message, details): void => logMainProcessWarn(message, details),
     createIdempotencyKey: randomUUID,
   });

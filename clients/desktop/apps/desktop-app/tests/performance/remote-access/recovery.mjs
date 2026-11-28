@@ -14,7 +14,7 @@ import { randomUUID } from 'node:crypto';
 import { expect } from '@playwright/test';
 import { closeCanopy } from '../../electron/launchCanopy.mjs';
 import { registerScenario } from '../../electron/seeders/registerScenario.mjs';
-import { PERFORMANCE_MOCK_BASE_URL } from '../mock-server.mjs';
+import { currentMockBaseUrl } from '../mock-server.mjs';
 import {
   launchDesktop,
   openRemoteWindow,
@@ -41,7 +41,7 @@ export async function runRecovery({ progress = {} } = {}) {
   try {
     proxy = await startProxy({ targetPort: relay.port });
     const apiKey = `csk_remote_recovery_${randomUUID()}`;
-    await registerScenario(PERFORMANCE_MOCK_BASE_URL, apiKey, {
+    await registerScenario(currentMockBaseUrl(), apiKey, {
       cloud: {
         deviceRelay: {
           url: proxy.url,

@@ -22,6 +22,7 @@
     "@canopy/desktop-shared": "workspace:*",
     "@canopy/mcp-oauth-core": "workspace:*",
     "@canopy/memory-consolidation": "workspace:*",
+    "@canopy/memory-store": "workspace:*",
     "@canopy/pipeline-interop": "workspace:*",
     "@canopy/plugin-interop": "workspace:*",
     "@canopy/protocol": "workspace:*",

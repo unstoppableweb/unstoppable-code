@@ -17,7 +17,7 @@ import { readWorkspaceConfig } from '../../../lib/workspace-persistence';
 import { localMemoryScopeDir } from '../scope-resolver';
 import { broadcastLocalMemoryChanged } from '../change-events';
 import { requestLocalMemoryConsolidation } from '../consolidation-scheduler';
-import { isMemoryMarkdownFileName } from '../memory-files';
+import { isMemoryMarkdownFileName } from '@canopy/memory-store/memory-files';
 import { resolveLocalMemoryPolicy } from '../policy';
 import {
   discoverClaudeMemoryFiles,
@@ -28,7 +28,10 @@ import {
   runCodexMemoryImport,
   type ClaudeMemoryImportResult,
 } from './import-runner';
-import { isLiveImportEntry, readImportState } from './ledger';
+import {
+  isLiveImportEntry,
+  readImportState,
+} from '@canopy/memory-store/import/ledger';
 import { routeClaudeMemoryContent } from './scope-routing';
 
 export const CLAUDE_MEMORY_IMPORT_MIN_INTERVAL_MS = 24 * 60 * 60 * 1_000;

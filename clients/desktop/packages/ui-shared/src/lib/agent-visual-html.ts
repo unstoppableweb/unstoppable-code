@@ -133,9 +133,13 @@ export const AGENT_VISUAL_STATUS_METHOD = 'canopy/visual/status';
 export const AGENT_VISUAL_LOAD_METHOD = 'canopy/visual/load';
 /**
  * The longest agent document a shell takes: the 4 MiB a visual may reach once
- * its images are inlined, with room for the bridge and theme around it.
+ * its images are inlined, with room for the bridge and theme around it. A
+ * shared artifact may be 8 MiB of bytes (`MAX_SHARED_ARTIFACT_BYTES`), which
+ * decodes to at most as many characters, and the builder wraps it in about
+ * 10 KB, so the cap carries a fixed 64 KiB of headroom over 8 MiB (CAN-8017).
+ * A size bound, not a security boundary.
  */
-export const AGENT_VISUAL_LOAD_MAX_CHARS = 8 * 1024 * 1024;
+export const AGENT_VISUAL_LOAD_MAX_CHARS = 8 * 1024 * 1024 + 64 * 1024;
 /**
  * The host asks the relay whether focus entered the visual by the user's own
  * press inside it, and the relay answers from its user activation. A gesture

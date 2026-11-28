@@ -1709,7 +1709,7 @@ function SidebarCoworkWorkspaceRowImpl({
     [deleteWorkEntry, item.id],
   );
 
-  const reportGroupError = (error: unknown): void =>
+  const reportGroupError = (error: unknown): false => {
     useGitHubStore
       .getState()
       .addToast(
@@ -1720,10 +1720,12 @@ function SidebarCoworkWorkspaceRowImpl({
         undefined,
         { caught: error },
       );
+    return false;
+  };
   const groupStore = useSidebarItemGroupsStore.getState();
   const groupCommands: CodeSidebarItemGroupCommands = {
     create: (itemId) => groupStore.create({ scope, itemId }),
-    update: (groupId, patch): Promise<void> =>
+    update: (groupId, patch): Promise<void | false> =>
       groupStore.update({ scope, groupId, ...patch }).catch(reportGroupError),
     ungroup: (groupId): void => {
       void groupStore.ungroup({ scope, groupId }).catch(reportGroupError);

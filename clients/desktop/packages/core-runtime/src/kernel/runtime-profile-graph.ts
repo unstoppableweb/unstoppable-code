@@ -164,6 +164,12 @@ export interface CreateRuntimeProfileGraphOptions {
    */
   instructionGuard?: RuntimeInstructionGuard;
   /**
+   * Runs on the core before every forwarded worker stream opens on a bundled
+   * or supervised worker, as `instructionGuard` does for instructions
+   * (CAN-8039).
+   */
+  streamGuard?: RuntimeStreamGuard;
+  /**
    * Keyed worker instructions whose repeated key replays the first
    * request's settlement instead of running again (CAN-4733). Applies to the
    * bundled worker and to a `worker` profile graph.
@@ -485,6 +491,50 @@ function guardedInstructions(
 }
 
 /**
+ * Checks one forwarded stream on the core before it opens; throws to refuse
+ * it, which ends the stream with that error. An admitted stream may return a
+ * release, called once the stream's cleanup runs. The guard may end an
+ * admitted stream later through `sink`.
+ */
+export type RuntimeStreamGuard = (
+  operation: string,
+  params: unknown,
+  context: CanopyHandlerContext,
+  sink: CanopyStreamSink<unknown>,
+) => void | (() => void);
+
+function guardedStreams(
+  streams: RuntimeModuleHandlers['streams'],
+  guard: RuntimeStreamGuard | undefined,
+): RuntimeModuleHandlers['streams'] {
+  if (!guard) return streams;
+  return Object.fromEntries(
+    Object.entries(streams).map(([operation, forward]) => [
+      operation,
+      async (
+        params: unknown,
+        context: CanopyHandlerContext,
+        sink: CanopyStreamSink<unknown>,
+      ) => {
+        const release = guard(operation, params, context, sink);
+        if (!release) return forward(params, context, sink);
+        let close: (() => void) | void;
+        try {
+          close = await forward(params, context, sink);
+        } catch (error) {
+          release();
+          throw error;
+        }
+        return (): void => {
+          release();
+          close?.();
+        };
+      },
+    ]),
+  );
+}
+
+/**
  * A binding's forwarders with the opted-in instructions' keys scoped per
  * caller, and with dispatch tags and receipt lookups scoped the same way
  * when the graph serves operation receipts (CAN-4733).
@@ -502,6 +552,7 @@ function scopedForwarders(
     forwarders.instructions,
     peerScopedIdempotency,
   );
+  const streams = guardedStreams(forwarders.streams, options.streamGuard);
   // Dispatch tags are scoped on every forward, whether or not this graph
   // answers receipt lookups: the worker refuses a tag the core did not scope.
   if (!options.operationReceipts)
@@ -511,9 +562,11 @@ function scopedForwarders(
         scopeForwardedDispatchTags(instructions),
         options.instructionGuard,
       ),
+      streams,
     };
   return {
     ...forwarders,
+    streams,
     queries: routeOperationReceiptLookups(forwarders.queries, {
       instructions: receipts.instructions,
       peerScopedIdempotency,

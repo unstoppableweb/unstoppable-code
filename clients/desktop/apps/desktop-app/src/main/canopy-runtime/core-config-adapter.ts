@@ -35,15 +35,14 @@ import { MAX_ARCHIVE_RETENTION_DAYS } from '@canopy/desktop-shared/lib/archive-r
 import { resolveCommitMessageInstructions } from '@canopy/desktop-shared/lib/commit-message-generator';
 import {
   getModelPreferenceThinkingLevels,
-  isNativeModelPreferenceOption,
   thinkingLevelForChosenModel,
 } from '@canopy/desktop-shared/lib/model-thinking-preference';
 import { CLAUDE_MAX_TURNS_MAX } from '@canopy/desktop-shared/constants/preferences';
 import {
   IPC_CHANNELS,
-  resolveModelAlias,
   type PreferencesData,
 } from '@canopy/desktop-shared/types';
+import { preferencesNormalizationEnvironment } from '@canopy/desktop-shared/node/preferences/normalization-environment';
 import type { DesktopDomainAdapter } from './desktop-runtime';
 import type { DomainPreferencesData } from '@canopy/desktop-shared/node/preferences/client-local-preferences';
 
@@ -284,8 +283,9 @@ function preferenceValue(
 
 /** A model the Settings row offers, by id or alias; refused otherwise. */
 function offeredModel(model: string, setting: string): string {
-  const resolved = resolveModelAlias(model);
-  if (!isNativeModelPreferenceOption(resolved, true))
+  const facts = preferencesNormalizationEnvironment();
+  const resolved = facts.resolveModelAlias(model);
+  if (!facts.isNativePreferenceOption(resolved, true))
     throw invalid(
       `${model} isn't an available Claude, Codex or Ollama model for the ${setting}.`,
     );

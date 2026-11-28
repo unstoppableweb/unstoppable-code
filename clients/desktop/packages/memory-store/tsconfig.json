@@ -1,0 +1,25 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "noEmit": false,
+    "outDir": "out",
+    "rootDir": "src",
+    "types": ["node"]
+  },
+  "references": [
+    { "path": "../core-platform" },
+    { "path": "../execution-engine" },
+    { "path": "../memory-consolidation" },
+    { "path": "../protocol" }
+  ],
+  "include": ["src/**/*.ts"],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/__tests__/**",
+    "src/**/__scratch__/**"
+  ]
+}

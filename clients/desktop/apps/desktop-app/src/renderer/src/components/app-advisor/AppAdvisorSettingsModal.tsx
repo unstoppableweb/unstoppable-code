@@ -126,6 +126,18 @@ export function AppAdvisorSettingsModal({
       instructions={draft.instructions}
       onInstructionsChange={draft.setInstructions}
       instructionsLoading={draft.instructionsLoading}
+      instructionsError={
+        draft.instructionsLoadError ? (
+          <ErrorState
+            space="panel"
+            message="Couldn't load instructions."
+            onRetry={draft.retryInstructions}
+            retrying={draft.instructionsLoading}
+            testId="app-advisor-instructions-load-error"
+            retryTestId="app-advisor-instructions-load-retry"
+          />
+        ) : null
+      }
       instructionsPlaceholder={`# ${ORCHESTRATOR_LABEL} instructions\n\nAdd assistant instructions here...`}
       retentionDays={draft.retentionDays}
       onRetentionDaysChange={draft.setRetentionDays}

@@ -1137,6 +1137,7 @@ function importSpawnedBy(value: Record<string, unknown>): {
   event?: true;
   scheduled?: true;
   toolsLoaded?: true;
+  peerMessage?: true;
 } {
   return {
     ...(typeof value.taskId === 'string' ? { taskId: value.taskId } : {}),
@@ -1146,6 +1147,7 @@ function importSpawnedBy(value: Record<string, unknown>): {
     ...(value.event === true ? { event: value.event } : {}),
     ...(value.scheduled === true ? { scheduled: value.scheduled } : {}),
     ...(value.toolsLoaded === true ? { toolsLoaded: true } : {}),
+    ...(value.peerMessage === true ? { peerMessage: true } : {}),
   };
 }
 

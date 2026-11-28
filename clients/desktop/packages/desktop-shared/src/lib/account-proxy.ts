@@ -7,10 +7,8 @@
 
 import {
   ACCOUNT_PROXY_MIN_MAJOR_VERSION,
-  ACCOUNT_PROXY_ROUTING_STRATEGIES,
   type AccountProxyAccount,
   type AccountProxyAccountStatus,
-  type AccountProxyErrorCode,
   type AccountProxyLimit,
   type AccountProxyUsageSnapshot,
   type AccountProxyRouting,
@@ -41,53 +39,11 @@ function timeField(record: Record<string, unknown>, key: string): number {
   return Date.parse(value);
 }
 
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
-
-/** Paths users paste that are not the server's base URL. */
-const TRAILING_API_PATHS = [
-  /\/v8\/management$/i,
-  /\/v0\/management$/i,
-  /\/v1$/i,
-];
-
-export type AccountProxyUrlResult =
-  | { readonly ok: true; readonly url: string }
-  | {
-      readonly ok: false;
-      readonly code: Extract<
-        AccountProxyErrorCode,
-        'invalid-url' | 'insecure-url'
-      >;
-    };
-
-/**
- * Normalizes a server URL the user typed. HTTPS is required except for
- * loopback addresses, because the management key travels in every request.
- */
-export function normalizeAccountProxyUrl(raw: string): AccountProxyUrlResult {
-  const trimmed = raw.trim();
-  if (!trimmed) return { ok: false, code: 'invalid-url' };
-  let parsed: URL;
-  try {
-    parsed = new URL(
-      /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`,
-    );
-  } catch {
-    return { ok: false, code: 'invalid-url' };
-  }
-  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-    return { ok: false, code: 'invalid-url' };
-  }
-  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
-    return { ok: false, code: 'invalid-url' };
-  }
-  if (parsed.protocol === 'http:' && !LOOPBACK_HOSTS.has(parsed.hostname)) {
-    return { ok: false, code: 'insecure-url' };
-  }
-  let path = parsed.pathname.replace(/\/+$/, '');
-  for (const pattern of TRAILING_API_PATHS) path = path.replace(pattern, '');
-  return { ok: true, url: `${parsed.protocol}//${parsed.host}${path}` };
-}
+export {
+  isAccountProxyRoutingStrategy,
+  normalizeAccountProxyUrl,
+} from '@canopy/protocol/preferences';
+export type { AccountProxyUrlResult } from '@canopy/protocol/preferences';
 
 /** `8.0.27` → `{ major: 8 }`; null when the header is missing or malformed. */
 export function parseAccountProxyVersion(
@@ -483,14 +439,6 @@ export function parseAccountProxyConfigAccounts(
     });
   }
   return accounts;
-}
-
-export function isAccountProxyRoutingStrategy(
-  value: unknown,
-): value is AccountProxyRoutingStrategy {
-  return ACCOUNT_PROXY_ROUTING_STRATEGIES.some(
-    (strategy) => strategy === value,
-  );
 }
 
 /** As the proxy runs it: these aliases, and anything else as round robin. */

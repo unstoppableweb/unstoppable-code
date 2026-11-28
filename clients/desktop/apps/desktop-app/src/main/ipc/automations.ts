@@ -10,8 +10,15 @@ import {
 } from '../sharing/share-operation-result';
 import { assertInstalledResourceShare } from '../lib/resource-install-context';
 import { assertResourceShareDestination } from '../lib/resource-share-context';
-import { resourceContextEnabled } from '../lib/resource-context';
-import { scopeAutomationsToSelectedContext } from '../services/background-execution-context';
+import {
+  assertResourceContextSnapshot,
+  resourceContextEnabled,
+  resourceContextSnapshot,
+} from '../lib/resource-context';
+import {
+  captureBackgroundExecutionContext,
+  scopeAutomationsToSelectedContext,
+} from '../services/background-execution-context';
 import {
   IPC_CHANNELS,
   DEFAULT_CRON_GENERATION_MODEL,
@@ -368,15 +375,30 @@ async function writeRemoteMetadataFromDetail(
 export async function listAutomationsForCaller(
   request?: AutomationsListRequest,
 ): Promise<AutomationsListResponse> {
+  const includeTargets =
+    isRecord(request) && request.includeWorkflowTargets === true;
+  const context =
+    includeTargets && resourceContextEnabled()
+      ? await resourceContextSnapshot()
+      : undefined;
+  const service = getAutomationsService();
   const snapshot = projectOwnedChatAutomations(
-    await getAutomationsService().list(),
-    await getAutomationsService().allActivities(),
+    await service.list(),
+    await service.allActivities(),
   );
   // App Advisor lists what the Automations page shows; everything else
   // reads the full snapshot.
-  return isRecord(request) && request.scope === 'selected-context'
-    ? scopeAutomationsToSelectedContext(snapshot)
-    : snapshot;
+  const scoped =
+    isRecord(request) && request.scope === 'selected-context'
+      ? await scopeAutomationsToSelectedContext(snapshot)
+      : snapshot;
+  if (!includeTargets) return scoped;
+  const projected = await service.withWorkflowTargets(
+    scoped,
+    await captureBackgroundExecutionContext(),
+  );
+  if (context !== undefined) await assertResourceContextSnapshot(context);
+  return projected;
 }
 
 export async function listSharedAutomationsForCaller(

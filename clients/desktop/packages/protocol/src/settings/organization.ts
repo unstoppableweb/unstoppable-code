@@ -360,6 +360,13 @@ export interface OrganizationConfigDetail {
   /** Whether this organization-level control applies to the target. */
   applicable?: boolean;
   allowExternalContainerSharing: boolean;
+  /**
+   * Whether members may turn on public links for shared artifacts this
+   * organization governs (CAN-8016). Off unless an owner or admin turns it
+   * on; turning it off pauses links without clearing them. Optional for
+   * older servers; the service always populates it.
+   */
+  allowPublicArtifactSharing?: boolean;
   enforceMemberModelPolicy: boolean;
   blockedModelIds: string[];
   reviewedModelIds: string[];
@@ -408,6 +415,7 @@ export interface UpdateOrganizationConfigRequest {
   usageStatsMinRole?: OrganizationRole;
   externalAgentAccess?: OrganizationExternalAgentAccessWire;
   allowExternalContainerSharing?: boolean;
+  allowPublicArtifactSharing?: boolean;
   enforceMemberDataSharing?: boolean;
   enforceMemberModelPolicy?: boolean;
   blockedModelIds?: string[];
@@ -670,6 +678,7 @@ export const modelGatewayModelShape = z.looseObject({
 export const organizationConfigDetailShape = z.looseObject({
   usageStatsMinRole: organizationRoleSchema,
   enforceMemberDataSharing: z.boolean(),
+  allowPublicArtifactSharing: z.boolean().optional(),
   enforceMemberModelPolicy: z.boolean(),
   blockedModelIds: z.array(z.string()),
   reviewedModelIds: z.array(z.string()),

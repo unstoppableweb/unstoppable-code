@@ -401,6 +401,8 @@ export function computeIncrementalTurnGroups(
   agentUsage: Record<string, AgentUsage> | undefined,
   cache: TurnGroupCache,
   trailingTurnSettled = false,
+  /** Prompts whose completed turn is compacted on this page. */
+  compactedTurnIds?: ReadonlySet<string>,
 ): TurnGroupOrMessage[] {
   const finishPerformanceStage = beginTranscriptPerformanceStage(
     'turn_grouping',
@@ -416,7 +418,10 @@ export function computeIncrementalTurnGroups(
   // Always run the full pipeline — correctness first. Structural sharing
   // against the previous run keeps unchanged messages and blocks identical.
   const displayMessages = mergeToolResults(
-    reorderMessagesForDisplay(messages),
+    reorderMessagesForDisplay(
+      messages,
+      compactedTurnIds === undefined ? {} : { compactedTurnIds },
+    ),
     agentUsage,
     cache.displayMessages,
   );
@@ -445,4 +450,178 @@ export function computeIncrementalTurnGroups(
   cache.completedGroups = nextCompleted;
   finishPerformanceStage({ groups: result.length });
   return result;
+}
+
+/**
+ * The transcript rows each turn group owns, by group id, read from the
+ * messages before grouping (which drops rows whose blocks are still paged
+ * out). A prompt, or a wake timer that heads its own group, starts a group;
+ * every other row belongs to the group open when it was written.
+ */
+export function rowIdsByTurnGroup(
+  messages: readonly ChatMessage[],
+  items: readonly TurnGroupOrMessage[],
+  /**
+   * The previous result, updated in place: a group whose rows are unchanged
+   * keeps its array, so memoized group rows skip re-rendering while another
+   * group streams.
+   */
+  cache: Map<string, readonly string[]> = new Map(),
+): ReadonlyMap<string, readonly string[]> {
+  const groupIds = new Set(
+    items.flatMap((item) =>
+      item.kind === 'turn-group' ? [item.userMessage.id] : [],
+    ),
+  );
+  const rows = new Map<string, string[]>();
+  let owner: string | undefined;
+  for (const message of messages) {
+    if (groupIds.has(message.id)) {
+      owner = message.id;
+      continue;
+    }
+    if (groupIds.has(`${message.id}:wake`)) {
+      owner = `${message.id}:wake`;
+      continue;
+    }
+    if (owner === undefined) continue;
+    const owned = rows.get(owner);
+    if (owned) owned.push(message.id);
+    else rows.set(owner, [message.id]);
+  }
+  for (const [groupId, ids] of rows) {
+    const previous = cache.get(groupId);
+    if (
+      previous === undefined ||
+      previous.length !== ids.length ||
+      previous.some((id, index) => id !== ids[index])
+    )
+      cache.set(groupId, ids);
+  }
+  for (const groupId of cache.keys())
+    if (!rows.has(groupId)) cache.delete(groupId);
+  return cache;
+}
+
+/**
+ * The prompts each group's later runs ran under (a Resume of an earlier
+ * prompt), by group id, read from the timers among its rows: the approval
+ * service names that prompt on the run's receipts. Updated in place like
+ * `rowIdsByTurnGroup`, so an unchanged group keeps its array.
+ */
+export function runPromptIdsByTurnGroup(
+  messages: readonly ChatMessage[],
+  rowIds: ReadonlyMap<string, readonly string[]>,
+  cache: Map<string, readonly string[]> = new Map(),
+): ReadonlyMap<string, readonly string[]> {
+  const promptByTimer = new Map<string, string>();
+  for (const message of messages) {
+    const block = message.blocks[0];
+    if (block?.type === 'turn_timer' && block.userMessageId !== undefined)
+      promptByTimer.set(message.id, block.userMessageId);
+  }
+  const seen = new Set<string>();
+  for (const [groupId, ids] of rowIds) {
+    const prompts = [
+      ...new Set(
+        ids.flatMap((id) => {
+          const prompt = promptByTimer.get(id);
+          return prompt === undefined ? [] : [prompt];
+        }),
+      ),
+    ];
+    if (prompts.length === 0) continue;
+    seen.add(groupId);
+    const previous = cache.get(groupId);
+    if (
+      previous === undefined ||
+      previous.length !== prompts.length ||
+      previous.some((id, index) => id !== prompts[index])
+    )
+      cache.set(groupId, prompts);
+  }
+  for (const groupId of cache.keys())
+    if (!seen.has(groupId)) cache.delete(groupId);
+  return cache;
+}
+
+/** A group's indexed denials and the per-prompt lists they came from. */
+export interface IndexedRunDenials {
+  readonly sources: readonly (readonly string[])[];
+  readonly denied: readonly string[];
+}
+
+/**
+ * The indexed denials of each group's run prompts, by group id: a resumed
+ * run's receipt can be on a page not loaded yet, and the index files it
+ * under the run's prompt. A group with one such prompt gets the index's own
+ * list, never a copy; a merged list is rebuilt only when one of its sources
+ * changes, so an unchanged group keeps its array and a streaming update does
+ * no per-denial work.
+ */
+export function indexedRunDenialsByTurnGroup(
+  runPromptIds: ReadonlyMap<string, readonly string[]>,
+  deniedByPrompt: (promptId: string) => readonly string[] | undefined,
+  cache: Map<string, IndexedRunDenials> = new Map(),
+): ReadonlyMap<string, readonly string[]> {
+  const result = new Map<string, readonly string[]>();
+  for (const [groupId, prompts] of runPromptIds) {
+    const sources = prompts.flatMap((prompt) => {
+      const denied = deniedByPrompt(prompt);
+      return denied === undefined || denied.length === 0 ? [] : [denied];
+    });
+    const [only] = sources;
+    if (only === undefined) continue;
+    const previous = cache.get(groupId);
+    const denied =
+      sources.length === 1
+        ? only
+        : previous !== undefined &&
+            previous.sources.length === sources.length &&
+            previous.sources.every((list, index) => list === sources[index])
+          ? previous.denied
+          : [...new Set(sources.flat())];
+    cache.set(groupId, { sources, denied });
+    result.set(groupId, denied);
+  }
+  for (const groupId of cache.keys())
+    if (!result.has(groupId)) cache.delete(groupId);
+  return result;
+}
+
+/**
+ * Where each prompt's later runs show: a Resume that starts after a wake
+ * stays in the wake's turn. `promptsWithLaterRuns` are prompts whose own
+ * group no longer holds their latest run; `recordPromptByGroup` names, for
+ * the wake group holding a prompt's latest run when that run owns it, the
+ * prompt whose recorded end (and restart mark) is that group's. A
+ * tools-loaded continuation's own run counts as its prompt's.
+ */
+export function wakeGroupPromptRuns(
+  items: readonly TurnGroupOrMessage[],
+  runPromptIds: ReadonlyMap<string, readonly string[]>,
+): {
+  promptsWithLaterRuns: ReadonlySet<string>;
+  recordPromptByGroup: ReadonlyMap<string, string>;
+} {
+  const latestGroup = new Map<string, TurnGroup>();
+  for (const item of items) {
+    if (item.kind !== 'turn-group') continue;
+    const head = item.userMessage.blocks[0];
+    if (head?.type !== 'wake_boundary') continue;
+    if (head.toolsLoaded === true && head.spawningUserMessageId !== undefined)
+      latestGroup.set(head.spawningUserMessageId, item);
+    for (const prompt of runPromptIds.get(item.userMessage.id) ?? [])
+      latestGroup.set(prompt, item);
+  }
+  const recordPromptByGroup = new Map<string, string>();
+  for (const [prompt, group] of latestGroup) {
+    const owner = group.timerMessage.blocks[0];
+    if (owner?.type === 'turn_timer' && owner.userMessageId === prompt)
+      recordPromptByGroup.set(group.userMessage.id, prompt);
+  }
+  return {
+    promptsWithLaterRuns: new Set(latestGroup.keys()),
+    recordPromptByGroup,
+  };
 }

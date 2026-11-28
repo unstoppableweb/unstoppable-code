@@ -35,7 +35,9 @@ import {
   reportAgentSendAccepted,
 } from '../canopy-runtime/core-chat-message-command-adapter';
 import {
+  observeTerminalInputDelivery,
   retainedTerminalAgentInput,
+  retainedTerminalInput,
   settleTerminalAgentImports,
 } from '../agent-messaging/terminal-input';
 import { inputSettingsKey } from '@canopy/desktop-shared/chat-input-delivery';
@@ -187,6 +189,11 @@ import type {
   ChatTurnRecord,
   PersistedChatTurnState,
 } from '@canopy/agent-transcript/turn';
+import {
+  assertChatPairingAuthorized,
+  ChatSendAuthorizationRevokedError,
+  type ChatPairingCheck,
+} from './chat-dispatch-authorization';
 import type {
   ChatTranscriptPageRequest,
   ChatTranscriptContentRequest,
@@ -272,6 +279,7 @@ import {
   resolveKnownModel,
   resolveModelAlias,
   resolveRuntimeModel,
+  type AgentProviderType,
 } from '@canopy/desktop-shared/types';
 import { isBotProjectId } from '@canopy/protocol/chat-targets';
 import {
@@ -601,6 +609,7 @@ export interface ChatStateServiceOptions {
       cancelledBeforeDispatch: boolean;
       startsTurn: boolean;
     }) => Promise<void>,
+    canCommit?: ChatPairingCheck,
   ) => Promise<void>;
   authorizeSend?: (
     target: ChatScopeKey & {
@@ -717,7 +726,7 @@ type ArchiveChatBackend = Pick<
   | 'blocks'
   | 'search'
 >;
-type ChatCloseBlockReason = 'delegates' | 'background' | null;
+type ChatCloseBlockReason = 'delegates' | 'background' | 'terminal' | null;
 type ChatCloseBlockReasonChecker = (
   projectId: string,
   worktreeId: string,
@@ -3368,14 +3377,6 @@ function matchesRemoteControlSendReceipt(
   );
 }
 
-class ChatSendAuthorizationRevokedError extends Error {
-  public constructor(
-    message = 'The paired session no longer authorizes this send.',
-  ) {
-    super(message);
-  }
-}
-
 interface PendingChatTabsProjection {
   projectId: string;
   worktreeId: string;
@@ -3433,6 +3434,7 @@ export class ChatStateService implements ChatStateCommandPort {
       cancelledBeforeDispatch: boolean;
       startsTurn: boolean;
     }) => Promise<void>,
+    canCommit?: ChatPairingCheck,
   ) => Promise<void>;
   private readonly withPlanReviewRevision: NonNullable<
     ChatStateServiceOptions['withPlanReviewRevision']
@@ -3633,11 +3635,24 @@ export class ChatStateService implements ChatStateCommandPort {
           // `background-work` imports session-manager, whose provider runtime
           // graph reaches this service. Keep that graph lazy and resolve it
           // before entering the synchronous repository transaction callback.
-          this.defaultChatCloseBlockReasonChecker ??=
-            import('../agents/background-work').then(
-              ({ chatCloseBlockReason }): ChatCloseBlockReasonChecker =>
-                chatCloseBlockReason,
-            );
+          this.defaultChatCloseBlockReasonChecker ??= Promise.all([
+            import('../agents/background-work'),
+            import('../integration/claude-terminal-session-service'),
+          ]).then(
+            ([
+              { chatCloseBlockReason },
+              { getClaudeTerminalSessionService },
+            ]): ChatCloseBlockReasonChecker =>
+              (projectId, worktreeId, chatId) =>
+                chatCloseBlockReason(projectId, worktreeId, chatId) ??
+                (getClaudeTerminalSessionService().runningAutomationTurn({
+                  projectId,
+                  worktreeId,
+                  chatId,
+                })
+                  ? 'terminal'
+                  : null),
+          );
           return this.defaultChatCloseBlockReasonChecker;
         };
     }
@@ -3740,14 +3755,26 @@ export class ChatStateService implements ChatStateCommandPort {
     this.dispatch =
       options.submit ??
       (directDispatch
-        ? async (request, origin, beforeImmediateDispatch): Promise<void> => {
+        ? async (
+            request,
+            origin,
+            beforeImmediateDispatch,
+            canCommit,
+          ): Promise<void> => {
+            assertChatPairingAuthorized(canCommit);
             await beforeImmediateDispatch({
               cancelledBeforeDispatch: false,
               startsTurn: true,
             });
             await directDispatch(request, origin);
           }
-        : async (request, origin, beforeImmediateDispatch): Promise<void> => {
+        : async (
+            request,
+            origin,
+            beforeImmediateDispatch,
+            canCommit,
+          ): Promise<void> => {
+            assertChatPairingAuthorized(canCommit);
             // Lazy to preserve the chat-state/queue startup boundary.
             const { getChatQueueService } =
               await import('./chat-queue-service');
@@ -6795,7 +6822,7 @@ export class ChatStateService implements ChatStateCommandPort {
       case 'chat.steer_queued_message':
       case 'chat.force_queued_message':
       case 'chat.set_queued_message_edit_lock':
-        return this.queueCommand(scope, envelope);
+        return this.queueCommand(scope, envelope, options);
       case 'chat.input_delivery_action':
         return this.inputDelivery.action(envelope);
       case 'chat.answer_question':
@@ -8275,7 +8302,9 @@ export class ChatStateService implements ChatStateCommandPort {
    */
   public async ensureChatForTrustedSend(
     request: ChatSendMessageRequest,
+    canCommit?: ChatPairingCheck,
   ): Promise<void> {
+    assertChatPairingAuthorized(canCommit);
     const scope = {
       projectId: request.projectId,
       worktreeId: request.worktreeId,
@@ -8468,9 +8497,18 @@ export class ChatStateService implements ChatStateCommandPort {
           mutationId: `trusted-send-tab:${request.chatId}`,
         },
         chatIds: [request.chatId],
+        ...(canCommit
+          ? {
+              beforePublish: (): void => {
+                assertChatPairingAuthorized(canCommit);
+              },
+            }
+          : {}),
       },
     );
-    await this.commitAutomationStartBanner(scope, request);
+    if (!canCommit) {
+      await this.commitAutomationStartBanner(request);
+    }
   }
 
   /**
@@ -8540,11 +8578,14 @@ export class ChatStateService implements ChatStateCommandPort {
    * left exactly as it is, so its position and timestamp never change. A
    * prompt that is already in the transcript gets no retroactive banner.
    */
-  private async commitAutomationStartBanner(
-    scope: ChatScopeKey,
+  public async commitAutomationStartBanner(
     request: ChatSendMessageRequest,
   ): Promise<void> {
     if (request.initiationSource !== 'automation') return;
+    const scope: ChatScopeKey = {
+      projectId: request.projectId,
+      worktreeId: request.worktreeId,
+    };
     const bannerId = automationInfoMessageId(request.userMessageId);
     await this.repository.transactWith(
       scope,
@@ -8725,11 +8766,29 @@ export class ChatStateService implements ChatStateCommandPort {
   /** Durable correlation before a trusted tool input crosses to a managed terminal. */
   public async retainTrustedTerminalInput(
     request: ChatSendMessageRequest,
+    canCommit?: ChatPairingCheck,
   ): Promise<void> {
+    await this.retainTerminalInput(request, canCommit);
+  }
+
+  /** False means this scheduler input already has a durable pickup receipt. */
+  public async retainNativeAutomationTerminalInput(
+    request: ChatSendMessageRequest,
+    canCommit?: ChatPairingCheck,
+  ): Promise<boolean> {
+    return this.retainTerminalInput(request, canCommit);
+  }
+
+  private async retainTerminalInput(
+    request: ChatSendMessageRequest,
+    canCommit?: ChatPairingCheck,
+  ): Promise<boolean> {
+    assertChatPairingAuthorized(canCommit);
     await revalidateAgentSenderRequest(request);
+    assertChatPairingAuthorized(canCommit);
     if (
-      !request.agentSenderProvenance ||
-      request.agentSenderProvenance.acceptedInputId !== request.userMessageId
+      request.nativeAutomationRunInputId !== request.userMessageId &&
+      request.agentSenderProvenance?.acceptedInputId !== request.userMessageId
     ) {
       throw new Error('Missing trusted terminal input provenance');
     }
@@ -8741,6 +8800,9 @@ export class ChatStateService implements ChatStateCommandPort {
       acceptedAt: new Date(this.now()).toISOString(),
     };
     const receipt = agentSendAcceptanceReceipt(request, acceptance);
+    const nativeAutomation =
+      request.nativeAutomationRunInputId === request.userMessageId;
+    let shouldDeliver = true;
     await this.repository.transactWith(
       request,
       (current) => {
@@ -8762,18 +8824,31 @@ export class ChatStateService implements ChatStateCommandPort {
         if (previous) {
           if (
             previous.payload.text !== request.text ||
+            previous.payload.nativeAutomationRunInputId !==
+              request.nativeAutomationRunInputId ||
             JSON.stringify(previous.payload.agentSenderProvenance) !==
               JSON.stringify(request.agentSenderProvenance) ||
             JSON.stringify(previous.payload.agentSent) !==
               JSON.stringify(request.agentSent)
           )
             throw new Error('Terminal input correlation conflict');
-          if (
-            previous.attempts.some(
-              (attempt) => attempt.generation === 'managed-terminal',
-            )
-          )
+          const terminalAttempt = previous.attempts.find(
+            (attempt) => attempt.generation === 'managed-terminal',
+          );
+          if (terminalAttempt) {
+            if (nativeAutomation) {
+              if (
+                terminalAttempt.id !== previous.currentAttemptId ||
+                terminalAttempt.withdrawnAt !== undefined ||
+                terminalAttempt.pickedUpAt === undefined
+              )
+                throw new Error(
+                  'This scheduled prompt already has a terminal delivery attempt.',
+                );
+              shouldDeliver = false;
+            }
             return [];
+          }
           if (
             previous.state !== 'queued' ||
             !previous.payload.agentSent ||
@@ -8841,9 +8916,55 @@ export class ChatStateService implements ChatStateCommandPort {
               commandResult: receipt,
             }
           : {}),
+        ...(canCommit
+          ? {
+              beforePublish: (): void => {
+                assertChatPairingAuthorized(canCommit);
+              },
+            }
+          : {}),
       },
     );
     if (receipt) reportAgentSendAccepted(request, acceptance);
+    return shouldDeliver;
+  }
+
+  /** Record a provider receipt or unknown handoff for the current scheduler attempt. */
+  public async observeNativeAutomationTerminalInput(
+    target: ChatScopeKey & { chatId: string },
+    inputId: string,
+    phase: 'picked-up' | 'unknown',
+  ): Promise<void> {
+    await this.repository.transactWith(
+      target,
+      (current) => {
+        const tab = current.tabsFile.tabs.find(
+          ({ id }) => id === target.chatId,
+        );
+        if (
+          !tab ||
+          retainedTerminalInput(tab, inputId)?.nativeAutomationRunInputId !==
+            inputId
+        )
+          return [];
+        const pickedUp = observeTerminalInputDelivery(
+          tab,
+          inputId,
+          this.now(),
+          phase,
+        );
+        return pickedUp === tab
+          ? []
+          : [
+              {
+                type: 'tab.metadata_patched',
+                tabId: tab.id,
+                patch: { inputDelivery: pickedUp.inputDelivery },
+              },
+            ];
+      },
+      { source: 'provider', chatIds: [target.chatId] },
+    );
   }
 
   /** Recover main authority when a terminal-local queue drains through native ingress. */
@@ -8860,8 +8981,8 @@ export class ChatStateService implements ChatStateCommandPort {
       ? tab.inputDelivery.rows.find(
           (row) =>
             row.id === request.userMessageId &&
-            row.payload.agentSent &&
-            row.payload.agentSenderProvenance &&
+            (row.payload.nativeAutomationRunInputId === row.id ||
+              (row.payload.agentSent && row.payload.agentSenderProvenance)) &&
             row.attempts.some(
               (attempt) => attempt.generation === 'managed-terminal',
             ),
@@ -8890,7 +9011,7 @@ export class ChatStateService implements ChatStateCommandPort {
     if (
       !tab ||
       pickedUp(retainedRow) ||
-      !retainedTerminalAgentInput(tab, request.userMessageId)
+      !retainedTerminalInput(tab, request.userMessageId)
     )
       return request;
     // Shares the delayed-delivery refusal and durable withdrawal with pre-paste authorization.
@@ -8907,7 +9028,7 @@ export class ChatStateService implements ChatStateCommandPort {
           (candidate) => candidate.id === request.chatId,
         );
         trusted = live
-          ? retainedTerminalAgentInput(live, request.userMessageId)
+          ? retainedTerminalInput(live, request.userMessageId)
           : undefined;
         if (!live || !trusted || !isInputLedger(live.inputDelivery))
           throw new Error(
@@ -8971,6 +9092,10 @@ export class ChatStateService implements ChatStateCommandPort {
       agentSenderProvenance: trusted.agentSenderProvenance,
       hiddenContext: trusted.hiddenContext,
       initiationSource: trusted.initiationSource,
+      nativeAutomationRunInputId: trusted.nativeAutomationRunInputId,
+      ...(trusted.nativeAutomationRunInputId && trusted.autoResume
+        ? { autoResume: trusted.autoResume, resumesInterruptedTurn: true }
+        : {}),
     };
     if (originalRow)
       this.nativeClaimRollback.set(claimed, {
@@ -9184,12 +9309,14 @@ export class ChatStateService implements ChatStateCommandPort {
           )
         : undefined;
       return (
-        row?.payload.agentSent !== undefined &&
-        row.payload.agentSenderProvenance?.acceptedInputId ===
-          acceptedInputId &&
+        row !== undefined &&
+        (row.payload.nativeAutomationRunInputId === row.id ||
+          (row.payload.agentSent !== undefined &&
+            row.payload.agentSenderProvenance?.acceptedInputId ===
+              acceptedInputId &&
+            row.payload.hiddenContext?.kind === 'agent-sender-context')) &&
         row.payload.userMessageId === acceptedInputId &&
         row.payload.chatId === target.chatId &&
-        row.payload.hiddenContext?.kind === 'agent-sender-context' &&
         row.attempts.some(
           (attempt) =>
             attempt.generation === 'managed-terminal' &&
@@ -9205,7 +9332,7 @@ export class ChatStateService implements ChatStateCommandPort {
     );
     if (withdrawn(tab)) throw new Error(refusal);
     const payload = tab
-      ? retainedTerminalAgentInput(tab, acceptedInputId)
+      ? retainedTerminalInput(tab, acceptedInputId)
       : undefined;
     if (!payload) return;
     try {
@@ -10807,6 +10934,7 @@ export class ChatStateService implements ChatStateCommandPort {
   public async consumeProviderSwitchSeed(
     scope: ChatScopeKey,
     chatId: string,
+    expectedProvider?: AgentProviderType,
   ): Promise<void> {
     await this.repository.transactWith(
       scope,
@@ -10815,6 +10943,11 @@ export class ChatStateService implements ChatStateCommandPort {
           (candidate) => candidate.id === chatId,
         );
         if (liveTab?.providerSwitchSeedPending !== true) return [];
+        if (
+          expectedProvider !== undefined &&
+          persistedTabProvider(liveTab) !== expectedProvider
+        )
+          return [];
         const { providerSwitchSeedPending: consumed, ...next } = liveTab;
         void consumed;
         return [
@@ -12057,6 +12190,16 @@ export class ChatStateService implements ChatStateCommandPort {
         const currentProvider =
           tab.providerType ??
           (tab.model ? getProviderForModel(tab.model) : command.providerType);
+        if (
+          runtime?.activeTurn !== undefined &&
+          canSwitchProviderInPlace(currentProvider, command.providerType) &&
+          (currentProvider === 'antigravity' ||
+            command.providerType === 'antigravity')
+        ) {
+          throw new Error(
+            'Wait for the current turn to finish before switching providers.',
+          );
+        }
         const currentHarness =
           tab.executionHarness ??
           (currentProvider === 'opencode' ? 'opencode' : undefined) ??
@@ -12715,6 +12858,13 @@ export class ChatStateService implements ChatStateCommandPort {
     let acceptedRequest: ChatSendMessageRequest | undefined;
     let implementationSource: PersistedChatTab['trackedPlanSource'];
     let previousPlanTracking: ChatTabMetadataPatch | undefined;
+    let previousNewChatStartedWatcher:
+      | {
+          firedAt: string;
+          messageCount: number;
+          patch: ChatTabMetadataPatch;
+        }
+      | undefined;
     const commitSend = (): Promise<ChatStateCommit> =>
       this.repository.transactWith(
         scope,
@@ -12883,6 +13033,17 @@ export class ChatStateService implements ChatStateCommandPort {
             tab.newChatStartedWatcherFiredAt === undefined &&
             (tab.newChatStartedWatcherPending === true ||
               tab.messages.length === 0);
+          previousNewChatStartedWatcher = startsNewTrackedChat
+            ? {
+                firedAt: newChatStartedWatcherFiredAt,
+                messageCount: tab.messages.length,
+                patch: {
+                  newChatStartedWatcherPending:
+                    tab.newChatStartedWatcherPending ?? null,
+                  newChatStartedWatcherFiredAt: null,
+                },
+              }
+            : undefined;
           const approval = command.planReviewApproval;
           if (
             approval &&
@@ -13256,8 +13417,10 @@ export class ChatStateService implements ChatStateCommandPort {
         timestamp,
         installedStartingRuntime: false,
         previousPlanTracking,
+        previousNewChatStartedWatcher,
       },
       asyncAnswer,
+      options.canCommitSend,
     );
   }
 
@@ -13713,7 +13876,9 @@ export class ChatStateService implements ChatStateCommandPort {
    */
   public async commitTurnOverrideModelFor(
     request: ChatSendMessageRequest,
+    canCommit?: ChatPairingCheck,
   ): Promise<void> {
+    assertChatPairingAuthorized(canCommit);
     const override = request.turnOverride;
     const { userMessageId } = request;
     if (
@@ -13741,6 +13906,7 @@ export class ChatStateService implements ChatStateCommandPort {
         providerType: override.providerType,
       },
       tab,
+      canCommit,
     );
   }
 
@@ -13752,7 +13918,9 @@ export class ChatStateService implements ChatStateCommandPort {
       'chatId' | 'userMessageId' | 'model' | 'providerType'
     >,
     tab: PersistedChatTab,
+    canCommit?: ChatPairingCheck,
   ): Promise<PersistedChatTab> {
+    assertChatPairingAuthorized(canCommit);
     if (tabWithSendModel(tab, command) === tab) return tab;
     const commit = await this.repository.transactWith(
       scope,
@@ -13768,6 +13936,13 @@ export class ChatStateService implements ChatStateCommandPort {
         source: 'automation',
         mutationId: `${command.chatId}:${command.userMessageId}:override-model`,
         chatIds: [command.chatId],
+        ...(canCommit
+          ? {
+              beforePublish: (): void => {
+                assertChatPairingAuthorized(canCommit);
+              },
+            }
+          : {}),
       },
     );
     const committed = commit.state.tabsFile.tabs.find(
@@ -13959,7 +14134,9 @@ export class ChatStateService implements ChatStateCommandPort {
       | { questionId: string; answers: McpQuestionAnswer[] }
       | undefined,
     options: { cancelledBeforeDispatch: boolean; startsTurn: boolean },
+    canCommit?: ChatPairingCheck,
   ): Promise<boolean> {
+    assertChatPairingAuthorized(canCommit);
     let installed = false;
     await this.repository.transactWith(
       scope,
@@ -14077,6 +14254,13 @@ export class ChatStateService implements ChatStateCommandPort {
         source: 'renderer-command',
         mutationId: `${envelope.commandId}:immediate-prompt`,
         chatIds: [command.chatId],
+        ...(canCommit
+          ? {
+              beforePublish: (): void => {
+                assertChatPairingAuthorized(canCommit);
+              },
+            }
+          : {}),
       },
     );
     return installed;
@@ -14093,8 +14277,14 @@ export class ChatStateService implements ChatStateCommandPort {
       installedStartingRuntime: boolean;
       acknowledged?: boolean;
       previousPlanTracking?: ChatTabMetadataPatch;
+      previousNewChatStartedWatcher?: {
+        firedAt: string;
+        messageCount: number;
+        patch: ChatTabMetadataPatch;
+      };
     },
     asyncAnswer?: { questionId: string; answers: McpQuestionAnswer[] },
+    canCommit?: ChatPairingCheck,
   ): Promise<ChatCommandResult> {
     const { request, timestamp } = admitted;
     let { installedStartingRuntime } = admitted;
@@ -14110,6 +14300,7 @@ export class ChatStateService implements ChatStateCommandPort {
           timestamp,
           asyncAnswer,
           options,
+          canCommit,
         )
       )
         installedStartingRuntime = true;
@@ -14122,6 +14313,7 @@ export class ChatStateService implements ChatStateCommandPort {
         request,
         envelope.origin ?? 'desktop',
         commitImmediatePrompt,
+        canCommit,
       );
       if (asyncAnswer) {
         await this.retireAsyncAnswerAdmission(
@@ -14138,49 +14330,67 @@ export class ChatStateService implements ChatStateCommandPort {
         if (!asyncAnswer && command.agentSenderProvenance) {
           await this.repository.transactWith(
             scope,
-            (current) => [
-              ...(current.tabsFile.tabs
-                .find((candidate) => candidate.id === command.chatId)
-                ?.messages.some(
+            (current) => {
+              const tab = current.tabsFile.tabs.find(
+                (candidate) => candidate.id === command.chatId,
+              );
+              return [
+                ...(tab?.messages.some(
                   (message) => message.id === command.userMessageId,
                 )
-                ? [
+                  ? [
+                      {
+                        type: 'message.removed' as const,
+                        chatId: command.chatId,
+                        messageId: command.userMessageId,
+                      },
+                    ]
+                  : []),
+                ...(tab &&
+                admitted.previousNewChatStartedWatcher &&
+                tab.newChatStartedWatcherFiredAt ===
+                  admitted.previousNewChatStartedWatcher.firedAt &&
+                tab.messages.filter(
+                  (message) => message.id !== command.userMessageId,
+                ).length === admitted.previousNewChatStartedWatcher.messageCount
+                  ? [
+                      {
+                        type: 'tab.metadata_patched' as const,
+                        tabId: tab.id,
+                        patch: admitted.previousNewChatStartedWatcher.patch,
+                      },
+                    ]
+                  : []),
+                // Clear only a turn this send still owns, keeping queued payloads;
+                // a newer send may have started or queued during authorization.
+                ...((): ChatCoreMutation[] => {
+                  const runtime = current.runtimeByChatId[command.chatId];
+                  if (
+                    !installedStartingRuntime ||
+                    runtime?.activeTurn?.userMessageId !== command.userMessageId
+                  )
+                    return [];
+                  const {
+                    activeTurn: _ownedTurn,
+                    error: _error,
+                    ...rest
+                  } = runtime;
+                  void _ownedTurn;
+                  void _error;
+                  return [
                     {
-                      type: 'message.removed' as const,
+                      type: 'runtime.patched' as const,
                       chatId: command.chatId,
-                      messageId: command.userMessageId,
+                      runtime: {
+                        ...rest,
+                        status: 'idle' as const,
+                        lastActivityAt: this.now(),
+                      },
                     },
-                  ]
-                : []),
-              // Clear only a turn this send still owns, keeping queued payloads;
-              // a newer send may have started or queued during authorization.
-              ...((): ChatCoreMutation[] => {
-                const runtime = current.runtimeByChatId[command.chatId];
-                if (
-                  !installedStartingRuntime ||
-                  runtime?.activeTurn?.userMessageId !== command.userMessageId
-                )
-                  return [];
-                const {
-                  activeTurn: _ownedTurn,
-                  error: _error,
-                  ...rest
-                } = runtime;
-                void _ownedTurn;
-                void _error;
-                return [
-                  {
-                    type: 'runtime.patched' as const,
-                    chatId: command.chatId,
-                    runtime: {
-                      ...rest,
-                      status: 'idle' as const,
-                      lastActivityAt: this.now(),
-                    },
-                  },
-                ];
-              })(),
-            ],
+                  ];
+                })(),
+              ];
+            },
             {
               source: 'renderer-command',
               mutationId: `${envelope.commandId}:agent-send-rejected`,
@@ -14346,6 +14556,19 @@ export class ChatStateService implements ChatStateCommandPort {
                 tabId: tab.id,
                 patch: admitted.previousPlanTracking,
               });
+            if (
+              admitted.previousNewChatStartedWatcher &&
+              tab.newChatStartedWatcherFiredAt ===
+                admitted.previousNewChatStartedWatcher.firedAt &&
+              tab.messages.filter(
+                (message) => message.id !== command.userMessageId,
+              ).length === admitted.previousNewChatStartedWatcher.messageCount
+            )
+              mutations.push({
+                type: 'tab.metadata_patched',
+                tabId: tab.id,
+                patch: admitted.previousNewChatStartedWatcher.patch,
+              });
             const runtime = current.runtimeByChatId[tab.id];
             const runtimeAfterAdmission = removeAdmittingRuntimeEntry(
               runtime,
@@ -14503,7 +14726,7 @@ export class ChatStateService implements ChatStateCommandPort {
       (tab) => tab.id === command.chatId,
     );
     const trustedInput = snapshotTab
-      ? retainedTerminalAgentInput(snapshotTab, command.userMessageId)
+      ? retainedTerminalInput(snapshotTab, command.userMessageId)
       : undefined;
     if (trustedInput) await revalidateAgentSenderRequest(trustedInput);
     const timestamp = this.now();
@@ -14544,19 +14767,22 @@ export class ChatStateService implements ChatStateCommandPort {
             (instruction) => !consumedIds.has(instruction.id),
           ) ?? [];
         const mutations: ChatCoreMutation[] = [];
-        if (trustedInput && isInputLedger(tab.inputDelivery)) {
+        // Native scheduler pickup belongs to the main-owned launch or hook
+        // receipt. This renderer transcript commit cannot attest to delivery.
+        const pickedUp =
+          trustedInput && !trustedInput.nativeAutomationRunInputId
+            ? observeTerminalInputDelivery(
+                tab,
+                command.userMessageId,
+                timestamp,
+              )
+            : tab;
+        if (pickedUp !== tab) {
           mutations.push({
             type: 'tab.metadata_patched',
             tabId: tab.id,
             patch: {
-              inputDelivery: {
-                ...tab.inputDelivery,
-                rows: tab.inputDelivery.rows.map((row) =>
-                  row.id === command.userMessageId
-                    ? { ...row, state: 'picked-up', revision: row.revision + 1 }
-                    : row,
-                ),
-              },
+              inputDelivery: pickedUp.inputDelivery,
             },
           });
         }
@@ -14647,7 +14873,10 @@ export class ChatStateService implements ChatStateCommandPort {
   private async queueCommand(
     scope: ChatScopeKey,
     envelope: ChatCommandEnvelope,
+    options?: TrustedChatCommandExecutionOptions,
   ): Promise<ChatCommandResult> {
+    const canCommit = options?.canCommitSend;
+    assertChatPairingAuthorized(canCommit);
     // See getState(): queue-service is loaded lazily to break its chat-state
     // port initialization cycle, not as a performance deferral.
     const { getChatQueueService, QUEUE_ENTRY_REVISION_CONFLICT_REASON } =
@@ -14685,6 +14914,7 @@ export class ChatStateService implements ChatStateCommandPort {
       scope,
       expectedRevisionForCommand(envelope),
     );
+    assertChatPairingAuthorized(canCommit);
     const guard =
       command.queuedMessageRevision === undefined
         ? undefined
@@ -14711,7 +14941,7 @@ export class ChatStateService implements ChatStateCommandPort {
         },
         durableCommandResult,
         envelope.origin === 'portal' ? 'preserve' : 'replace',
-        guard,
+        ...guardArgs,
       );
     } else if (command.type === 'chat.move_queued_message') {
       queueResult = await queue.move(

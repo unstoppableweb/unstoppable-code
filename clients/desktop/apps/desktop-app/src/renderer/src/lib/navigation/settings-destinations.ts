@@ -187,12 +187,12 @@ export function openAccountOrganizationPage(
 }
 
 /**
- * Opens the Settings section a validated web deep link names. Organizations
+ * Opens the Settings section the desktop host delivers. Organizations
  * (CAN-5111, from the invite lander) is a hosted page, so without hosted
  * settings in this window it opens the signed-in web list instead.
  */
 export function openSettingsDeepLink(
-  section: DesktopSettingsDeepLinkSection,
+  section: DesktopSettingsDeepLinkSection | 'approvals',
 ): void {
   if (section !== 'organizations') {
     useNavigationStore.getState().openSettings(section);

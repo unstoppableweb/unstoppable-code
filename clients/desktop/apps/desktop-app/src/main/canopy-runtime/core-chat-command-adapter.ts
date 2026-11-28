@@ -613,7 +613,12 @@ async function dispatchAdmittedChatCommand(
       (error.payload.kind === 'unavailable' ||
         error.payload.kind === 'cancelled')
     ) {
-      return capture.portResult ?? options.port.command(request);
+      return (
+        capture.portResult ??
+        (options.executionOptions
+          ? options.port.command(request, options.executionOptions)
+          : options.port.command(request))
+      );
     }
     if (
       error instanceof CanopyOperationError &&

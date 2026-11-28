@@ -1,4 +1,6 @@
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
+import { OrchestratorInstructionsConflictError } from '@canopy/protocol/remote-control/shell';
+import { createSerialQueue } from '@canopy/core-runtime/node/w5/file-store';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -6,6 +8,9 @@ import { BRAND } from '@canopy/brand/current';
 import {
   APP_ADVISOR_PROJECT_ID,
   APP_ADVISOR_WORKTREE_ID,
+  type AppAdvisorClaudeMdLoadResponse,
+  type AppAdvisorClaudeMdSaveRequest,
+  type AppAdvisorClaudeMdSaveResponse,
   type AppAdvisorSettingsSaveRequest,
   type AppAdvisorWorkspaceSettingsFile,
 } from '@canopy/desktop-shared/types';
@@ -17,8 +22,17 @@ import {
 } from '@canopy/desktop-shared/lib/archive-retention';
 import { readChatArchivesFile, removeChatArchive } from './chat-archives';
 import { listWorkEntryIds } from './cowork-work-entries';
-import { ensureAgentsMdSymlink } from './instruction-files';
-import { getAppAdvisorHomeDir, getAppAdvisorSettingsFilePath } from './paths';
+import {
+  InstructionsChangedError,
+  loadManagedInstructionPair,
+  saveManagedInstructionPair,
+  scaffoldManagedInstructionPair,
+} from './chat-project-instructions';
+import {
+  getAppAdvisorHomeDir,
+  getAppAdvisorInstructionSaveFilePath,
+  getAppAdvisorSettingsFilePath,
+} from './paths';
 import { isErrnoException, isRecord } from './type-guards';
 import { touchAllWorkspaceTargets } from './workspace-activity';
 import { withArchivedWorkspaceOperationLock } from './archived-containers';
@@ -35,6 +49,7 @@ const DEFAULT_SETTINGS: AppAdvisorWorkspaceSettingsFile = {
   archiveRetentionDays: null,
   autoArchiveDays: null,
 };
+const serializeInstructions = createSerialQueue();
 
 function normalizeSettings(value: unknown): AppAdvisorWorkspaceSettingsFile {
   if (!isRecord(value) || value.version !== 1) {
@@ -76,7 +91,9 @@ async function writeSettingsAtomic(
   await rename(tempPath, filePath);
 }
 
-export async function ensureAppAdvisorHomeScaffold(): Promise<void> {
+async function withAppAdvisorInstructionsHome<T>(
+  operation: (home: string) => Promise<T>,
+): Promise<T> {
   const home = getAppAdvisorHomeDir();
   await Promise.all([
     mkdir(home, { recursive: true }),
@@ -85,16 +102,13 @@ export async function ensureAppAdvisorHomeScaffold(): Promise<void> {
     mkdir(getCoworkManagedSubdir(home, 'attachments'), { recursive: true }),
   ]);
 
-  const claudeMdPath = join(home, 'CLAUDE.md');
-  try {
-    await readFile(claudeMdPath, 'utf8');
-  } catch (error) {
-    if (!isErrnoException(error) || error.code !== 'ENOENT') {
-      throw error;
-    }
-    await writeFile(claudeMdPath, APP_ADVISOR_CLAUDE_MD_CONTENT, 'utf8');
-  }
-  await ensureAgentsMdSymlink(home);
+  return serializeInstructions(() => operation(home));
+}
+
+export async function ensureAppAdvisorHomeScaffold(): Promise<void> {
+  await withAppAdvisorInstructionsHome((home) =>
+    scaffoldManagedInstructionPair(home, APP_ADVISOR_CLAUDE_MD_CONTENT),
+  );
 }
 
 export async function readAppAdvisorWorkspaceSettings(): Promise<AppAdvisorWorkspaceSettingsFile> {
@@ -146,15 +160,32 @@ export async function saveAppAdvisorWorkspaceSettings(
   );
 }
 
-export async function readAppAdvisorClaudeMd(): Promise<string> {
-  await ensureAppAdvisorHomeScaffold();
-  return readFile(join(getAppAdvisorHomeDir(), 'CLAUDE.md'), 'utf8');
+export async function readAppAdvisorClaudeMd(): Promise<AppAdvisorClaudeMdLoadResponse> {
+  return withAppAdvisorInstructionsHome((home) =>
+    loadManagedInstructionPair(
+      home,
+      APP_ADVISOR_CLAUDE_MD_CONTENT,
+      getAppAdvisorInstructionSaveFilePath(),
+    ),
+  );
 }
 
-export async function saveAppAdvisorClaudeMd(contents: string): Promise<void> {
-  await ensureAppAdvisorHomeScaffold();
-  await writeFile(join(getAppAdvisorHomeDir(), 'CLAUDE.md'), contents, 'utf8');
-  await ensureAgentsMdSymlink(getAppAdvisorHomeDir());
+export async function saveAppAdvisorClaudeMd(
+  request: AppAdvisorClaudeMdSaveRequest,
+): Promise<AppAdvisorClaudeMdSaveResponse> {
+  return serializeInstructions(async () => {
+    try {
+      return await saveManagedInstructionPair(
+        getAppAdvisorHomeDir(),
+        request,
+        getAppAdvisorInstructionSaveFilePath(),
+      );
+    } catch (error) {
+      if (error instanceof InstructionsChangedError)
+        throw new OrchestratorInstructionsConflictError(error);
+      throw error;
+    }
+  });
 }
 
 export async function applyAppAdvisorArchiveRetention(): Promise<void> {
@@ -186,7 +217,6 @@ export async function applyAppAdvisorArchiveRetention(): Promise<void> {
 }
 
 export async function loadAppAdvisorWorkspaceSettings(): Promise<AppAdvisorWorkspaceSettingsFile> {
-  await ensureAppAdvisorHomeScaffold();
   await applyAppAdvisorArchiveRetention();
   return readAppAdvisorWorkspaceSettings();
 }

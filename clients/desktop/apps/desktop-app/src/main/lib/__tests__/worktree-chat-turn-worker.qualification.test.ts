@@ -191,6 +191,7 @@ it('an owed provider-switch seed rides the turn even when a session id was recor
   expect(consumeProviderSwitchSeed).toHaveBeenCalledWith(
     { projectId: 'ws', worktreeId: 'wt' },
     'chat',
+    undefined,
   );
 });
 

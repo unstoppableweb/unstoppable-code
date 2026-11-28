@@ -8,6 +8,7 @@ import {
   STORAGE_OWNERSHIP,
   StorageOutcomeUnknownError,
   assertAdmittedWriter,
+  evaluateAdmittedWriter,
   type StorageOwnershipRow,
 } from '../../storage';
 import { pruneDamagedCopies } from '../damaged-copies';
@@ -24,11 +25,17 @@ import {
 } from './consent-journal';
 import {
   isMissingDocumentError,
+  logPreferencesWarning,
   type PreferencesDocument,
   type PreferencesDocumentSlot,
   type PreferencesLog,
 } from './document';
 import { PREFERENCES_NAMESPACE_ID } from './family';
+import { readPreferencesGeneration } from './generation';
+import {
+  findFlipBackupRestore,
+  type FlipBackupRestore,
+} from './silent-restore';
 import {
   preserveStoredKeys,
   type WithStoredKeys,
@@ -46,7 +53,9 @@ import {
  * client-local keys frozen as stored. Inert: nothing composes it yet, and
  * every write is refused before any byte is written unless the ownership rows
  * name the daemon the row's writer and its owner record allows it. Under the
- * compiled rows the row is legacy, so `evaluateStorageWrite` refuses.
+ * compiled rows the row is legacy, so `evaluateStorageWrite` refuses. Under
+ * the same condition the primary read serves the silent restore of a
+ * downgrade reset (CAN-8052, `silent-restore.ts`).
  */
 
 /** The daemon's view of a preferences record: opaque top-level keys. */
@@ -225,10 +234,44 @@ export function createDaemonPreferences<K extends string>(
     await admit();
     await installDurably(path, text, syncDirectory);
   };
+  // r4 section 5.2: only where the rows make the daemon the row's writer.
+  const restoresFlipBackups = evaluateAdmittedWriter(
+    CLAIM.namespace,
+    CLAIM.writer,
+    CLAIM.module,
+    ownership,
+  ).allowed;
+  const loggedRestores = new Set<string>();
+  let served: FlipBackupRestore | undefined;
+  const servedPrimary = async (stored: string): Promise<string> => {
+    if (!restoresFlipBackups) return stored;
+    const restore = await findFlipBackupRestore({
+      directory: dataRoot,
+      backupPrefix: BACKUP_PREFIX,
+      primaryText: stored,
+      readGeneration: () => readPreferencesGeneration(files),
+      served,
+    });
+    // Kept past a read of another primary: a read that saw the reset before a
+    // save landed may finish after one that saw the save.
+    if (restore === null) return stored;
+    served = restore;
+    // Served until the next save writes it; logged once per backup.
+    if (!loggedRestores.has(restore.backupPath)) {
+      loggedRestores.add(restore.backupPath);
+      logPreferencesWarning(
+        options.log,
+        'Preferences reset by an older version were restored from their backup.',
+        { backupPath: restore.backupPath, generation: restore.generation },
+      );
+    }
+    return restore.text;
+  };
   const files: PreferencesDocument = {
     key: slotPath('primary'),
     readText: async (slot) => {
-      const text = await readFile(slotPath(slot), 'utf8');
+      const stored = await readFile(slotPath(slot), 'utf8');
+      const text = slot === 'primary' ? await servedPrimary(stored) : stored;
       // The raw text, before the journal overlay can rewrite a malformed
       // section into a well-formed one.
       const observation = storedChoiceObservation.getStore();

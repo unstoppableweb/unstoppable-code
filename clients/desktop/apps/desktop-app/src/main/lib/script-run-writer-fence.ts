@@ -12,12 +12,14 @@ import {
   type ScriptRunChildStop,
   type ScriptRunGroupListing,
   type ScriptRunGroupStop,
+  type ScriptRunStopOwnership,
   type ScriptRunWriter,
   type ScriptRunWriterFence,
   type ScriptRunWriterState,
 } from '@canopy/core-runtime/node/script/execution';
 import type { PlatformSupervisionServices } from '@canopy/core-runtime';
 import { selectWindowsProcessPath } from '../canopy-runtime/electron-daemon-host';
+import { isDaemonScriptStopPlatform } from './daemon-script-route-context';
 
 let supervision: PlatformSupervisionServices | undefined;
 
@@ -35,6 +37,16 @@ function getSupervision(): PlatformSupervisionServices {
 /** Electron main's run-log writer fence, over the host's process inspector (as `pipelines/pipeline-owner-fence.ts`). */
 export const desktopScriptRunWriterFence: ScriptRunWriterFence = {
   spawner: 'electron',
+  // Where Stop routes to the daemon, main never ends a daemon-started run.
+  get stopOwnership(): ScriptRunStopOwnership | undefined {
+    let platform: ReturnType<typeof hostPlatformOperatingSystem> | null = null;
+    try {
+      platform = hostPlatformOperatingSystem();
+    } catch {
+      platform = null;
+    }
+    return isDaemonScriptStopPlatform(platform) ? 'own-or-legacy' : undefined;
+  },
   async self(): Promise<ScriptRunWriter | null> {
     const found = await getSupervision().inspectProcess({ pid: process.pid });
     return found.state === 'running'

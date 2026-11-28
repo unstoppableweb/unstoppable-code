@@ -1032,6 +1032,14 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     terminalListProfiles: 'tunnel',
     terminalGetSettings: 'tunnel',
     terminalUpdateSettings: 'tunnel',
+    // daemon window admission for this machine's own windows (CAN-8068)
+    terminalWindowConnect: 'local',
+    // daemon window admission for this machine's own windows (CAN-8068)
+    terminalWindowRoute: 'local',
+    // daemon window admission for this machine's own windows (CAN-8070)
+    terminalWindowRelease: 'local',
+    // byte-free output position for this machine's own admitted windows (CAN-8070)
+    terminalOutputProgress: 'local',
     panelLayoutLoad: 'tunnel',
     panelLayoutSave: 'tunnel',
     panelLayoutDelete: 'tunnel',
@@ -1280,6 +1288,7 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     appAdvisorWindowRendererReady: 'tunnel',
     appAdvisorWindowCommand: 'tunnel',
     appAdvisorOpenAgentArtifact: 'tunnel',
+    appAdvisorOpenApprovalsSettings: 'blocked',
     appAdvisorOpenTurnFile: 'tunnel',
     appAdvisorTurnFileClosed: 'tunnel',
     appAdvisorWatchersList: 'tunnel',

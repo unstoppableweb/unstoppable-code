@@ -24,9 +24,9 @@
 // write recreates the store with a fresh tracking window.
 import { readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { isRecord } from '../../lib/type-guards';
-import { ensureOwnerOnlyDir } from './memory-files';
+import { ensureOwnerOnlyDir } from '@canopy/memory-store/memory-files';
 import { localMemoryReplicaHooks } from './replica-hooks';
 import { memoryFileIdentity } from '@canopy/memory-consolidation/topic-identity';
 
@@ -215,10 +215,11 @@ function usageFilePath(scopeDir: string): string {
 }
 
 async function writeFileAtomically(
-  filePath: string,
+  scopeDir: string,
   content: string,
 ): Promise<void> {
-  await ensureOwnerOnlyDir(dirname(filePath));
+  await ensureOwnerOnlyDir(scopeDir, { trustedScopeRoot: scopeDir });
+  const filePath = usageFilePath(scopeDir);
   const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporaryPath, content, { encoding: 'utf8', mode: 0o600 });
@@ -308,10 +309,7 @@ function enqueueUsageMutation(
         };
       }
       mutate(file);
-      await writeFileAtomically(
-        usageFilePath(scopeDir),
-        `${JSON.stringify(file, null, 2)}\n`,
-      );
+      await writeFileAtomically(scopeDir, `${JSON.stringify(file, null, 2)}\n`);
       failedMutationScopes.delete(chainKey);
     } catch {
       // Usage is advisory; content remains intact when counters fail. But

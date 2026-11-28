@@ -84,7 +84,7 @@ export const SKILL_SHARE_PATH_PREFIX = MARKETPLACE_PUBLIC_SHARE_PREFIXES.skill;
  * 2. `apps/web/src/proxy.ts` keeps it anonymous-allowed, so a legacy share link
  *    is never bounced to /login regardless of whether the config redirect runs
  *    first.
- * 3. `apps/web/src/lib/storefront-redirect.ts` keeps it Canopy-claimed, so the
+ * 3. `apps/web/src/hosted/storefront/storefront-redirect.ts` keeps it Canopy-claimed, so the
  *    apex storefront fallback does not swallow it into the storefront's
  *    `/s/*` site search.
  */

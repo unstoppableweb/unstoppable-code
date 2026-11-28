@@ -31,14 +31,18 @@ import {
  * flush (e.g. after the macOS dock-icon reopen recreates the window) can
  * retry instead of silently dropping it.
  */
-export type DeepLinkSender = (link: DesktopDeepLink) => boolean;
+type DesktopNavigationLink =
+  | DesktopDeepLink
+  | { destination: 'settings'; section: 'approvals' };
+
+export type DeepLinkSender = (link: DesktopNavigationLink) => boolean;
 export type WebLinkSender = (url: string) => Promise<boolean>;
 /** Same contract as {@link DeepLinkSender}, for billing return links. */
 export type BillingReturnSender = (link: DesktopBillingDeepLink) => boolean;
 export type DeepLinkSchemes = string | readonly string[];
 
 type PendingProtocolLink =
-  | { kind: 'deep-link'; link: DesktopDeepLink }
+  | { kind: 'deep-link'; link: DesktopNavigationLink }
   | { kind: 'web-link'; url: string };
 
 interface DeepLinkServiceState {
@@ -178,8 +182,17 @@ export function handleDeepLinkUrl(
     null,
   );
   if (link === null) return;
+  queueNavigationLink(link);
+}
+
+function queueNavigationLink(link: DesktopNavigationLink): void {
   state.pendingLink = { kind: 'deep-link', link };
   flushPendingDeepLink();
+}
+
+/** Queue this local Settings action until the main renderer can receive it. */
+export function queueApprovalsSettingsOpen(): void {
+  queueNavigationLink({ destination: 'settings', section: 'approvals' });
 }
 
 /**

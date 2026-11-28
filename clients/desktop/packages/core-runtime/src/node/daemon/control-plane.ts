@@ -78,6 +78,13 @@ const LEASE_OPERATIONS = [
   'core.client.capabilities.register',
 ] as const;
 type LeaseOperation = (typeof LEASE_OPERATIONS)[number];
+/**
+ * Served here, where each connection's streams are, for every connection
+ * that may hold a lease: control-plane streams are lease-bound. Ownership is
+ * the connection alone, never `core.events.read`, so it stays served without
+ * W5 events and under a split worker (CAN-8067).
+ */
+const UNSUBSCRIBE = 'core.events.unsubscribe';
 // Platform streams accept bounded writes; larger frames are written in slices.
 const MAX_STREAM_WRITE_BYTES = 64 * 1024;
 
@@ -89,6 +96,26 @@ export interface CanopyControlConnectionIdentity {
   readonly owner: boolean;
   /** A non-owner connection proved it comes from the launching desktop. */
   readonly peer: boolean;
+  /** The window a non-owner connection's ticket admitted it as (CAN-8039). */
+  readonly window: CanopyControlWindowIdentity | null;
+}
+
+/** One renderer window, as its single-use ticket admitted it. */
+export interface CanopyControlWindowIdentity {
+  readonly windowInstanceId: string;
+  /** The client lease that issued the ticket; its end closes the connection. */
+  readonly issuerLeaseId: string;
+}
+
+/** Redeems `client.windowTicket` in `core.runtime.initialize` (CAN-8039). */
+export interface CanopyWindowTicketVerifier {
+  /**
+   * The window a presented ticket admits, consuming it; null for a bad,
+   * replayed or expired ticket. `ticket` is as sent, of any type.
+   */
+  redeem(ticket: unknown): CanopyControlWindowIdentity | null;
+  /** Fires when a window instance ends, so its connections close. */
+  onWindowEnded(listener: (windowInstanceId: string) => void): () => void;
 }
 
 export type CanopyControlPlaneConnectionOptions = Omit<
@@ -118,6 +145,16 @@ export interface CanopyDaemonControlPlaneOptions {
   ) => CanopyCallerDescriptor;
   /** Admits owner connections; without it every owner proof is refused (CAN-5771). */
   readonly ownerProof?: CanopyOwnerProofVerifier;
+  /** Admits window connections; without it every window ticket is refused. */
+  readonly windowTickets?: CanopyWindowTicketVerifier;
+  /**
+   * Trusted host policy: the only operations a connection may reach, or
+   * undefined for every operation its grants allow. It narrows the advertised
+   * set, which is what the connection is served, and never widens it.
+   */
+  readonly operationsFor?: (
+    connection: CanopyControlConnectionIdentity,
+  ) => ReadonlySet<string> | undefined;
   readonly buildVersion: string;
   readonly leases?: CanopyLeaseOptions;
   /** Negotiates lease-bound opaque byte channels; no kinds are enabled by default. */
@@ -202,6 +239,8 @@ type CanopyControlServingOptions = Pick<
   | 'operations'
   | 'callerFor'
   | 'ownerProof'
+  | 'windowTickets'
+  | 'operationsFor'
   | 'buildVersion'
   | 'leases'
   | 'channels'
@@ -215,7 +254,7 @@ type CanopyControlServingOptions = Pick<
 
 export interface CanopyControlStreamOptions extends Omit<
   CanopyControlServingOptions,
-  'callerFor'
+  'callerFor' | 'windowTickets' | 'operationsFor'
 > {
   /** One stream the host admitted before serving; it still runs the D3 handshake. */
   readonly stream: PlatformByteStream;
@@ -352,6 +391,16 @@ const OWNER_REFUSED: CanopyErrorPayload = {
   message: 'The owner proof was refused.',
   retry: { kind: 'never' },
 };
+const WINDOW_REFUSED: CanopyErrorPayload = {
+  kind: 'unauthenticated',
+  message: 'The window ticket was refused.',
+  retry: { kind: 'never' },
+};
+const WINDOW_ENDED: CanopyErrorPayload = {
+  kind: 'permission_denied',
+  message: 'This window connection was revoked.',
+  retry: { kind: 'never' },
+};
 // Each fenced call's retry is its operation's (`sameKeyFencedOperations`).
 const LEASE_FENCED: Readonly<
   Record<CanopyLeaseEnd | 'moved', Omit<CanopyErrorPayload, 'retry'>>
@@ -442,6 +491,16 @@ function desktopPeerProofOf(params: Record<string, unknown>): unknown {
     : undefined;
 }
 
+/** `client.windowTicket` as sent, of any type; undefined when absent (CAN-8039). */
+function windowTicketOf(params: Record<string, unknown>): unknown {
+  const client = params.client;
+  if (typeof client !== 'object' || client === null || Array.isArray(client))
+    return undefined;
+  return Object.prototype.hasOwnProperty.call(client, 'windowTicket')
+    ? Reflect.get(client, 'windowTicket')
+    : undefined;
+}
+
 /** Serves one authenticated connection until it closes. */
 function serveControlConnection(
   connection: CanopyFramedConnection,
@@ -480,14 +539,23 @@ function serveControlConnection(
   let advertisedChannelKinds: ReadonlySet<string> = new Set();
   let owner = false;
   let peer = false;
+  let windowIdentity: CanopyControlWindowIdentity | null = null;
   const identity = (): CanopyControlConnectionIdentity => ({
     connectionId: connection.connectionId,
     lease: leases.lease(connection.connectionId),
     owner,
     peer,
+    window: windowIdentity,
   });
+  const restricted = (): ReadonlySet<string> | undefined =>
+    options.operationsFor?.(identity());
   let initialization: 'none' | 'pending' | 'done' = 'none';
   let ownedLeaseId: string | null = null;
+  /**
+   * Drops for this connection's open streams, by subscription id. Bounded by
+   * the lease's stream registrations, since each stream holds one.
+   */
+  const subscriptions = new Map<string, () => void>();
   let active = 0;
   const maxActive = options.maxActiveRequests ?? DEFAULT_MAX_ACTIVE_REQUESTS;
   const send = (message: CanopyJsonRpcMessage): Promise<void> =>
@@ -531,6 +599,27 @@ function serveControlConnection(
     },
     { once: true },
   );
+  /** A window connection lives only as long as its window and issuing lease. */
+  const endWithWindow = ({
+    windowInstanceId,
+    issuerLeaseId,
+  }: CanopyControlWindowIdentity): void => {
+    const end = (): void => connection.close(WINDOW_ENDED);
+    const offLease = leases.onEnd((view) => {
+      if (view.leaseId === issuerLeaseId) end();
+    });
+    const offWindow = options.windowTickets?.onWindowEnded((ended) => {
+      if (ended === windowInstanceId) end();
+    });
+    connection.signal.addEventListener(
+      'abort',
+      () => {
+        offLease();
+        offWindow?.();
+      },
+      { once: true },
+    );
+  };
 
   const refusal = (
     kind:
@@ -570,7 +659,11 @@ function serveControlConnection(
             `Channel kind ${attempt.kind} is not available on this connection.`,
           );
         // Grants can change after initialize; dispatcher calls re-check too.
-        if (!mayOpenChannel(options.callerFor(identity()), attempt.kind))
+        // An operation allowlist names no channel, so it opens none.
+        if (
+          restricted() !== undefined ||
+          !mayOpenChannel(options.callerFor(identity()), attempt.kind)
+        )
           return refusal(
             'permission_denied',
             `The caller may not open ${attempt.kind} channels.`,
@@ -633,14 +726,19 @@ function serveControlConnection(
         { caller: reader },
       ),
     );
-    const reachable = manifest.operations.filter(({ requiredGrants }) =>
-      requiredGrants.every((grant) =>
-        caller.grants.some((held) => held === grant),
-      ),
+    const allowed = restricted();
+    const permitted = (name: string): boolean =>
+      allowed === undefined || allowed.has(name);
+    const reachable = manifest.operations.filter(
+      ({ name, requiredGrants }) =>
+        permitted(name) &&
+        requiredGrants.every((grant) =>
+          caller.grants.some((held) => held === grant),
+        ),
     );
     const channelKindsForCaller = Object.keys(channelKinds)
       .sort()
-      .filter((name) => mayOpenChannel(caller, name));
+      .filter((name) => allowed === undefined && mayOpenChannel(caller, name));
     advertisedChannelKinds = new Set(channelKindsForCaller);
     const channelLimits = resolveCanopyChannelLimits(options.connection ?? {});
     return {
@@ -651,7 +749,9 @@ function serveControlConnection(
           ...reachable
             .filter(({ kind }) => kind !== 'stream')
             .map(({ name }) => name),
-          ...(caller.grants.includes(LEASE_GRANT) ? LEASE_OPERATIONS : []),
+          ...(caller.grants.includes(LEASE_GRANT)
+            ? [...LEASE_OPERATIONS, UNSUBSCRIBE].filter(permitted)
+            : []),
         ],
         events: [],
         streams: reachable
@@ -721,6 +821,21 @@ function serveControlConnection(
     };
   };
 
+  /** Only this connection's open streams; anything else answers false. */
+  const unsubscribe = (
+    request: CanopyJsonRpcRequest,
+  ): { unsubscribed: boolean } => {
+    admitMetadata(request.params._meta, 'inherent');
+    const params = CORE_TRANSPORT_INSTRUCTION_DEFINITIONS[
+      UNSUBSCRIBE
+    ].params.safeParse(without(request.params, '_meta'));
+    if (!params.success)
+      throw canopyInvalidArgumentError(`Invalid ${UNSUBSCRIBE} params.`);
+    const drop = subscriptions.get(params.data.subscriptionId);
+    drop?.();
+    return { unsubscribed: drop !== undefined };
+  };
+
   const stream = async (
     request: CanopyJsonRpcRequest,
     caller: CanopyCallerDescriptor,
@@ -731,6 +846,14 @@ function serveControlConnection(
       method,
       String(id),
     );
+    let finished = false;
+    const finish = (disconnected: boolean): void => {
+      if (finished) return;
+      finished = true;
+      registration.finish(disconnected);
+    };
+    let dropped = false;
+    let forget: (() => void) | undefined;
     try {
       const handle = await options.dispatcher.openStream(
         method,
@@ -743,10 +866,20 @@ function serveControlConnection(
       );
       registration.attach(() => handle.close());
       const { subscriptionId } = handle.openResult;
+      // Unsubscribed: the frame loop sends nothing more, not even the end
+      // frame the close appends, and the registration's slot frees now.
+      forget = (): void => void subscriptions.delete(subscriptionId);
+      subscriptions.set(subscriptionId, () => {
+        dropped = true;
+        subscriptions.delete(subscriptionId);
+        handle.close();
+        finish(false);
+      });
       await connection.send({ jsonrpc: '2.0', id, result: handle.openResult });
       let delivered: CanopyStreamCursor | undefined;
       // Pulling applies the dispatcher's bounded buffer as backpressure.
       for await (const frame of handle.frames) {
+        if (dropped) break;
         if (frame.kind === 'item') {
           const refusal = await connection
             .send({
@@ -777,6 +910,7 @@ function serveControlConnection(
             delivered = frame.cursor;
             continue;
           }
+          if (dropped) break;
           // Refused before a byte was written, such as an item larger than
           // the client joins: only this stream ends, typed (CAN-5684), at
           // the position before the refused item so a resume reads it again.
@@ -803,7 +937,8 @@ function serveControlConnection(
           });
       }
     } finally {
-      registration.finish(connection.signal.aborted);
+      forget?.();
+      finish(connection.signal.aborted);
     }
   };
 
@@ -878,6 +1013,7 @@ function serveControlConnection(
     if (
       initialization === 'done' &&
       method !== INITIALIZE &&
+      method !== UNSUBSCRIBE &&
       !leaseMethod &&
       !kind
     )
@@ -910,6 +1046,22 @@ function serveControlConnection(
         typeof peerClaim === 'string' &&
         options.ownerProof?.verifyPeer(connection.connectionId, peerClaim) ===
           true;
+      const ticket = windowTicketOf(request.params);
+      if (ticket !== undefined) {
+        // Redeemed even when refused below, so no ticket is tried twice.
+        const admitted = options.windowTickets?.redeem(ticket) ?? null;
+        // A ticket only narrows: never beside an owner proof, never ignored.
+        if (owner || admitted === null) {
+          owner = false;
+          peer = false;
+          initialization = 'pending';
+          await fail(id, new CanopyOperationError(WINDOW_REFUSED));
+          connection.close(WINDOW_REFUSED);
+          return;
+        }
+        windowIdentity = admitted;
+        endWithWindow(admitted);
+      }
     }
     try {
       const caller = options.callerFor(identity());
@@ -950,6 +1102,8 @@ function serveControlConnection(
           id,
           result: lease(leaseMethod, request, caller),
         });
+      if (method === UNSUBSCRIBE)
+        return await send({ jsonrpc: '2.0', id, result: unsubscribe(request) });
       if (kind !== 'stream')
         return await dispatch(request, kind === 'query', caller);
       if (leaseBound.has(method) && !leases.lease(connection.connectionId))

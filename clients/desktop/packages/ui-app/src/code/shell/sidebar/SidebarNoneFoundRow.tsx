@@ -1,4 +1,8 @@
 import type { JSX } from 'react';
+import {
+  SIDEBAR_ROW_GRID_CLASSNAME,
+  SIDEBAR_ROW_LEADING_SLOT_CLASSNAME,
+} from '@canopy/ui-shared/components';
 
 export interface SidebarNoneFoundRowProps {
   readonly 'data-testid'?: string;
@@ -29,10 +33,10 @@ export function SidebarNoneFoundRow({
   return (
     <div
       data-testid={testId}
-      className="flex h-8 items-center gap-1.5 px-1.5 pointer-coarse:min-h-11"
+      className={`flex h-8 items-center pr-1.5 ${SIDEBAR_ROW_GRID_CLASSNAME} pointer-coarse:min-h-11`}
     >
       {/* Where a row draws its badge or status: alignment only. */}
-      <span aria-hidden="true" className="h-5 w-5 shrink-0" />
+      <span aria-hidden="true" className={SIDEBAR_ROW_LEADING_SLOT_CLASSNAME} />
       <span
         data-testid={labelTestId}
         className="min-w-0 flex-1 truncate text-s font-normal fg-quaternary"

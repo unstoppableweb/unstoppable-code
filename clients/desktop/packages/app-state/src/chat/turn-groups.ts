@@ -817,6 +817,7 @@ function partitionTurns(
           ...(spawnedBy['event'] === true ? { event: true } : {}),
           ...(spawnedBy['scheduled'] === true ? { scheduled: true } : {}),
           ...(spawnedBy['toolsLoaded'] === true ? { toolsLoaded: true } : {}),
+          ...(spawnedBy['peerMessage'] === true ? { peerMessage: true } : {}),
         },
       };
       turns.push(current);
@@ -831,15 +832,21 @@ function partitionTurns(
       continue;
     }
     // A canonical timer joins its anchor's turn wherever it was appended, as
-    // desktop places it (turn-state phase 40b).
+    // desktop places it (turn-state phase 40b). After a wake, a later run of
+    // an earlier prompt (a Resume) stays in the wake's turn with its rows, as
+    // on desktop.
     const anchor = isTurnTimerMessage(message)
       ? canonicalTimerAnchor(message)
       : undefined;
-    const turn =
-      (anchor === undefined
+    const anchored =
+      anchor === undefined
         ? undefined
-        : (continuations.get(anchor) ?? turnsByUserMessageId.get(anchor))) ??
-      current;
+        : (continuations.get(anchor) ?? turnsByUserMessageId.get(anchor));
+    const turn =
+      anchored === undefined ||
+      (current.wake !== undefined && anchored !== current)
+        ? current
+        : anchored;
     if (isTurnTimerMessage(message)) {
       turn.timers.push(message);
     } else {

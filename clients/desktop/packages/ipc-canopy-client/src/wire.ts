@@ -377,6 +377,8 @@ export interface WireHookPauseResult {
 /** `app-advisor:settings-patch` reply (`AppAdvisorSettingsPatchResponse`). */
 export interface WireSettingsPatchResult {
   readonly ok: boolean;
+  readonly code?: string;
+  readonly instructionsRevision?: string;
   readonly error?: string;
 }
 

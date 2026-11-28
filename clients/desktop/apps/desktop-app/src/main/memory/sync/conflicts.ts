@@ -12,7 +12,7 @@ import {
   replaceMemoryFileIfUnchanged,
   sameMemoryFileContent,
   type MemoryFileContent,
-} from '../local/memory-files';
+} from '@canopy/memory-store/memory-files';
 import {
   readMemoryConflictSide,
   type MemoryConflictSide,

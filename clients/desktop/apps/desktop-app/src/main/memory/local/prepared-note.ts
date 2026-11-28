@@ -6,7 +6,7 @@ import {
   memoryNoteFileName,
   memoryNoteIdAt,
   withMemoryNoteId,
-} from './note-identity';
+} from '@canopy/memory-store/note-identity';
 import type { LocalMemoryNoteOrigin } from './replica-hooks';
 export interface PreparedInboxNote {
   filename: string;

@@ -1,3 +1,5 @@
+import { isAutomationRunInput } from '../agent-messaging/automation-run-source';
+import { retainedTerminalInput } from '../agent-messaging/terminal-input';
 import { serializeVisibleReadMessage } from '@canopy/desktop-shared/lib/chat-history-serialization';
 import { chatAddressPrompt } from '@canopy/desktop-shared/lib/chat-address-prompt';
 import {
@@ -55,6 +57,7 @@ import {
   type ChatEvent,
   type ChatInterfaceMode,
   type ChatModel,
+  type ChatSendMessageRequest,
   type ChatTabPluginSelections,
   type ClaudeTerminalTranscriptSyncEventData,
   type ClaudeTerminalCleanupReason,
@@ -127,7 +130,11 @@ import {
   recordClaudeCodeGraphOrientation,
 } from '../lib/claude-code-graph-orientation';
 import { spawnPlacedManagedTerminal } from '../services/terminal-service';
-import type { WorkerTerminalEvent } from '@canopy/core-runtime/node/terminal';
+import {
+  TERMINAL_OUTPUT_INTERRUPTION_DETECTION_TAIL_CHARS,
+  terminalOutputIndicatesUserInterruptedTurn,
+  type WorkerTerminalEvent,
+} from '@canopy/core-runtime/node/terminal';
 import { workerTerminal } from '../terminal/worker-terminal';
 import type {
   TerminalOutputEvent,
@@ -240,6 +247,8 @@ interface RuntimeRecord {
    * whenever the audit turn closes so it is never reused across turns.
    */
   auditUserMessageId?: string;
+  /** ID of the scheduler input bound to this terminal turn at prompt submit. */
+  automationTurnInputId?: string;
   /** Exact admitted plan input carried by the managed terminal prompt marker. */
   planImplementationUserMessageId?: string;
   suspendedPlanImplementationUserMessageId?: string;
@@ -424,6 +433,7 @@ export interface ClaudeTerminalSessionService {
     request: ClaudeTerminalSyncTranscriptRequest,
   ): Promise<ClaudeTerminalSyncTranscriptResponse>;
   markHookState(input: HookStateUpdate): Promise<void>;
+  runningAutomationTurn(target: ChatLifecycleTarget): boolean;
   /** The id of the terminal turn the chat is running, if any. */
   runningTurnUserMessageId(
     projectId: string,
@@ -493,27 +503,6 @@ function shouldScheduleTrailingTranscriptSync(
   return !importedTurnCompletionMessage(result);
 }
 
-function stripTerminalControlSequences(text: string): string {
-  // eslint-disable-next-line no-control-regex
-  return text.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
-}
-
-function terminalOutputIndicatesUserInterruptedTurn(text: string): boolean {
-  // Defense-in-depth for Claude Code builds that do not emit the PTY
-  // interruptedByUser signal. Keep this anchored to standalone status lines to
-  // limit false positives from arbitrary assistant or command output.
-  return stripTerminalControlSequences(text)
-    .replace(/\r/g, '\n')
-    .split('\n')
-    .some((line) => {
-      const normalized = line.trim().toLowerCase();
-      return (
-        /^(interrupted|cancelled|canceled) by user[.!]?$/.test(normalized) ||
-        /^user (cancelled|canceled)[.!]?$/.test(normalized)
-      );
-    });
-}
-
 const TRANSCRIPT_PATH_HOOK_EVENTS = new Set<ClaudeTerminalHookEventName>([
   'SessionStart',
   'UserPromptSubmit',
@@ -542,7 +531,6 @@ const TRAILING_TRANSCRIPT_SYNC_DELAY_MS = 750;
 const MAX_TRAILING_TRANSCRIPT_SYNC_ATTEMPTS = 4;
 const INTERRUPT_TRANSCRIPT_SYNC_DELAY_MS =
   process.env.NODE_ENV === 'test' ? 0 : TRAILING_TRANSCRIPT_SYNC_DELAY_MS;
-const TERMINAL_OUTPUT_INTERRUPTION_DETECTION_TAIL_CHARS = 2048;
 // Auto-mode terminals are hidden between turns, so an idle process is pure
 // background cost. After this much idle time the process is reaped; the next
 // send relaunches with the prompt as the CLI's initial argument and resumes
@@ -1112,6 +1100,14 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
       : undefined;
   }
 
+  public runningAutomationTurn(target: ChatLifecycleTarget): boolean {
+    return (
+      this.records.get(
+        runtimeKey(target.projectId, target.worktreeId, target.chatId),
+      )?.automationTurnInputId !== undefined
+    );
+  }
+
   /**
    * The id of the terminal turn the chat is running: minted when the turn
    * opens and cleared when it closes, and kept across a deferred-tools
@@ -1482,6 +1478,10 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
     };
     const pendingPlanMode = this.pendingPlanModes.get(key);
     const pendingApprovalMode = this.pendingApprovalModes.get(key);
+    const initialAutomationInput =
+      initialPromptId && initialPromptId === request.initialPromptIdempotencyKey
+        ? retainedTerminalInput(tab, initialPromptId)
+        : undefined;
     const record: RuntimeRecord = {
       projectId: request.projectId,
       worktreeId: request.worktreeId,
@@ -1495,6 +1495,9 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
       assistantMode: appAdvisorMode ? 'app-advisor' : 'default',
       planMode: pendingPlanMode ?? tab.planMode === true,
       auditTurnOpen: false,
+      ...(initialAutomationInput && isAutomationRunInput(initialAutomationInput)
+        ? { automationTurnInputId: initialPromptId }
+        : {}),
       ...(initialPlanImplementationId
         ? {
             pendingPlanImplementationUserMessageId: initialPlanImplementationId,
@@ -2141,6 +2144,23 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
     }
     this.emitState(record);
     if (request.initialPrompt && !options.deferredToolsReloadContinuation) {
+      if (
+        initialPromptId &&
+        initialAutomationInput?.nativeAutomationRunInputId === initialPromptId
+      ) {
+        await getChatStateService()
+          .observeNativeAutomationTerminalInput(
+            record,
+            initialPromptId,
+            'picked-up',
+          )
+          .catch((error: unknown) => {
+            logMainProcessWarn(
+              '[claude-terminal] Failed to record scheduled initial prompt pickup:',
+              error,
+            );
+          });
+      }
       await this.acceptWatcherInput(
         record,
         request.initialPromptIdempotencyKey,
@@ -2458,10 +2478,52 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
       const submittedTurnId = terminalPresentationTurnId(
         getStringField(input.hookPayload, 'prompt'),
       );
+      delete record.automationTurnInputId;
+      let retainedInput: ChatSendMessageRequest | undefined;
+      if (submittedTurnId) {
+        // The marker only correlates the provider's hook to a main-retained
+        // input. Its text and presentation source confer no authority.
+        const tabs = await readChatTabsFile(
+          record.projectId,
+          record.worktreeId,
+          { chatIds: [record.chatId] },
+        );
+        if (
+          this.records.get(
+            runtimeKey(record.projectId, record.worktreeId, record.chatId),
+          ) !== record
+        )
+          return;
+        const tab = tabs.tabs.find(
+          (candidate) => candidate.id === record.chatId,
+        );
+        retainedInput = tab
+          ? retainedTerminalInput(tab, submittedTurnId)
+          : undefined;
+        if (retainedInput && isAutomationRunInput(retainedInput)) {
+          record.automationTurnInputId = submittedTurnId;
+          if (retainedInput.nativeAutomationRunInputId === submittedTurnId) {
+            await getChatStateService()
+              .observeNativeAutomationTerminalInput(
+                record,
+                submittedTurnId,
+                'picked-up',
+              )
+              .catch((error: unknown) => {
+                logMainProcessWarn(
+                  '[claude-terminal] Failed to record scheduled prompt pickup:',
+                  error,
+                );
+              });
+          }
+        }
+      }
       const turn = acceptTerminalPresentationTurn(
         presentationChatKey(origin),
         submittedTurnId ?? randomUUID(),
-        submittedTurnId ? 'automation' : 'user',
+        submittedTurnId && !retainedInput?.agentSenderProvenance
+          ? 'automation'
+          : 'user',
       );
       record.presentationTurnId = turn.turnId;
 
@@ -3171,6 +3233,7 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
 
   /** End the record's plan-file turn leases, if any. Idempotent. */
   private endPlanTurn(record: RuntimeRecord): void {
+    delete record.automationTurnInputId;
     if (record.presentationTurnId) {
       clearPresentationTurn(
         presentationChatKey({

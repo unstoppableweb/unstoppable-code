@@ -14,9 +14,10 @@
  * Results go to `.performance/remote-access/<run>-<time>.json`. Exit status:
  * 0 when the run passed, 1 when it found a problem (a key-to-paint ceiling
  * breach, typing that did not overlap its load, a failed round, a session
- * that did not recover, a leaked window, a phase past its deadline or, with
- * --strict-delivery, lost terminal output), 2 on a usage error. Memory is
- * reported per computer and does not fail a run until CAN-7859 sets a limit.
+ * that did not recover, a leaked window, a soak computer keeping more than
+ * 64 MB of heap after a full GC beyond its minute-2 level (CAN-7859), a phase
+ * past its deadline or, with --strict-delivery, lost terminal output), 2 on a
+ * usage error. Sampled memory is reported per computer, not judged.
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -25,10 +26,7 @@ import {
   assessHostMeasurement,
   startHostMeasurement,
 } from '../host-measurement.mjs';
-import {
-  ensureMockServer,
-  PERFORMANCE_MOCK_BASE_URL,
-} from '../mock-server.mjs';
+import { startPrivateMockServer } from '../mock-server.mjs';
 import { BENCH_PROFILES, runBench } from './bench.mjs';
 import { onCleanup, runCleanup, runCleanupSync } from './cleanup.mjs';
 import { runRecovery } from './recovery.mjs';
@@ -255,10 +253,6 @@ function withDeadline(promise, ms, label) {
 
 async function main() {
   const options = parseArguments(process.argv.slice(2));
-  // The desktops reach the mock services, the mock cloud and its relay
-  // tokens on the performance suite's origin, as its scenarios do.
-  process.env.CANOPY_E2E_MOCK_BASE_URL = PERFORMANCE_MOCK_BASE_URL;
-  process.env.CANOPY_E2E_CLOUD_BASE_URL = PERFORMANCE_MOCK_BASE_URL;
   current.options = options;
   current.startedAt = new Date().toISOString();
   // The suite's host load evidence (see host-measurement.mjs), sampled every
@@ -267,12 +261,19 @@ async function main() {
   let mock = null;
   let runError = null;
   try {
+    // A mock server of this run's own (CAN-8048): on the shared performance
+    // origin, another run's start resets every scenario, including the relay
+    // this run's desktops fetch their tokens for.
     mock = await withDeadline(
-      ensureMockServer(),
+      startPrivateMockServer(),
       SETUP_DEADLINE_MS,
       'the mock server',
     );
     onCleanup(() => mock.stop());
+    // The desktops reach the mock services, the mock cloud and its relay
+    // tokens on that origin.
+    process.env.CANOPY_E2E_MOCK_BASE_URL = mock.baseUrl;
+    process.env.CANOPY_E2E_CLOUD_BASE_URL = mock.baseUrl;
     if (options.run === 'bench') {
       current.result = await withDeadline(
         runBench({ profiles: options.profiles, progress: current.progress }),

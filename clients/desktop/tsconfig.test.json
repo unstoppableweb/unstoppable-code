@@ -27,6 +27,8 @@
     "packages/agent-transcript/src/**/*.tsx",
     "packages/memory-consolidation/src/**/*.ts",
     "packages/memory-consolidation/src/**/*.tsx",
+    "packages/memory-store/src/**/*.ts",
+    "packages/memory-store/src/**/*.tsx",
     "packages/core-runtime/src/**/*.ts",
     "packages/core-runtime/src/**/*.tsx",
     "packages/core-platform/src/**/*.ts",

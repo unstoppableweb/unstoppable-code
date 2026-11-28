@@ -443,6 +443,9 @@ export const useSidebarItemGroupsStore = create<SidebarItemGroupsState>(
             (candidate) => candidate.id === request.groupId,
           );
           if (group) {
+            // An empty group owns its editor until the host confirms removal.
+            if (request.keepWhenEmpty === false && group.memberIds.length === 0)
+              return groups;
             if (
               request.name !== undefined ||
               request.labelHidden !== undefined ||
@@ -474,6 +477,13 @@ export const useSidebarItemGroupsStore = create<SidebarItemGroupsState>(
           });
         },
         () => window.api.sidebarItemGroups.update(request),
+        request.keepWhenEmpty === false
+          ? (groups) =>
+              groups.filter(
+                (group) =>
+                  group.id !== request.groupId || group.memberIds.length > 0,
+              )
+          : undefined,
       ),
     ungroup: (request): Promise<void> =>
       mutate(

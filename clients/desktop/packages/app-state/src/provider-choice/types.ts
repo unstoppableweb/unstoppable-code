@@ -17,6 +17,7 @@ export type ProviderSourceId =
   | 'codex'
   | 'cursor'
   | 'copilot'
+  | 'antigravity'
   | 'gateway'
   | 'ollama'
   | 'credits';
@@ -32,6 +33,7 @@ export const PROVIDER_SOURCE_ORDER: readonly ProviderSourceId[] = [
   'codex',
   'cursor',
   'copilot',
+  'antigravity',
   'gateway',
   'ollama',
   'credits',

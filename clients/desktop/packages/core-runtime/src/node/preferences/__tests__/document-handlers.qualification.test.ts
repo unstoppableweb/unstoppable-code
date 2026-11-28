@@ -73,11 +73,14 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 type Daemon = CoreConfigDocumentHandlers & { committed(): unknown[] };
 
 /** One daemon lifetime over `root`: its module, handlers and event journal. */
-function start(ownership: readonly StorageOwnershipRow[] = FLIPPED): Daemon {
+function start(
+  ownership: readonly StorageOwnershipRow[] = FLIPPED,
+  inner: PreferencesCodec<Record<string, unknown>> = codec,
+): Daemon {
   const events = createConfigCommitEvents({ epoch: 'daemon-epoch' });
   const preferences = createDaemonPreferences({
     dataRoot: root,
-    codec,
+    codec: inner,
     usageDataKeys: USAGE,
     syncDirectory: () => Promise.resolve('flushed'),
     ownership,
@@ -454,5 +457,98 @@ describe('core.config.legacyClientLocal.get and loadError.acknowledge (CAN-7956)
       kind: 'failed_precondition',
       code: 'core.config.invalidState',
     });
+  });
+});
+
+describe('the stored record beside its runtime projection (CAN-8045)', () => {
+  // The desktop codec's provider defaults, modelled: the runtime view nulls
+  // an Ollama default the catalog has not discovered, and a save revalidates
+  // only the entries it changes.
+  let discovered = true;
+  afterEach(() => {
+    discovered = true;
+  });
+  const BY_PROVIDER = 'defaultChatModelByProvider';
+  const SONNET = { model: 'sonnet', thinkingLevel: 'high' };
+  const OPUS = { model: 'opus', thinkingLevel: 'high' };
+  const OLLAMA = { model: 'ollama-qwen3-coder', thinkingLevel: 'high' };
+  const byProviderOf = (
+    value: Partial<Record<string, unknown>>,
+  ): Record<string, unknown> => {
+    const byProvider = value[BY_PROVIDER];
+    return isObject(byProvider) ? byProvider : {};
+  };
+  const runtime = (value: Record<string, unknown>): Record<string, unknown> =>
+    discovered || !(BY_PROVIDER in value)
+      ? value
+      : { ...value, [BY_PROVIDER]: { ...byProviderOf(value), ollama: null } };
+  const projecting: PreferencesCodec<Record<string, unknown>> = {
+    defaults: codec.defaults,
+    normalize: (payload, view) =>
+      view === 'runtime' ? runtime(normalize(payload)) : normalize(payload),
+    project: (value) => runtime(normalize(value)),
+    inspect: () => null,
+    merge: (existing, patch) => {
+      const next = normalize({ ...existing, ...patch });
+      if (!(BY_PROVIDER in patch)) return next;
+      const before = byProviderOf(existing);
+      const sent = byProviderOf(patch);
+      const validated = byProviderOf(runtime(next));
+      const providers = Object.keys({ ...before, ...sent });
+      return {
+        ...next,
+        [BY_PROVIDER]: Object.fromEntries(
+          providers.map((provider) => [
+            provider,
+            JSON.stringify(sent[provider]) === JSON.stringify(before[provider])
+              ? before[provider]
+              : validated[provider],
+          ]),
+        ),
+      };
+    },
+  };
+  const get = (daemon: Daemon): Promise<ConfigDocumentGetResult> =>
+    daemon.queries['core.config.document.get']({}, context('get'));
+
+  it('every read and write carries the stored record, so a save built on it keeps an undiscovered Ollama default', async () => {
+    writeFileSync(
+      join(root, 'preferences.json'),
+      JSON.stringify({
+        version: 1,
+        preferences: { [BY_PROVIDER]: { claude: SONNET, ollama: OLLAMA } },
+      }),
+    );
+    // Discovery is asynchronous, so a save can land before it.
+    discovered = false;
+    const daemon = start(FLIPPED, projecting);
+    const read = await get(daemon);
+    expect(read.value[BY_PROVIDER]).toEqual({ claude: SONNET, ollama: null });
+    expect(read.stored?.[BY_PROVIDER]).toEqual({
+      claude: SONNET,
+      ollama: OLLAMA,
+    });
+    // The revision is the stored record's, not the projection's.
+    expect(read.revision).toBe(configDocumentRevision(read.stored ?? {}));
+
+    // As ChatTab saves one provider's default: `{...byProvider, claude}`.
+    const saved = await update(
+      daemon,
+      'claude',
+      { [BY_PROVIDER]: { ...byProviderOf(read.stored ?? {}), claude: OPUS } },
+      read.revision,
+    );
+    expect(stored()[BY_PROVIDER]).toEqual({ claude: OPUS, ollama: OLLAMA });
+    expect(saved.stored).toEqual(stored());
+    expect(saved.value[BY_PROVIDER]).toEqual({ claude: OPUS, ollama: null });
+    const owned = await ownerUpdate(daemon, 'owner', { fileAutoSave: true });
+    expect(owned.stored).toEqual(stored());
+    expect((await get(daemon)).stored).toEqual(stored());
+
+    // The same save built on the projection writes its null back.
+    await update(daemon, 'projected', {
+      [BY_PROVIDER]: { ...byProviderOf(read.value), claude: SONNET },
+    });
+    expect(stored()[BY_PROVIDER]).toEqual({ claude: SONNET, ollama: null });
   });
 });
