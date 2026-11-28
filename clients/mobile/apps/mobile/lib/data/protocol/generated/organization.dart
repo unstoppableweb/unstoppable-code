@@ -320,9 +320,11 @@ class ModelGatewayModel {
 
 /// Org configuration surfaced to the settings UI.
 class OrganizationConfigDetail {
-  const OrganizationConfigDetail({required this.allowExternalContainerSharing, this.applicable, required this.blockedModelIds, required this.enforceMemberDataSharing, required this.enforceMemberModelGateway, required this.enforceMemberModelPolicy, required this.enforcedSync, this.externalAgentAccess, this.modelGatewayBaseUrl, this.modelGatewayDisplayName, required this.modelGatewayEnforced, required this.modelGatewayModels, required this.modelGatewayPromptCachePassthrough, this.modelGatewayRevision, this.prohibitMemberActiveUseSignal, this.prohibitMemberErrorReports, this.prohibitMemberFeatureFlagIdentity, this.prohibitMemberProductAnalytics, this.prohibitMemberSessionReplay, required this.reviewedModelIds, required this.usageStatsMinRole});
+  const OrganizationConfigDetail({required this.allowExternalContainerSharing, this.allowPublicArtifactSharing, this.applicable, required this.blockedModelIds, required this.enforceMemberDataSharing, required this.enforceMemberModelGateway, required this.enforceMemberModelPolicy, required this.enforcedSync, this.externalAgentAccess, this.modelGatewayBaseUrl, this.modelGatewayDisplayName, required this.modelGatewayEnforced, required this.modelGatewayModels, required this.modelGatewayPromptCachePassthrough, this.modelGatewayRevision, this.prohibitMemberActiveUseSignal, this.prohibitMemberErrorReports, this.prohibitMemberFeatureFlagIdentity, this.prohibitMemberProductAnalytics, this.prohibitMemberSessionReplay, required this.reviewedModelIds, required this.usageStatsMinRole});
 
   final bool allowExternalContainerSharing;
+  /// Whether members may turn on public links for shared artifacts this organization governs (CAN-8016). Off unless an owner or admin turns it on; turning it off pauses links without clearing them. Optional for older servers; the service always populates it.
+  final bool? allowPublicArtifactSharing;
   /// Whether this organization-level control applies to the target.
   final bool? applicable;
   final List<String> blockedModelIds;
@@ -351,6 +353,7 @@ class OrganizationConfigDetail {
 
   factory OrganizationConfigDetail.fromJson(Map<String, dynamic> json) => OrganizationConfigDetail(
         allowExternalContainerSharing: json['allowExternalContainerSharing'] as bool,
+        allowPublicArtifactSharing: json['allowPublicArtifactSharing'] as bool?,
         applicable: json['applicable'] as bool?,
         blockedModelIds: (json['blockedModelIds'] as List<dynamic>).cast<String>(),
         enforceMemberDataSharing: json['enforceMemberDataSharing'] as bool,
